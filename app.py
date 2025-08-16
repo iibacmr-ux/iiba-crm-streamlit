@@ -4,6 +4,18 @@ import os
 from datetime import datetime, date
 import json
 
+# Ajoute ce code temporaire au début de ton app.py, juste après les imports
+import os
+
+# ATTENTION : ceci supprime toutes les données existantes !
+files_to_delete = ["contacts.csv", "interactions.csv", "evenements.csv", 
+                  "participations.csv", "paiements.csv", "certifications.csv", "settings.json"]
+
+for file in files_to_delete:
+    if os.path.exists(file):
+        os.remove(file)
+        st.write(f"✅ Fichier {file} supprimé")
+
 # --- CONFIGURATION ---
 st.set_page_config(page_title="IIBA Cameroun CRM", page_icon="📊", layout="wide")
 
@@ -482,3 +494,4 @@ st.sidebar.info("💡 **Aide** : Survolez les champs avec (?) pour voir les desc
 # Redirection depuis Dashboard si nécessaire
 if hasattr(st.session_state, 'page_redirect'):
     del st.session_state.page_redirect
+
