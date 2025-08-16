@@ -4,17 +4,6 @@ import os
 from datetime import datetime, date
 import json
 
-# Ajoute ce code temporaire au début de ton app.py, juste après les imports
-import os
-
-# ATTENTION : ceci supprime toutes les données existantes !
-files_to_delete = ["contacts.csv", "interactions.csv", "evenements.csv", 
-                  "participations.csv", "paiements.csv", "certifications.csv", "settings.json"]
-
-for file in files_to_delete:
-    if os.path.exists(file):
-        os.remove(file)
-        st.write(f"✅ Fichier {file} supprimé")
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="IIBA Cameroun CRM", page_icon="📊", layout="wide")
@@ -59,12 +48,57 @@ def save_settings(settings):
         json.dump(settings, f, ensure_ascii=False, indent=2)
     st.cache_data.clear()
 
+
 @st.cache_data
 def load_data(file_path):
-    """Charge les données depuis un fichier CSV"""
+    """Charge les données depuis un fichier CSV avec migration automatique"""
     if os.path.exists(file_path):
-        return pd.read_csv(file_path, encoding='utf-8')
+        try:
+            df = pd.read_csv(file_path, encoding='utf-8')
+            
+            # Migration automatique pour contacts
+            if "contacts" in file_path:
+                required_columns = ['ID', 'Nom', 'Prénom', 'Genre', 'Titre', 'Société', 'Secteur', 
+                                  'Email', 'Téléphone', 'Ville', 'Pays', 'Type_Contact', 'Source', 
+                                  'Statut_Engagement', 'LinkedIn', 'Notes', 'Date_Creation']
+                
+                # Ajouter les colonnes manquantes avec valeurs par défaut
+                for col in required_columns:
+                    if col not in df.columns:
+                        if col == 'Type_Contact':
+                            df[col] = 'Prospect'  # Valeur par défaut
+                        elif col == 'Source':
+                            df[col] = 'Autre'
+                        elif col == 'Statut_Engagement':
+                            df[col] = 'Actif'
+                        else:
+                            df[col] = ''
+                
+                # Réorganiser les colonnes dans le bon ordre
+                df = df[required_columns]
+                
+                # Sauvegarder le fichier migré
+                save_data(df, file_path)
+                st.success(f"✅ Migration automatique effectuée pour {file_path}")
+            
+            return df
+            
+        except Exception as e:
+            st.error(f"Erreur lors du chargement de {file_path}: {e}")
+            # Retourner un DataFrame vide en cas d'erreur
+            if "contacts" in file_path:
+                return pd.DataFrame(columns=['ID', 'Nom', 'Prénom', 'Genre', 'Titre', 'Société', 'Secteur', 
+                                           'Email', 'Téléphone', 'Ville', 'Pays', 'Type_Contact', 'Source', 
+                                           'Statut_Engagement', 'LinkedIn', 'Notes', 'Date_Creation'])
+            elif "interactions" in file_path:
+                return pd.DataFrame(columns=['ID_Interaction', 'ID_Contact', 'Date', 'Canal', 'Objet', 
+                                           'Résumé', 'Résultat', 'Responsable', 'Prochaine_Action', 'Relance'])
+            elif "paiements" in file_path:
+                return pd.DataFrame(columns=['ID_Paiement', 'ID_Contact', 'ID_Événement', 'Date_Paiement', 
+                                           'Montant', 'Moyen', 'Statut', 'Référence', 'Notes'])
+            return pd.DataFrame()
     else:
+        # Créer les DataFrames vides avec les bonnes colonnes
         if "contacts" in file_path:
             return pd.DataFrame(columns=['ID', 'Nom', 'Prénom', 'Genre', 'Titre', 'Société', 'Secteur', 
                                         'Email', 'Téléphone', 'Ville', 'Pays', 'Type_Contact', 'Source', 
@@ -76,6 +110,7 @@ def load_data(file_path):
             return pd.DataFrame(columns=['ID_Paiement', 'ID_Contact', 'ID_Événement', 'Date_Paiement', 
                                         'Montant', 'Moyen', 'Statut', 'Référence', 'Notes'])
         return pd.DataFrame()
+
 
 def save_data(data, file_path):
     """Sauvegarde les données dans un fichier CSV"""
@@ -494,4 +529,5 @@ st.sidebar.info("💡 **Aide** : Survolez les champs avec (?) pour voir les desc
 # Redirection depuis Dashboard si nécessaire
 if hasattr(st.session_state, 'page_redirect'):
     del st.session_state.page_redirect
+
 
