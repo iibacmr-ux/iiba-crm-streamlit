@@ -27,7 +27,6 @@ DEFAULT_SETTINGS = {
 }
 
 # --- FONCTIONS DE CHARGEMENT / SAUVEGARDE ---
-@st.cache_data
 def load_settings():
     if os.path.exists(DATA_FILES["settings"]):
         return json.load(open(DATA_FILES["settings"], encoding="utf-8"))
@@ -39,7 +38,6 @@ def save_settings(settings):
     json.dump(settings, open(DATA_FILES["settings"], "w", encoding="utf-8"), indent=2, ensure_ascii=False)
     st.cache_data.clear()
 
-@st.cache_data
 def load_data(filename, columns):
     if os.path.exists(filename):
         df = pd.read_csv(filename, encoding="utf-8")
