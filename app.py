@@ -1,20 +1,25 @@
 import streamlit as st
 import pandas as pd
 import os
+from datetime import datetime, date
 import json
-from datetime import datetime, date, timedelta
 
-# --- CONFIGURATION GLOBALE ---
+
+# --- CONFIGURATION ---
 st.set_page_config(page_title="IIBA Cameroun CRM", page_icon="📊", layout="wide")
-DATA_FILES = {
+
+# Fichiers de données
+FILES = {
     "contacts": "contacts.csv",
-    "interactions": "interactions.csv",
+    "interactions": "interactions.csv", 
     "evenements": "evenements.csv",
     "participations": "participations.csv",
     "paiements": "paiements.csv",
     "certifications": "certifications.csv",
     "settings": "settings.json"
 }
+
+# --- DONNÉES DE PARAMÉTRAGE (DROPDOWNS) ---
 DEFAULT_SETTINGS = {
     "types_contact": ["Membre", "Prospect", "Formateur", "Partenaire"],
     "sources": ["Afterwork", "Formation", "LinkedIn", "Recommandation", "Site Web", "Salon", "Autre"],
@@ -26,305 +31,502 @@ DEFAULT_SETTINGS = {
     "moyens_paiement": ["Chèque", "Espèces", "Virement", "CB", "Mobile Money", "Autre"]
 }
 
-# --- FONCTIONS DE CHARGEMENT / SAUVEGARDE ---
+# --- FONCTIONS UTILITAIRES ---
 @st.cache_data
 def load_settings():
-    if os.path.exists(DATA_FILES["settings"]):
-        return json.load(open(DATA_FILES["settings"], encoding="utf-8"))
+    """Charge les paramètres depuis le fichier JSON"""
+    if os.path.exists(FILES["settings"]):
+        with open(FILES["settings"], 'r', encoding='utf-8') as f:
+            return json.load(f)
     else:
         save_settings(DEFAULT_SETTINGS)
         return DEFAULT_SETTINGS
 
 def save_settings(settings):
-    json.dump(settings, open(DATA_FILES["settings"], "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+    """Sauvegarde les paramètres dans le fichier JSON"""
+    with open(FILES["settings"], 'w', encoding='utf-8') as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
     st.cache_data.clear()
+
 
 @st.cache_data
-def load_data(filename, columns):
-    if os.path.exists(filename):
-        df = pd.read_csv(filename, encoding="utf-8")
-        # Migration auto des colonnes manquantes
-        for col, default in columns.items():
-            if col not in df.columns:
-                df[col] = default() if callable(default) else default
-        return df[list(columns)]
+def load_data(file_path):
+    """Charge les données depuis un fichier CSV avec migration automatique"""
+    if os.path.exists(file_path):
+        try:
+            df = pd.read_csv(file_path, encoding='utf-8')
+            
+            # Migration automatique pour contacts
+            if "contacts" in file_path:
+                required_columns = ['ID', 'Nom', 'Prénom', 'Genre', 'Titre', 'Société', 'Secteur', 
+                                  'Email', 'Téléphone', 'Ville', 'Pays', 'Type_Contact', 'Source', 
+                                  'Statut_Engagement', 'LinkedIn', 'Notes', 'Date_Creation']
+                
+                # Ajouter les colonnes manquantes avec valeurs par défaut
+                for col in required_columns:
+                    if col not in df.columns:
+                        if col == 'Type_Contact':
+                            df[col] = 'Prospect'  # Valeur par défaut
+                        elif col == 'Source':
+                            df[col] = 'Autre'
+                        elif col == 'Statut_Engagement':
+                            df[col] = 'Actif'
+                        else:
+                            df[col] = ''
+                
+                # Réorganiser les colonnes dans le bon ordre
+                df = df[required_columns]
+                
+                # Sauvegarder le fichier migré
+                save_data(df, file_path)
+                st.success(f"✅ Migration automatique effectuée pour {file_path}")
+            
+            return df
+            
+        except Exception as e:
+            st.error(f"Erreur lors du chargement de {file_path}: {e}")
+            # Retourner un DataFrame vide en cas d'erreur
+            if "contacts" in file_path:
+                return pd.DataFrame(columns=['ID', 'Nom', 'Prénom', 'Genre', 'Titre', 'Société', 'Secteur', 
+                                           'Email', 'Téléphone', 'Ville', 'Pays', 'Type_Contact', 'Source', 
+                                           'Statut_Engagement', 'LinkedIn', 'Notes', 'Date_Creation'])
+            elif "interactions" in file_path:
+                return pd.DataFrame(columns=['ID_Interaction', 'ID_Contact', 'Date', 'Canal', 'Objet', 
+                                           'Résumé', 'Résultat', 'Responsable', 'Prochaine_Action', 'Relance'])
+            elif "paiements" in file_path:
+                return pd.DataFrame(columns=['ID_Paiement', 'ID_Contact', 'ID_Événement', 'Date_Paiement', 
+                                           'Montant', 'Moyen', 'Statut', 'Référence', 'Notes'])
+            return pd.DataFrame()
     else:
-        return pd.DataFrame({col: [] for col in columns})
+        # Créer les DataFrames vides avec les bonnes colonnes
+        if "contacts" in file_path:
+            return pd.DataFrame(columns=['ID', 'Nom', 'Prénom', 'Genre', 'Titre', 'Société', 'Secteur', 
+                                        'Email', 'Téléphone', 'Ville', 'Pays', 'Type_Contact', 'Source', 
+                                        'Statut_Engagement', 'LinkedIn', 'Notes', 'Date_Creation'])
+        elif "interactions" in file_path:
+            return pd.DataFrame(columns=['ID_Interaction', 'ID_Contact', 'Date', 'Canal', 'Objet', 
+                                        'Résumé', 'Résultat', 'Responsable', 'Prochaine_Action', 'Relance'])
+        elif "paiements" in file_path:
+            return pd.DataFrame(columns=['ID_Paiement', 'ID_Contact', 'ID_Événement', 'Date_Paiement', 
+                                        'Montant', 'Moyen', 'Statut', 'Référence', 'Notes'])
+        return pd.DataFrame()
 
-def save_data(df, filename):
-    df.to_csv(filename, index=False, encoding="utf-8")
+
+def save_data(data, file_path):
+    """Sauvegarde les données dans un fichier CSV"""
+    data.to_csv(file_path, index=False, encoding='utf-8')
     st.cache_data.clear()
 
-def generate_id(prefix, df, id_col):
-    if df.empty: return f"{prefix}_001"
-    last = df[id_col].iloc[-1]
-    num = int(last.split("_")[1]) + 1
+def generate_id(prefix, existing_df):
+    """Génère un nouvel ID unique"""
+    if len(existing_df) == 0:
+        return f"{prefix}_001"
+    last_id = existing_df.iloc[-1, 0] if len(existing_df) > 0 else f"{prefix}_000"
+    num = int(str(last_id).split('_')[1]) + 1
     return f"{prefix}_{num:03d}"
 
-# --- PARAMÉTRAGES DES STRUCTURES ---
-SETTINGS = load_settings()
-CONTACT_COLS = {
-    "ID": lambda: None, "Nom": "", "Prénom": "", "Genre": "", "Titre": "",
-    "Société": "", "Secteur": SETTINGS["secteurs"], "Email": "", "Téléphone": "",
-    "Ville": "", "Pays": SETTINGS["pays"], "Type_Contact": SETTINGS["types_contact"],
-    "Source": SETTINGS["sources"], "Statut_Engagement": SETTINGS["statuts_engagement"],
-    "LinkedIn": "", "Notes": "", "Date_Creation": lambda: datetime.now().strftime("%Y-%m-%d")
-}
-INT_COLS = {
-    "ID_Interaction": lambda: None, "ID_Contact": "", "Date": date.today().isoformat(),
-    "Canal": SETTINGS["canaux"], "Objet": "", "Résumé": "",
-    "Résultat": "Positif", "Responsable": "", "Prochaine_Action": "", "Relance": ""
-}
-EVT_COLS = {
-    "ID_Événement": lambda: None, "Nom_Événement": "", "Type": SETTINGS["types_evenements"],
-    "Date": date.today().isoformat(), "Durée_h": 0, "Lieu": "",
-    "Formateur(s)": "", "Invité(s)": "", "Objectif": "", "Période": "Matinée", "Notes": ""
-}
-PART_COLS = {
-    "ID_Participation": lambda: None, "ID_Contact": "", "ID_Événement": "", "Rôle": "Participant",
-    "Inscription": date.today().isoformat(), "Arrivée": "", "Temps_Présent": "", 
-    "Feedback": 3, "Note": 0, "Commentaire": "", "Nom Participant": "", "Nom Événement": ""
-}
-PAY_COLS = {
-    "ID_Paiement": lambda: None, "ID_Contact": "", "ID_Événement": "", "Date_Paiement": date.today().isoformat(),
-    "Montant": 0.0, "Moyen": SETTINGS["moyens_paiement"][0], "Statut": "En attente", 
-    "Référence": "", "Notes": "", "Relance": "", "Nom Contact": "", "Nom Événement": ""
-}
-CERT_COLS = {
-    "ID_Certif": lambda: None, "ID_Contact": "", "Type_Certif": SETTINGS["types_contact"],
-    "Date_Examen": date.today().isoformat(), "Résultat": "Réussi", "Score": 0,
-    "Date_Obtention": date.today().isoformat(), "Validité": "", "Renouvellement": "", "Notes": "", "Nom Contact": ""
-}
+# --- STYLES CSS AMÉLIORÉS ---
+st.markdown("""
+<style>
+.search-box {background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin-bottom: 20px;}
+.contact-card {background-color: white; padding: 15px; border-radius: 10px; margin: 5px; border-left: 4px solid #1f77b4;}
+.kpi-card {background-color: #f8f9fa; padding: 20px; border-radius: 10px; text-align: center; margin: 10px;}
+.readonly-field {background-color: #f5f5f5; border: 1px solid #ddd; padding: 5px; border-radius: 5px;}
+div[data-baseweb="tooltip"] {width: 300px !important; max-width: none !important;}
+.help-tooltip {font-size: 12px; color: #666;}
+</style>
+""", unsafe_allow_html=True)
 
 # --- NAVIGATION ---
 PAGES = ["Dashboard 360", "Contacts", "Interactions", "Événements", "Participations", "Paiements", "Certifications", "Paramètres"]
-choice = st.sidebar.selectbox("Navigation", PAGES)
+choice = st.sidebar.selectbox("Navigation IIBA CRM", PAGES)
 
-# --- DASHBOARD 360 (avec filtre Année/Mois) ---
+# Chargement des paramètres
+settings = load_settings()
+
+# --- PAGE 1 : DASHBOARD 360 (avec KPI enrichis) ---
 if choice == "Dashboard 360":
-    st.title("📊 Dashboard 360")
-    # Charger données
-    df_c = load_data(DATA_FILES["contacts"], CONTACT_COLS)
-    df_i = load_data(DATA_FILES["interactions"], INT_COLS)
-    df_e = load_data(DATA_FILES["evenements"], EVT_COLS)
-    df_p = load_data(DATA_FILES["participations"], PART_COLS)
-    df_pay = load_data(DATA_FILES["paiements"], PAY_COLS)
-    df_cert = load_data(DATA_FILES["certifications"], CERT_COLS)
-    # Filtres
-    years = sorted({d[:4] for d in df_c["Date_Creation"]}) or [str(datetime.now().year)]
-    months = ["Tous"] + [f"{i:02d}" for i in range(1,13)]
-    colf1, colf2 = st.columns(2)
-    year = colf1.selectbox("Année", years, index=len(years)-1)
-    month = colf2.selectbox("Mois", months, index=0)
-    def fil(df, date_col):
-        if df.empty: return df
-        df2 = df[df[date_col].str[:4]==year]
-        return df2 if month=="Tous" else df2[df2[date_col].str[5:7]==month]
-    df_c2 = fil(df_c, "Date_Creation")
-    df_e2 = fil(df_e, "Date")
-    df_p2 = fil(df_p, "Inscription")
-    df_pay2 = fil(df_pay, "Date_Paiement")
-    df_cert2 = fil(df_cert, "Date_Obtention")
-    # KPI
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric("Prospects Actifs", len(df_c2[df_c2["Type_Contact"]=="Prospect"]))
-    c1.metric("Membres IIBA", len(df_c2[df_c2["Type_Contact"]=="Membre"]))
-    c2.metric(f"Événements {year}", len(df_e2))
-    c2.metric("Participations Totales", len(df_p2))
-    c3.metric("CA Total Réglé", f"{df_pay2[df_pay2['Statut']=='Payé']['Montant'].sum():,.0f}")
-    c3.metric("Paiements en Attente", len(df_pay2[df_pay2['Statut']=='En attente']))
-    c4.metric("Certif. Obtenues", len(df_cert2[df_cert2["Résultat"]=="Réussi"]))
-    score = df_p2["Feedback"].mean() if not df_p2.empty else 0
-    c4.metric("Score Moyen", f"{score:.1f}")
+    st.title("🎯 Dashboard 360 - IIBA Cameroun")
+    
+    # Chargement des données pour les KPI
+    df_contacts = load_data(FILES["contacts"])
+    df_interactions = load_data(FILES["interactions"])
+    df_paiements = load_data(FILES["paiements"])
+    df_certifications = load_data(FILES["certifications"])
+    
+    # --- KPI CARDS ---
+    st.subheader("📊 Indicateurs Clés de Performance")
+    
+    # Calculs des KPI
+    current_year = datetime.now().year
+    prospects_actifs = len(df_contacts[df_contacts['Type_Contact'] == 'Prospect']) if not df_contacts.empty else 0
+    membres_iiba = len(df_contacts[df_contacts['Type_Contact'] == 'Membre']) if not df_contacts.empty else 0
+    ca_total = df_paiements[df_paiements['Statut'] == 'Payé']['Montant'].sum() if not df_paiements.empty else 0
+    paiements_attente = len(df_paiements[df_paiements['Statut'] == 'En attente']) if not df_paiements.empty else 0
+    certifs_obtenues = len(df_certifications[df_certifications['Résultat'] == 'Réussi']) if not df_certifications.empty else 0
+    
+    # Affichage des KPI en colonnes
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("👥 Prospects Actifs", prospects_actifs)
+        st.metric("🏆 Membres IIBA", membres_iiba)
+    
+    with col2:
+        st.metric(f"📅 Événements {current_year}", 0)  # À calculer selon tes données
+        st.metric("🎓 Participations Totales", 0)  # À calculer
+    
+    with col3:
+        st.metric("💰 CA Total Réglé", f"{ca_total:,.0f} FCFA")
+        st.metric("⏳ Paiements en Attente", paiements_attente)
+    
+    with col4:
+        st.metric("🎯 Certifications Obtenues", certifs_obtenues)
+        st.metric("📈 Score Moyen Engagement", "N/A")  # À calculer
+    
+    # --- SECTION RECHERCHE ---
+    st.markdown('<div class="search-box">', unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        search_term = st.text_input("🔍 Rechercher un contact", "", 
+                                   help="Tapez un nom, société, email ou téléphone pour rechercher")
+    with col2:
+        secteur_filter = st.selectbox("Filtrer par secteur", 
+                                     ["Tous"] + settings["secteurs"])
+    with col3:
+        type_filter = st.selectbox("Filtrer par type", 
+                                  ["Tous"] + settings["types_contact"])
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Filtrage et affichage des résultats
+    if not df_contacts.empty:
+        filtered_df = df_contacts.copy()
+        
+        if search_term:
+            mask = (
+                filtered_df['Nom'].str.contains(search_term, case=False, na=False) |
+                filtered_df['Prénom'].str.contains(search_term, case=False, na=False) |
+                filtered_df['Société'].str.contains(search_term, case=False, na=False) |
+                filtered_df['Email'].str.contains(search_term, case=False, na=False)
+            )
+            filtered_df = filtered_df[mask]
+        
+        if secteur_filter != "Tous":
+            filtered_df = filtered_df[filtered_df['Secteur'] == secteur_filter]
+        if type_filter != "Tous":
+            filtered_df = filtered_df[filtered_df['Type_Contact'] == type_filter]
+        
+        st.subheader(f"📋 Liste des contacts ({len(filtered_df)} résultat(s))")
+        
+        if len(filtered_df) > 0:
+            # Sélection d'un contact pour modification
+            selected_contact = st.selectbox("Sélectionner un contact à modifier", 
+                                           [""] + filtered_df['ID'].tolist())
+            
+            if selected_contact:
+                st.session_state.edit_contact_id = selected_contact
+                st.session_state.page_redirect = "Contacts"
+                st.rerun()
+            
+            st.dataframe(
+                filtered_df[['ID', 'Nom', 'Prénom', 'Société', 'Type_Contact', 'Email', 'Téléphone']],
+                use_container_width=True
+            )
+        else:
+            st.info("Aucun contact trouvé avec ces critères.")
+    else:
+        st.info("Aucun contact enregistré. Ajoutez votre premier contact ! 👆")
 
-# --- FORMULAIRES CRÉATION / ÉDITION + CONSULTATION ---
+# --- PAGE 2 : CONTACTS (avec modification) ---
 elif choice == "Contacts":
-    st.title("👤 Contacts")
-    df = load_data(DATA_FILES["contacts"], CONTACT_COLS)
-    select = st.selectbox("Sélectionner un contact", [""]+df["ID"].tolist())
-    mode_edit = bool(select)
-    rec = df[df["ID"]==select].iloc[0] if mode_edit else None
-    with st.form("f"):
-        col1,col2 = st.columns(2)
-        if mode_edit:
-            col1.text_input("ID", rec["ID"], disabled=True)
-        nom=col1.text_input("Nom*", rec["Nom"] if rec else "", help="Nom de famille")
-        prenom=col1.text_input("Prénom*", rec["Prénom"] if rec else "", help="Prénom")
-        genre=col1.selectbox("Genre", ["", "Homme","Femme","Autre"], 
-                            help="Genre du contact", index=(["","Homme","Femme","Autre"].index(rec["Genre"]) if rec else 0))
-        titre=col1.text_input("Titre", rec["Titre"] if rec else "")
-        soc=col1.text_input("Société", rec["Société"] if rec else "")
-        sect=col1.selectbox("Secteur", SETTINGS["secteurs"], index=(SETTINGS["secteurs"].index(rec["Secteur"]) if rec else 0))
-        typec=col2.selectbox("Type*", SETTINGS["types_contact"], index=(SETTINGS["types_contact"].index(rec["Type_Contact"]) if rec else 0))
-        src=col2.selectbox("Source*", SETTINGS["sources"], index=(SETTINGS["sources"].index(rec["Source"]) if rec else 0))
-        stat=col2.selectbox("Statut*", SETTINGS["statuts_engagement"], index=(SETTINGS["statuts_engagement"].index(rec["Statut_Engagement"]) if rec else 0))
-        email=col2.text_input("Email*", rec["Email"] if rec else "")
-        tel =col2.text_input("Téléphone*", rec["Téléphone"] if rec else "")
-        ville=col2.text_input("Ville", rec["Ville"] if rec else "")
-        pays=col2.selectbox("Pays", SETTINGS["pays"], index=(SETTINGS["pays"].index(rec["Pays"]) if rec else 0))
-        linkedin=col2.text_input("LinkedIn", rec["LinkedIn"] if rec else "")
-        notes=st.text_area("Notes", rec["Notes"] if rec else "")
-        dat=col2.text_input("Date Création", rec["Date_Creation"] if rec else datetime.now().strftime("%Y-%m-%d"))
-        sub=st.form_submit_button("Mettre à jour" if mode_edit else "Créer")
-        if sub:
-            if mode_edit:
-                idx=df[df["ID"]==select].index[0]
-                df.loc[idx]=[select,nom,prenom,genre,titre,soc,sect,email,tel,ville,pays,typec,src,stat,linkedin,notes,dat]
+    st.title("👤 Gestion des Contacts")
+    
+    df_contacts = load_data(FILES["contacts"])
+    
+    # Mode modification si un contact est sélectionné
+    edit_mode = False
+    edit_contact = None
+    
+    if hasattr(st.session_state, 'edit_contact_id') and st.session_state.edit_contact_id:
+        edit_mode = True
+        edit_contact = df_contacts[df_contacts['ID'] == st.session_state.edit_contact_id].iloc[0]
+        st.info(f"✏️ Modification du contact {edit_contact['ID']} - {edit_contact['Nom']} {edit_contact['Prénom']}")
+    
+    with st.form("form_contacts"):
+        if edit_mode:
+            st.subheader("✏️ Modifier le contact")
+        else:
+            st.subheader("➕ Ajouter un nouveau contact")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Champ ID en readonly si mode modification
+            if edit_mode:
+                st.text_input("ID Contact", value=edit_contact['ID'], disabled=True,
+                             help="Identifiant unique du contact (non modifiable)")
+            
+            nom = st.text_input("Nom*", 
+                               value=edit_contact['Nom'] if edit_mode else "",
+                               help="Nom de famille du contact")
+            
+            prenom = st.text_input("Prénom*", 
+                                  value=edit_contact['Prénom'] if edit_mode else "",
+                                  help="Prénom du contact")
+            
+            genre = st.selectbox("Genre", ["", "Homme", "Femme", "Autre"],
+                               index=["", "Homme", "Femme", "Autre"].index(edit_contact['Genre']) if edit_mode and edit_contact['Genre'] in ["", "Homme", "Femme", "Autre"] else 0,
+                               help="Genre du contact")
+            
+            titre = st.text_input("Titre/Position", 
+                                 value=edit_contact['Titre'] if edit_mode else "",
+                                 help="Fonction ou titre professionnel")
+            
+            societe = st.text_input("Société", 
+                                   value=edit_contact['Société'] if edit_mode else "",
+                                   help="Nom de l'entreprise où travaille le contact")
+            
+            secteur = st.selectbox("Secteur d'activité", 
+                                  [""] + settings["secteurs"],
+                                  index=([""] + settings["secteurs"]).index(edit_contact['Secteur']) if edit_mode and edit_contact['Secteur'] in settings["secteurs"] else 0,
+                                  help="Domaine d'activité de l'entreprise")
+            
+            type_contact = st.selectbox("Type de Contact*", 
+                                       [""] + settings["types_contact"],
+                                       index=([""] + settings["types_contact"]).index(edit_contact['Type_Contact']) if edit_mode and edit_contact['Type_Contact'] in settings["types_contact"] else 0,
+                                       help="Catégorie du contact : Membre, Prospect, Formateur ou Partenaire")
+        
+        with col2:
+            email = st.text_input("Email*", 
+                                 value=edit_contact['Email'] if edit_mode else "",
+                                 help="Adresse email principale du contact")
+            
+            telephone = st.text_input("Téléphone*", 
+                                     value=edit_contact['Téléphone'] if edit_mode else "",
+                                     help="Numéro de téléphone (format: +237XXXXXXXXX)")
+            
+            ville = st.text_input("Ville", 
+                                 value=edit_contact['Ville'] if edit_mode else "",
+                                 help="Ville de résidence ou de travail")
+            
+            pays = st.selectbox("Pays", 
+                               [""] + settings["pays"],
+                               index=([""] + settings["pays"]).index(edit_contact['Pays']) if edit_mode and edit_contact['Pays'] in settings["pays"] else 0,
+                               help="Pays de résidence")
+            
+            source = st.selectbox("Source*", 
+                                 [""] + settings["sources"],
+                                 index=([""] + settings["sources"]).index(edit_contact['Source']) if edit_mode and edit_contact['Source'] in settings["sources"] else 0,
+                                 help="Comment avez-vous connu ce contact ?")
+            
+            statut = st.selectbox("Statut Engagement*", 
+                                 [""] + settings["statuts_engagement"],
+                                 index=([""] + settings["statuts_engagement"]).index(edit_contact['Statut_Engagement']) if edit_mode and edit_contact['Statut_Engagement'] in settings["statuts_engagement"] else 0,
+                                 help="Niveau d'engagement actuel du contact")
+            
+            linkedin = st.text_input("LinkedIn", 
+                                    value=edit_contact['LinkedIn'] if edit_mode else "",
+                                    help="URL du profil LinkedIn (optionnel)")
+            
+            # Date de création - modifiable seulement en mode modification pour migration
+            if edit_mode:
+                date_creation = st.text_input("Date de Création", 
+                                            value=edit_contact['Date_Creation'],
+                                            help="Date de création (modifiable pour migration de données)")
             else:
-                new=dict(ID=generate_id("CNT", df,"ID"),Nom=nom,Prénom=prenom,Genre=genre,Titre=titre,
-                         Société=soc,Secteur=sect,Email=email,Téléphone=tel,Ville=ville,Pays=pays,
-                         Type_Contact=typec,Source=src,Statut_Engagement=stat,LinkedIn=linkedin,
-                         Notes=notes,Date_Creation=dat)
-                df=pd.concat([df,pd.DataFrame([new])],ignore_index=True)
-            save_data(df, DATA_FILES["contacts"])
-            st.success("Enregistré ✅")
+                date_creation = datetime.now().strftime("%d/%m/%Y %H:%M")
+        
+        notes = st.text_area("Notes", 
+                           value=edit_contact['Notes'] if edit_mode else "",
+                           help="Informations complémentaires, observations, historique...")
+        
+        submitted = st.form_submit_button("✅ Mettre à jour Contact" if edit_mode else "✅ Enregistrer Contact")
+        
+        if submitted:
+            # Validation
+            if not nom or not prenom or not email or not telephone or not type_contact or not source or not statut:
+                st.error("❌ Veuillez remplir tous les champs obligatoires (*)")
+            else:
+                if edit_mode:
+                    # Mise à jour du contact existant
+                    idx = df_contacts[df_contacts['ID'] == st.session_state.edit_contact_id].index[0]
+                    df_contacts.loc[idx] = [
+                        st.session_state.edit_contact_id, nom, prenom, genre, titre, societe, secteur,
+                        email, telephone, ville, pays, type_contact, source, statut, linkedin, notes, date_creation
+                    ]
+                    save_data(df_contacts, FILES["contacts"])
+                    st.success(f"✅ Contact {st.session_state.edit_contact_id} mis à jour !")
+                    # Reset du mode modification
+                    del st.session_state.edit_contact_id
+                    st.rerun()
+                else:
+                    # Création d'un nouveau contact
+                    new_id = generate_id("CNT", df_contacts)
+                    new_contact = {
+                        'ID': new_id, 'Nom': nom, 'Prénom': prenom, 'Genre': genre, 'Titre': titre,
+                        'Société': societe, 'Secteur': secteur, 'Email': email, 'Téléphone': telephone,
+                        'Ville': ville, 'Pays': pays, 'Type_Contact': type_contact, 'Source': source,
+                        'Statut_Engagement': statut, 'LinkedIn': linkedin, 'Notes': notes, 'Date_Creation': date_creation
+                    }
+                    df_contacts = pd.concat([df_contacts, pd.DataFrame([new_contact])], ignore_index=True)
+                    save_data(df_contacts, FILES["contacts"])
+                    st.success(f"✅ Contact '{nom} {prenom}' enregistré avec l'ID {new_id} !")
+                    st.balloons()
+    
+    # Bouton d'annulation en mode modification
+    if edit_mode:
+        if st.button("❌ Annuler la modification"):
+            del st.session_state.edit_contact_id
+            st.rerun()
 
+# --- PAGE 3 : INTERACTIONS (améliorée) ---
 elif choice == "Interactions":
-    st.title("💬 Interactions")
-    df_int=load_data(DATA_FILES["interactions"], INT_COLS)
-    df_c=load_data(DATA_FILES["contacts"], CONTACT_COLS)
-    opts=[""]+[f"{r.ID} - {r.Nom} {r.Prénom}" for _,r in df_c.iterrows()]
-    with st.form("fi"):
-        sel=st.selectbox("Contact",opts)
-        date_i=st.date_input("Date",date.today())
-        canal=st.selectbox("Canal",SETTINGS["canaux"])
-        obj=st.text_input("Titre*")
-        resu=st.text_area("Résumé*")
-        resultat=st.selectbox("Résultat",["Positif","Négatif","Neutre","À relancer"])
-        resp=st.text_input("Responsable*")
-        pa=st.text_area("Prochaine action")
-        rel=st.date_input("Relance (opt.)",value=None)
-        sub=st.form_submit_button("Enregistrer")
-        if sub:
-            if not sel or not obj or not resu or not resp: st.error("Champs obligatoires*")
+    st.title("💬 Gestion des Interactions")
+    
+    df_interactions = load_data(FILES["interactions"])
+    df_contacts = load_data(FILES["contacts"])
+    
+    contact_options = [""] + [f"{row['ID']} - {row['Nom']} {row['Prénom']}" for _, row in df_contacts.iterrows()] if not df_contacts.empty else [""]
+    
+    with st.form("form_interactions"):
+        st.subheader("➕ Ajouter une nouvelle interaction")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            contact_choice = st.selectbox("Contact*", contact_options,
+                                        help="Sélectionnez le contact concerné par cette interaction")
+            
+            date_interaction = st.date_input("Date de l'interaction*", datetime.now(),
+                                           help="Date à laquelle l'interaction a eu lieu")
+            
+            canal = st.selectbox("Canal de communication*", [""] + settings["canaux"],
+                               help="Moyen utilisé pour cette interaction")
+            
+            objet = st.text_input("Titre de l'interaction*",
+                                help="Titre ou objet principal de l'interaction")
+        
+        with col2:
+            resume = st.text_area("Résumé de l'interaction*",
+                                help="Description détaillée de ce qui s'est dit/fait")
+            
+            resultat = st.selectbox("Résultat", ["", "Positif", "Négatif", "Neutre", "À relancer"],
+                                  help="Évaluation du résultat de cette interaction")
+            
+            responsable = st.text_input("Responsable IIBA*",
+                                      help="Membre IIBA qui a mené cette interaction")
+            
+            prochaine_action = st.text_area("Prochaine action prévue",
+                                          help="Actions à entreprendre suite à cette interaction")
+            
+            relance = st.date_input("Date de relance (optionnelle)", value=None,
+                                  help="Date à laquelle relancer ce contact")
+        
+        submitted = st.form_submit_button("✅ Enregistrer Interaction")
+        
+        if submitted:
+            if not contact_choice or not objet or not resume or not responsable or not canal:
+                st.error("❌ Veuillez remplir tous les champs obligatoires (*)")
             else:
-                idc=sel.split(" - ")[0]
-                new={"ID_Interaction":generate_id("INT",df_int,"ID_Interaction"), 
-                     "ID_Contact":idc,"Date":date_i.isoformat(),"Canal":canal,
-                     "Objet":obj,"Résumé":resu,"Résultat":resultat,
-                     "Responsable":resp,"Prochaine_Action":pa,
-                     "Relance":rel.isoformat() if rel else ""}
-                df_int=pd.concat([df_int,pd.DataFrame([new])],ignore_index=True)
-                save_data(df_int, DATA_FILES["interactions"])
-                st.success("Interaction créée✅")
+                id_contact = contact_choice.split(" - ")[0]
+                new_id = generate_id("INT", df_interactions)
+                
+                new_interaction = {
+                    'ID_Interaction': new_id, 'ID_Contact': id_contact,
+                    'Date': date_interaction.strftime("%d/%m/%Y"), 'Canal': canal,
+                    'Objet': objet, 'Résumé': resume, 'Résultat': resultat,
+                    'Responsable': responsable, 'Prochaine_Action': prochaine_action,
+                    'Relance': relance.strftime("%d/%m/%Y") if relance else ""
+                }
+                
+                df_interactions = pd.concat([df_interactions, pd.DataFrame([new_interaction])], ignore_index=True)
+                save_data(df_interactions, FILES["interactions"])
+                st.success(f"✅ Interaction {new_id} enregistrée !")
 
-elif choice=="Événements":
-    st.title("📅 Événements")
-    df_e=load_data(DATA_FILES["evenements"], EVT_COLS)
-    with st.form("fe"):
-        nom=st.text_input("Nom*")
-        typ=st.selectbox("Type",SETTINGS["types_evenements"])
-        dt=st.date_input("Date",date.today())
-        duree=st.number_input("Durée (h)",min_value=0.0,step=0.5)
-        lieu=st.text_input("Lieu")
-        form=st.text_area("Formateur(s)")
-        inv=st.text_area("Invité(s)")
-        obj=st.text_area("Objectif")
-        per=st.selectbox("Période",["Matinée","Après-midi","Journée"])
-        notes=st.text_area("Notes")
-        sub=st.form_submit_button("Enregistrer")
-        if sub:
-            new={"ID_Événement":generate_id("EVT",df_e,"ID_Événement"),"Nom_Événement":nom,
-                 "Type":typ,"Date":dt.isoformat(),"Durée_h":duree,"Lieu":lieu,
-                 "Formateur(s)":form,"Invité(s)":inv,"Objectif":obj,"Période":per,"Notes":notes}
-            df_e=pd.concat([df_e,pd.DataFrame([new])],ignore_index=True)
-            save_data(df_e, DATA_FILES["evenements"])
-            st.success("Événement créé✅")
+# --- PAGE PARAMÈTRES ---
+elif choice == "Paramètres":
+    st.title("⚙️ Configuration des Paramètres")
+    st.write("Gérez ici les listes de valeurs utilisées dans les formulaires.")
+    
+    settings = load_settings()
+    
+    # Interface pour modifier les paramètres
+    tab1, tab2, tab3, tab4 = st.tabs(["Types & Statuts", "Secteurs & Pays", "Communication", "Événements"])
+    
+    with tab1:
+        st.subheader("Types de Contact")
+        types_contact = st.text_area("Types de Contact (un par ligne)", 
+                                    value="\n".join(settings["types_contact"]))
+        
+        st.subheader("Sources")
+        sources = st.text_area("Sources (un par ligne)", 
+                              value="\n".join(settings["sources"]))
+        
+        st.subheader("Statuts d'Engagement")
+        statuts = st.text_area("Statuts d'Engagement (un par ligne)", 
+                              value="\n".join(settings["statuts_engagement"]))
+    
+    with tab2:
+        st.subheader("Secteurs d'Activité")
+        secteurs = st.text_area("Secteurs (un par ligne)", 
+                               value="\n".join(settings["secteurs"]))
+        
+        st.subheader("Pays")
+        pays = st.text_area("Pays (un par ligne)", 
+                           value="\n".join(settings["pays"]))
+    
+    with tab3:
+        st.subheader("Canaux de Communication")
+        canaux = st.text_area("Canaux (un par ligne)", 
+                             value="\n".join(settings["canaux"]))
+    
+    with tab4:
+        st.subheader("Types d'Événements")
+        types_events = st.text_area("Types d'Événements (un par ligne)", 
+                                   value="\n".join(settings["types_evenements"]))
+        
+        st.subheader("Moyens de Paiement")
+        moyens_paiement = st.text_area("Moyens de Paiement (un par ligne)", 
+                                      value="\n".join(settings["moyens_paiement"]))
+    
+    if st.button("💾 Sauvegarder les Paramètres"):
+        new_settings = {
+            "types_contact": [x.strip() for x in types_contact.split('\n') if x.strip()],
+            "sources": [x.strip() for x in sources.split('\n') if x.strip()],
+            "statuts_engagement": [x.strip() for x in statuts.split('\n') if x.strip()],
+            "secteurs": [x.strip() for x in secteurs.split('\n') if x.strip()],
+            "pays": [x.strip() for x in pays.split('\n') if x.strip()],
+            "canaux": [x.strip() for x in canaux.split('\n') if x.strip()],
+            "types_evenements": [x.strip() for x in types_events.split('\n') if x.strip()],
+            "moyens_paiement": [x.strip() for x in moyens_paiement.split('\n') if x.strip()]
+        }
+        save_settings(new_settings)
+        st.success("✅ Paramètres sauvegardés !")
+        st.rerun()
 
-elif choice=="Participations":
-    st.title("🙋 Participations")
-    df_p=load_data(DATA_FILES["participations"], PART_COLS)
-    df_c=load_data(DATA_FILES["contacts"], CONTACT_COLS)
-    df_e=load_data(DATA_FILES["evenements"], EVT_COLS)
-    opts_c=[""]+[r.ID for _,r in df_c.iterrows()]
-    opts_e=[""]+[r["ID_Événement"] for _,r in df_e.iterrows()]
-    with st.form("fp"):
-        idc=st.selectbox("ID Contact",opts_c)
-        ide=st.selectbox("ID Événement",opts_e)
-        role=st.selectbox("Rôle",["Participant","Organisateur","Formateur","Invité"])
-        insc=st.date_input("Inscription",date.today())
-        arr=st.text_input("Arrivée (hh:mm)")
-        feedback=st.slider("Feedback",1,5,3)
-        note=st.number_input("Note",min_value=0,max_value=20)
-        comm=st.text_area("Commentaire")
-        sub=st.form_submit_button("Enregistrer")
-        if sub:
-            tp="AUTO"  # calcul si durée+horaire dispo
-            new={"ID_Participation":generate_id("PAR",df_p,"ID_Participation"),"ID_Contact":idc,
-                 "ID_Événement":ide,"Rôle":role,"Inscription":insc.isoformat(),"Arrivée":arr,
-                 "Temps_Présent":tp,"Feedback":feedback,"Note":note,"Commentaire":comm,
-                 "Nom Participant":"","Nom Événement":""}
-            df_p=pd.concat([df_p,pd.DataFrame([new])],ignore_index=True)
-            save_data(df_p, DATA_FILES["participations"])
-            st.success("Participation créée✅")
+# --- SIDEBAR STATISTIQUES ENRICHIES ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("📊 Statistiques Rapides")
 
-elif choice=="Paiements":
-    st.title("💳 Paiements")
-    df_pay=load_data(DATA_FILES["paiements"], PAY_COLS)
-    with st.form("fpay"):
-        idc=st.text_input("ID Contact")
-        ide=st.text_input("ID Événement")
-        dp=st.date_input("Date Paiement",date.today())
-        mont=st.number_input("Montant",min_value=0.0,step=100.0)
-        moy=st.selectbox("Moyen",SETTINGS["moyens_paiement"])
-        stat=st.selectbox("Statut",["En attente","Payé","Remboursé","Annulé"])
-        ref=st.text_input("Référence")
-        notes=st.text_area("Notes")
-        rel=st.date_input("Relance (opt.)",value=None)
-        sub=st.form_submit_button("Enregistrer")
-        if sub:
-            new={"ID_Paiement":generate_id("PAY",df_pay,"ID_Paiement"),"ID_Contact":idc,
-                 "ID_Événement":ide,"Date_Paiement":dp.isoformat(),"Montant":mont,
-                 "Moyen":moy,"Statut":stat,"Référence":ref,"Notes":notes,
-                 "Relance":rel.isoformat() if rel else "","Nom Contact":"","Nom Événement":""}
-            df_pay=pd.concat([df_pay,pd.DataFrame([new])],ignore_index=True)
-            save_data(df_pay, DATA_FILES["paiements"])
-            st.success("Paiement créé✅")
+df_contacts = load_data(FILES["contacts"])
+df_interactions = load_data(FILES["interactions"])
+df_paiements = load_data(FILES["paiements"])
 
-elif choice=="Certifications":
-    st.title("📜 Certifications")
-    df_cert=load_data(DATA_FILES["certifications"], CERT_COLS)
-    with st.form("fcert"):
-        idc=st.text_input("ID Contact")
-        tcert=st.selectbox("Type Certif",SETTINGS["types_contact"])
-        dex=st.date_input("Date Examen",date.today())
-        res=st.selectbox("Résultat",["Réussi","Échoué","En attente"])
-        score=st.number_input("Score",min_value=0,step=1)
-        dob=st.date_input("Date Obtention",date.today())
-        valid=f"Calc"  # placeholder validité
-        ren=f"Calc"   # placeholder renouvellement
-        comm=st.text_area("Notes")
-        sub=st.form_submit_button("Enregistrer")
-        if sub:
-            new={"ID_Certif":generate_id("CER",df_cert,"ID_Certif"),"ID_Contact":idc,
-                 "Type_Certif":tcert,"Date_Examen":dex.isoformat(),"Résultat":res,"Score":score,
-                 "Date_Obtention":dob.isoformat(),"Validité":valid,"Renouvellement":ren,
-                 "Notes":comm,"Nom Contact":""}
-            df_cert=pd.concat([df_cert,pd.DataFrame([new])],ignore_index=True)
-            save_data(df_cert, DATA_FILES["certifications"])
-            st.success("Certification créée✅")
+st.sidebar.metric("👥 Total Contacts", len(df_contacts))
+st.sidebar.metric("💬 Total Interactions", len(df_interactions))
+if not df_contacts.empty:
+    prospects = len(df_contacts[df_contacts['Type_Contact'] == 'Prospect'])
+    st.sidebar.metric("🎯 Prospects", prospects)
+if not df_paiements.empty:
+    ca_sidebar = df_paiements[df_paiements['Statut'] == 'Payé']['Montant'].sum()
+    st.sidebar.metric("💰 CA Réglé", f"{ca_sidebar:,.0f}")
 
-# --- PARAMÈTRES DROPDOWNS ---
-elif choice=="Paramètres":
-    st.title("⚙️ Paramètres")
-    s=load_settings()
-    t1,t2,t3,t4=st.tabs(["Contacts","Localisation","Communication","Événements/Paiement"])
-    with t1:
-        ts=st.text_area("Types Contact","\n".join(s["types_contact"]))
-        so=st.text_area("Sources","\n".join(s["sources"]))
-        stts=st.text_area("Statuts Engagement","\n".join(s["statuts_engagement"]))
-    with t2:
-        sec=st.text_area("Secteurs","\n".join(s["secteurs"]))
-        pays=st.text_area("Pays","\n".join(s["pays"]))
-    with t3:
-        can=st.text_area("Canaux","\n".join(s["canaux"]))
-    with t4:
-        ev=st.text_area("Types Événements","\n".join(s["types_evenements"]))
-        mp=st.text_area("Moyens Paiement","\n".join(s["moyens_paiement"]))
-    if st.button("Sauvegarder Paramètres"):
-        save_settings({
-            "types_contact":ts.split("\n"),"sources":so.split("\n"),"statuts_engagement":stts.split("\n"),
-            "secteurs":sec.split("\n"),"pays":pays.split("\n"),"canaux":can.split("\n"),
-            "types_evenements":ev.split("\n"),"moyens_paiement":mp.split("\n")
-        })
-        st.success("Paramètres mis à jour✅")
+st.sidebar.markdown("---")
+st.sidebar.info("💡 **Aide** : Survolez les champs avec (?) pour voir les descriptions détaillées")
+
+# Redirection depuis Dashboard si nécessaire
+if hasattr(st.session_state, 'page_redirect'):
+    del st.session_state.page_redirect
+
