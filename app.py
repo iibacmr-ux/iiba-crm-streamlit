@@ -203,7 +203,7 @@ elif page == "Interactions":
         canal = st.selectbox("Canal", SET["canaux"])
         objet = st.text_input("Objet", "")
         resume = st.text_area("Résumé", "")
-        resultat = st.selectbox("Résultat", SET["resultats_inter"])
+        resultat = st.selectbox("Résultat", SET.get("resultats_inter", ["Positif"])[0])
         responsable = st.text_input("Responsable", "")
         pa = st.text_area("Prochaine_Action", "")
         rel = st.date_input("Relance (opt.)", value=None)
