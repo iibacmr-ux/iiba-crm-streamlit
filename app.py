@@ -6,6 +6,24 @@ from st_aggrid import AgGrid, GridOptionsBuilder
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="IIBA Cameroun CRM", page_icon="📊", layout="wide")
+
+# Ajout du style personnalisé CSS pour améliorer l’apparence des textareas et expander
+st.markdown("""
+<style>
+textarea {
+    background-color: #f7f9fa !important;
+    border-radius: 7px !important;
+    margin-bottom: 12px;
+}
+div[data-testid="stExpander"] {
+    background-color: #fffbea !important;
+    border-radius: 7px;
+    padding: 10px;
+    margin-bottom: 15px;
+}
+</style>
+""", unsafe_allow_html=True)
+
 DATA = {
     "contacts":"contacts.csv","interactions":"interactions.csv",
     "evenements":"evenements.csv","participations":"participations.csv",
