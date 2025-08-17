@@ -66,7 +66,7 @@ C_COLS = {
     "ID":lambda: None,"Nom":"","Prénom":"","Genre":"","Titre":"",
     "Société":"","Secteur":SET["secteurs"][0],"Email":"","Téléphone":"",
     "Ville":"","Pays":SET["pays"][0],"Type":SET["types_contact"][0],
-    "Source":SET["sources"][0],"Statut":SET["statuts_paiement"][0],
+    "Source":SET["sources"][0],"Statut":SET.get("statuts_paiement", ["Réglé"]),
     "LinkedIn":"","Notes":"","Date_Creation":lambda: date.today().isoformat()
 }
 I_COLS = {
