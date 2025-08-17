@@ -294,7 +294,7 @@ elif page == "Paiements":
         dp = st.date_input("Date Paiement", date.today())
         mont = st.number_input("Montant", min_value=0.0, step=100.0)
         moy = st.selectbox("Moyen", SET["moyens_paiement"])
-        stat = st.selectbox("Statut", SET["statuts_paiement"])
+        stat = st.selectbox("Statut", SET.get("statuts_paiement", ["Réglé"]))
         ref = st.text_input("Référence", "")
         notes = st.text_area("Notes", "")
         rel = st.date_input("Relance (opt.)", value=None)
