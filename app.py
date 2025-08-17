@@ -39,8 +39,9 @@ def save_settings(s):
 
 SET = load_settings()
 # --- pour debugger : Tu verras instantanément quelles clés sont présentes
-st.write("Vérifiez vos paramètres:")
-st.json(SET)
+# ---st.write("Vérifiez vos paramètres:")
+# ---st.json(SET)
+st.write("Clés présentes dans settings : ", list(SET.keys()))
 
 # --- FONCTIONS DONNÉES ---
 def generate_id(prefix, df, col):
@@ -72,7 +73,7 @@ C_COLS = {
 I_COLS = {
     "ID_Interaction":lambda: None,"ID":"","Date":date.today().isoformat(),
     "Canal":SET["canaux"][0],"Objet":"","Résumé":"",
-    "Résultat":SET["resultats_inter"][0],"Responsable":"",
+    "Résultat":SET.get("resultats_inter", ["Positif"])[0][0],"Responsable":"",
     "Prochaine_Action":"","Relance":""
 }
 E_COLS = {
