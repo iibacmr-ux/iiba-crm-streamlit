@@ -122,7 +122,12 @@ if page == "Dashboard 360":
     mn=col2.selectbox("Mois",mths,index=0)
     def fil(df,col):
         return df[(df[col].str[:4]==yr)&((mn=="Tous")|(df[col].str[5:7]==mn))]
-    dfc2,dfp2,dfpay2,dfcert2=dfl1,fil(dfp,"Inscription"),fil(dfpay,"Date_Paiement"),fil(dfcert,"Date_Obtention")
+    # Filtres pour dashboard KPI
+    dfc2 = fil(dfc, "Date_Creation")
+    dfp2 = fil(dfp, "Inscription")
+    dfpay2 = fil(dfpay, "Date_Paiement")
+    dfcert2 = fil(dfcert, "Date_Obtention")
+    
     # KPI
     c1,c2,c3,c4=st.columns(4)
     c1.metric("Prospects Actifs",len(dfc2[dfc2["Type"]=="Prospect"]))
@@ -349,7 +354,10 @@ elif page == "Paramètres":
     t1, t2 = st.tabs(["Référentiels","Général"])
     with t1:
         for key in DEFAULT:
-            val = "\n".join(s[key])
+            current_list = s.get(key, DEFAULT[key])   # Sécurité : prend les valeurs existantes ou défaut
+            if not isinstance(current_list, list):
+                current_list = [str(current_list)]    # Si Single string, transforme en liste
+            val = "\n".join(current_list)
             s[key] = st.text_area(key, val).split("\n")
     if st.button("Sauvegarder Paramètres"):
         save_settings(s)
