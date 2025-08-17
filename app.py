@@ -90,7 +90,7 @@ P_COLS = {
 PAY_COLS = {
     "ID_Paiement":lambda: None,"ID":"","ID_Événement":"",
     "Date_Paiement":date.today().isoformat(),"Montant":0.0,
-    "Moyen":SET["moyens_paiement"][0],"Statut":SET["statuts_paiement"][0],
+    "Moyen":SET.get("statuts_paiement", ["Réglé"]),"Statut":SET["statuts_paiement"][0],
     "Référence":"","Notes":"","Relance":"","Nom Contact":"","Nom Événement":""
 }
 CERT_COLS = {
