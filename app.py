@@ -74,6 +74,14 @@ SET = load_settings()
 # ---st.write("Vérifiez vos paramètres:")
 # ---st.json(SET)
 # ---st.write("Clés présentes dans settings : ", list(SET.keys()))
+# Après SET=load_settings()
+for key in ["statuts_paiement", "resultats_inter", "types_contact", "sources", "statuts_engagement",
+            "secteurs", "pays", "canaux", "types_evenements", "moyens_paiement", "types_certif"]:
+    if key not in SET:
+        # Insérer la valeur par défaut
+        default_val = DEFAULT.get(key, ["ECBA","CCBA","CBAP"] if key=="types_certif" else ["None"])
+        SET[key] = default_val if isinstance(default_val, list) else [default_val]
+
 
 # --- FONCTIONS DONNÉES ---
 # --- UTILITAIRES DATA ---
