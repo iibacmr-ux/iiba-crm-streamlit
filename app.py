@@ -1,34 +1,38 @@
 import streamlit as st
 import pandas as pd
 import os, json
-from datetime import datetime, date
+from datetime import date, datetime, timedelta
+import altair as alt
 from st_aggrid import AgGrid, GridOptionsBuilder
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="IIBA Cameroun CRM", page_icon="📊", layout="wide")
 
-# Ajout du style personnalisé CSS pour améliorer l’apparence des textareas et expander
+# CSS pour UI moderne
 st.markdown("""
 <style>
-textarea {
-    background-color: #f7f9fa !important;
-    border-radius: 7px !important;
-    margin-bottom: 12px;
-}
-div[data-testid="stExpander"] {
-    background-color: #fffbea !important;
-    border-radius: 7px;
-    padding: 10px;
-    margin-bottom: 15px;
-}
+textarea {background:#f7f9fa;border-radius:7px;margin-bottom:12px;}
+div[data-testid="stExpander"]{background:#fffbea;border-radius:7px;padding:10px;margin-bottom:15px;}
+.kpi-card{background:#e0f7fa;border-radius:7px;padding:15px;text-align:center;margin:5px;}
+.header-logo {display:flex; align-items:center;}
+.header-logo img{height:40px; margin-right:10px;}
 </style>
 """, unsafe_allow_html=True)
 
+# --- AUTHENTIFICATION BASIQUE ---
+PASSWORD = st.secrets.get("APP_PASSWORD", "")
+if PASSWORD:
+    pwd = st.sidebar.text_input("🔒 Mot de passe", type="password")
+    if pwd != PASSWORD:
+        st.error("Mot de passe incorrect")
+        st.stop()
+
+# --- FICHIERS & RÉFÉRENTIELS ---
 DATA = {
     "contacts":"contacts.csv","interactions":"interactions.csv",
     "evenements":"evenements.csv","participations":"participations.csv",
     "paiements":"paiements.csv","certifications":"certifications.csv",
-    "settings":"settings.json"
+    "settings":"settings.json","audit":"audit.log"
 }
 DEFAULT = {
     "statuts_paiement":["Réglé","Partiel","Non payé"],
@@ -36,375 +40,220 @@ DEFAULT = {
     "types_contact":["Membre","Prospect","Formateur","Partenaire"],
     "sources":["Afterwork","Formation","LinkedIn","Recommandation","Site Web","Salon","Autre"],
     "statuts_engagement":["Actif","Inactif","À relancer"],
-    "secteurs":["IT","Finance","Éducation","Santé","Consulting","Autre","Côte d’Ivoire","Sénégal"],
-    "pays":["Cameroun","France","Canada","Belgique","Autre"],
+    "secteurs":["IT","Finance","Éducation","Santé","Consulting","Autre"],
+    "pays":["Cameroun","France","Canada","Belgique","Autre","Côte d’Ivoire","Sénégal"],
     "canaux":["Email","Téléphone","WhatsApp","LinkedIn","Réunion","Autre"],
     "types_evenements":["Atelier","Conférence","Formation","Webinaire","Afterwork","BA MEET UP","Groupe d’étude"],
-    "moyens_paiement":["Chèque","Espèces","Virement","CB","Mobile Money","Autre"]
+    "moyens_paiement":["Chèque","Espèces","Virement","CB","Mobile Money","Autre"],
+    "types_certif":["ECBA","CCBA","CBAP"],
+    "entreprises_cibles":["Dangote","MUPECI","SALAM","Orange","MTN","Société Générale","Ecobank","UBA","BGFI","CCA"]
 }
 
-# --- PARAMÈTRES ---
-@st.cache_data
+# --- LOAD / SAVE SETTINGS & AUDIT ---
 def load_settings():
     if os.path.exists(DATA["settings"]):
-        return json.load(open(DATA["settings"], encoding="utf-8"))
-    json.dump(DEFAULT, open(DATA["settings"], "w", encoding="utf-8"), indent=2)
+        return json.load(open(DATA["settings"],encoding="utf-8"))
+    json.dump(DEFAULT,open(DATA["settings"],"w",encoding="utf-8"),indent=2)
     return DEFAULT
 
 def save_settings(s):
-    json.dump(s, open(DATA["settings"], "w", encoding="utf-8"), indent=2)
-    st.cache_data.clear()
+    json.dump(s,open(DATA["settings"],"w",encoding="utf-8"),indent=2)
+    log_action("Mise à jour paramètres")
+
+def log_action(msg):
+    with open(DATA["audit"],"a") as f:
+        f.write(f"{datetime.now().isoformat()} - {msg}\n")
 
 SET = load_settings()
-# --- pour debugger : Tu verras instantanément quelles clés sont présentes
-# ---st.write("Vérifiez vos paramètres:")
-# ---st.json(SET)
-# ---st.write("Clés présentes dans settings : ", list(SET.keys()))
 
-# --- FONCTIONS DONNÉES ---
-def generate_id(prefix, df, col):
-    nums = [int(x.split("_")[1]) for x in df[col] if isinstance(x, str)]
-    n = max(nums) if nums else 0
-    return f"{prefix}_{n+1:03d}"
+# --- UTILITAIRES DATA ---
+def generate_id(pref, df, col):
+    nums = [int(x.split("_")[1]) for x in df[col] if isinstance(x,str)]
+    return f"{pref}_{(max(nums) if nums else 0)+1:03d}"
 
-def load_df(file, cols):
-    if os.path.exists(file):
-        df = pd.read_csv(file, encoding="utf-8")
-    else:
-        df = pd.DataFrame(columns=cols)
-    for c, v in cols.items():
+def load_df(file, schema):
+    df = pd.read_csv(file,encoding="utf-8") if os.path.exists(file) else pd.DataFrame(columns=schema)
+    for c,default in schema.items():
         if c not in df.columns:
-            df[c] = v() if callable(v) else v
-    return df[list(cols.keys())]
+            df[c] = default() if callable(default) else default
+    return df[list(schema.keys())]
 
-def save_df(df, file):
-    df.to_csv(file, index=False, encoding="utf-8")
+def save_df(df,file):
+    df.to_csv(file,index=False,encoding="utf-8")
 
-# --- SCHÉMAS ---
-C_COLS = {
-    "ID":lambda: None,"Nom":"","Prénom":"","Genre":"","Titre":"",
-    "Société":"","Secteur":SET["secteurs"][0],"Email":"","Téléphone":"",
-    "Ville":"","Pays":SET["pays"][0],"Type":SET["types_contact"][0],
-    "Source":SET["sources"][0],"Statut":SET.get("statuts_paiement", ["Réglé"]),
-    "LinkedIn":"","Notes":"","Date_Creation":lambda: date.today().isoformat()
+# --- SCHÉMAS ENTITÉS ---
+C_SCHEMA = {
+    "ID":lambda:None,"Nom":"","Prénom":"","Genre":"","Titre":"",
+    "Société":"","Top20":False,"Secteur":SET["secteurs"][0],"Email":"","Téléphone":"",
+    "Ville":"","Pays":SET["pays"],"Type":SET["types_contact"],
+    "Source":SET["sources"],"Statut":SET["statuts_engagement"],
+    "LinkedIn":"","Notes":"", "Score":0,"Certifié":False,
+    "Date_Creation":lambda:date.today().isoformat()
 }
-I_COLS = {
-    "ID_Interaction":lambda: None,"ID":"","Date":date.today().isoformat(),
+I_SCHEMA = {
+    "ID_Interaction":lambda:None,"ID":"","Date":date.today().isoformat(),
     "Canal":SET["canaux"][0],"Objet":"","Résumé":"",
-    "Résultat":SET.get("resultats_inter", ["Positif"])[0][0],"Responsable":"",
+    "Résultat":SET["resultats_inter"],"Responsable":"",
     "Prochaine_Action":"","Relance":""
 }
-E_COLS = {
-    "ID_Événement":lambda: None,"Nom_Événement":"","Type":SET["types_evenements"][0],
-    "Date":date.today().isoformat(),"Durée_h":0,"Lieu":"",
-    "Formateur(s)":"","Invité(s)":"","Objectif":"","Période":"Matinée","Notes":""
+E_SCHEMA = {
+    "ID_Événement":lambda:None,"Nom_Événement":"","Type":SET["types_evenements"][0],
+    "Date":date.today().isoformat(),"Durée_h":0.0,"Lieu":"",
+    "Formateur(s)":"","Invité(s)":"","Objectif":"","Période":"Matinée","Notes":"",
+    "Coût_Total":0.0,"Coût_Salle":0.0,"Coût_Formateur":0.0,"Coût_Logistique":0.0,"Coût_Pub":0.0
 }
-P_COLS = {
-    "ID_Participation":lambda: None,"ID":"","ID_Événement":"",
+P_SCHEMA = {
+    "ID_Participation":lambda:None,"ID":"","ID_Événement":"",
     "Rôle":"Participant","Inscription":date.today().isoformat(),
-    "Arrivée":"","Temps_Présent":"","Feedback":3,"Note":0,
-    "Commentaire":"","Nom Participant":"","Nom Événement":""
+    "Arrivée":"", "Temps_Présent":"AUTO","Feedback":3,"Note":0,
+    "Commentaire":""
 }
-PAY_COLS = {
-    "ID_Paiement":lambda: None,"ID":"","ID_Événement":"",
+PAY_SCHEMA = {
+    "ID_Paiement":lambda:None,"ID":"","ID_Événement":"",
     "Date_Paiement":date.today().isoformat(),"Montant":0.0,
-    "Moyen":SET.get("statuts_paiement", ["Réglé"]),"Statut":SET.get("statuts_paiement", ["Réglé"]),
-    "Référence":"","Notes":"","Relance":"","Nom Contact":"","Nom Événement":""
+    "Moyen":SET["moyens_paiement"][0],"Statut":SET["statuts_paiement"],
+    "Référence":"","Notes":"","Relance":""
 }
-CERT_COLS = {
-    "ID_Certif":lambda: None,"ID":"","Type_Certif":SET["types_contact"][0],
+CERT_SCHEMA = {
+    "ID_Certif":lambda:None,"ID":"","Type_Certif":SET["types_certif"][0],
     "Date_Examen":date.today().isoformat(),"Résultat":"Réussi","Score":0,
     "Date_Obtention":date.today().isoformat(),"Validité":"","Renouvellement":"",
-    "Notes":"","Nom Contact":""
+    "Notes":""
 }
 
 # --- NAVIGATION ---
-PAGES = ["Dashboard 360","Contacts","Interactions","Événements",
-         "Participations","Paiements","Certifications","Paramètres"]
+PAGES=["Dashboard 360","Contacts","Interactions","Événements",
+       "Participations","Paiements","Certifications","Rapports","Paramètres"]
 page = st.sidebar.selectbox("Menu", PAGES)
 
-# --- DASHBOARD 360 ---
-if page == "Dashboard 360": 
-    st.title("📈 Tableau de Bord Stratégique")
-    dfc=load_df(DATA["contacts"],C_COLS)
-    dfi=load_df(DATA["interactions"],I_COLS)
-    dfe=load_df(DATA["evenements"],E_COLS)
-    dfp=load_df(DATA["participations"],P_COLS)
-    dfpay=load_df(DATA["paiements"],PAY_COLS)
-    dfcert=load_df(DATA["certifications"],CERT_COLS)
-    # filtres année/mois
+# --- PAGE Dashboard 360 ---
+if page=="Dashboard 360":
+    st.markdown('<div class="header-logo"><img src="https://iiba.org/Logo.png"/> <h1>Tableau de Bord</h1></div>', unsafe_allow_html=True)
+    dfc = load_df(DATA["contacts"],C_SCHEMA)
+    dfi = load_df(DATA["interactions"],I_SCHEMA)
+    dfe = load_df(DATA["evenements"],E_SCHEMA)
+    dfp = load_df(DATA["participations"],P_SCHEMA)
+    dfpay = load_df(DATA["paiements"],PAY_SCHEMA)
+    dfcert = load_df(DATA["certifications"],CERT_SCHEMA)
+
+    # Filtres temporels
     yrs=sorted({d[:4] for d in dfc["Date_Creation"]}) or [str(date.today().year)]
     mths=["Tous"]+[f"{i:02d}" for i in range(1,13)]
     col1,col2=st.columns(2)
-    yr=col1.selectbox("Année",yrs)
-    mn=col2.selectbox("Mois",mths,index=0)
+    yr=col1.selectbox("Année", yrs); mn=col2.selectbox("Mois", mths)
+
     def fil(df,col):
-        return df[(df[col].str[:4]==yr)&((mn=="Tous")|(df[col].str[5:7]==mn))]
-    # Filtres pour dashboard KPI
-    dfc2 = fil(dfc, "Date_Creation")
-    dfp2 = fil(dfp, "Inscription")
-    dfpay2 = fil(dfpay, "Date_Paiement")
-    dfcert2 = fil(dfcert, "Date_Obtention")
-    
-    # KPI
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric("Prospects Actifs",len(dfc2[dfc2["Type"]=="Prospect"]))
-    c1.metric("Membres IIBA",len(dfc2[dfc2["Type"]=="Membre"]))
-    c2.metric("Événements",len(fil(dfe,"Date")))
-    c2.metric("Participations",len(dfp2))
-    benef=dfpay2[dfpay2["Statut"]=="Réglé"]["Montant"].sum()
-    c3.metric("CA réglé",f"{benef:,.0f}")
-    c3.metric("Impayés",len(dfpay2[dfpay2["Statut"]!="Réglé"]))
-    c4.metric("Certifs Obtenues",len(dfcert2[dfcert2["Résultat"]=="Réussi"]))
-    sc=dfp2["Feedback"].mean() if not dfp2.empty else 0
-    c4.metric("Score engagement",f"{sc:.1f}")
-    # export unifié
-    if st.button("⬇️ Export unifié CSV"):
-        uni=dfc.merge(dfi,on="ID",how="left").merge(dfp,on="ID",how="left")
-        st.download_button("Télécharger",uni.to_csv(index=False),file_name="crm_union.csv")
+        df2=df[df[col].str[:4]==yr]
+        return df2 if mn=="Tous" else df2[df2[col].str[5:7]==mn]
+
+    dfc2,dfp2,dfpay2,dfcert2=fil(dfc,"Date_Creation"),fil(dfp,"Inscription"),fil(dfpay,"Date_Paiement"),fil(dfcert,"Date_Obtention")
+
+    # Calcul scores
+    dfc2["Score"] = (
+        dfp2.groupby("ID").size().reindex(dfc2["ID"], fill_value=0)*1 +
+        dfpay2[dfpay2["Statut"]=="Réglé"].groupby("ID").size().reindex(dfc2["ID"],fill_value=0)*2 +
+        dfcert2[dfcert2["Résultat"]=="Réussi"].groupby("ID").size().reindex(dfc2["ID"],fill_value=0)*3
+    )
+
+    # KPI Cards
+    cards=st.columns(4)
+    cards[0].metric("Prospects convertis", len(dfc2[(dfc2["Type"]=="Prospect")&(dfc2["Statut"]=="Réglé")]))
+    rate=len(dfc2[(dfc2["Type"]=="Prospect")&(dfc2["Statut"]=="Réglé")])/max(len(dfc2[dfc2["Type"]=="Prospect"]),1)
+    cards[0].metric("Taux conv.",f"{rate:.1%}")
+    cards[1].metric("Événements", len(fil(dfe,"Date")))
+    cards[1].metric("Participations", len(dfp2))
+    ca=dfpay2[dfpay2["Statut"]=="Réglé"]["Montant"].sum()
+    cards[2].metric("CA réglé",f"{ca:,.0f} FCFA")
+    imp=len(dfpay2[dfpay2["Statut"]!="Réglé"])
+    cards[2].metric("Impayés",imp)
+    cards[3].metric("Certifs réussies",len(dfcert2[dfcert2["Résultat"]=="Réussi"]))
+    cards[3].metric("Score moy.",f"{dfc2['Score'].mean():.1f}")
+
+    # ROI Chart
+    rev=dfpay2[dfpay2["Statut"]=="Réglé"].groupby("ID_Événement")["Montant"].sum().reset_index()
+    dfe2=fil(dfe,"Date").copy()
+    dfe2["Recettes"]=dfe2["ID_Événement"].map(rev.set_index("ID_Événement")["Montant"])
+    dfe2["Bénéfice"]=dfe2["Recettes"]-dfe2["Coût_Total"]
+    chart=alt.Chart(dfe2).mark_bar().encode(x="Nom_Événement",y="Bénéfice",color="Bénéfice")
+    st.altair_chart(chart,use_container_width=True)
 
 # --- PAGE Contacts ---
-elif page == "Contacts":
-    st.title("👤 Contacts")
-    df = load_df(DATA["contacts"], C_COLS)
-    sel = st.selectbox("Sélection", [""] + df["ID"].tolist())
-    rec = df[df["ID"]==sel].iloc[0] if sel else None
-    with st.form("f_contacts"):
-        if sel: st.text_input("ID", rec["ID"], disabled=True)
-        nom = st.text_input("Nom", rec["Nom"] if rec else "")
-        prenom = st.text_input("Prénom", rec["Prénom"] if rec else "")
-        genre = st.selectbox("Genre", ["","Homme","Femme","Autre"],
-                             index=(["","Homme","Femme","Autre"].index(rec["Genre"]) if rec else 0))
-        titre = st.text_input("Titre", rec["Titre"] if rec else "")
-        societe = st.text_input("Société", rec["Société"] if rec else "")
-        secteur = st.selectbox("Secteur", SET["secteurs"],
-                               index=(SET["secteurs"].index(rec["Secteur"]) if rec else 0))
-        typec = st.selectbox("Type", SET["types_contact"],
-                             index=(SET["types_contact"].index(rec["Type"]) if rec else 0))
-        source = st.selectbox("Source", SET["sources"],
-                              index=(SET["sources"].index(rec["Source"]) if rec else 0))
-        statut = st.selectbox("Statut", SET.get("statuts_paiement", ["Réglé"]),
-                              index=(SET["statuts_paiement"].index(rec["Statut"]) if rec else 0))
-        email = st.text_input("Email", rec["Email"] if rec else "")
-        tel = st.text_input("Téléphone", rec["Téléphone"] if rec else "")
-        ville = st.text_input("Ville", rec["Ville"] if rec else "")
-        pays = st.selectbox("Pays", SET["pays"],
-                            index=(SET["pays"].index(rec["Pays"]) if rec else 0))
-        linkedin = st.text_input("LinkedIn", rec["LinkedIn"] if rec else "")
-        notes = st.text_area("Notes", rec["Notes"] if rec else "")
-        dc = st.text_input("Date_Creation", rec["Date_Creation"] if rec else date.today().isoformat())
-        submit = st.form_submit_button("Enregistrer")
-        if submit:
-            if rec is not None:
-                idx = df[df["ID"]==sel].index[0]
-                df.loc[idx] = [sel, nom, prenom, genre, titre, societe, secteur,
-                               email, tel, ville, pays, typec, source, statut,
-                               linkedin, notes, dc]
-            else:
-                new = {"ID":generate_id("CNT", df, "ID"),"Nom":nom,"Prénom":prenom,"Genre":genre,
-                       "Titre":titre,"Société":societe,"Secteur":secteur,"Email":email,
-                       "Téléphone":tel,"Ville":ville,"Pays":pays,"Type":typec,"Source":source,
-                       "Statut":statut,"LinkedIn":linkedin,"Notes":notes,"Date_Creation":dc}
-                df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
-            save_df(df, DATA["contacts"])
-            st.success("Contact enregistré")
-    if st.button("⬇️ Export Contacts CSV"):
-        st.download_button("Télécharger CSV", df.to_csv(index=False), file_name="contacts.csv")
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(sortable=True, filterable=True)
-    AgGrid(df, gridOptions=gb.build())
+elif page=="Contacts":
+    st.header("👤 Contacts")
+    df=load_df(DATA["contacts"],C_SCHEMA)
+    # Scoring & Top20 flag
+    df["Top20"]=df["Société"].isin(SET["entreprises_cibles"])
+    df["Certifié"]=df["ID"].isin(load_df(DATA["certifications"],CERT_SCHEMA).query("Résultat=='Réussi'")["ID"])
+    # Grille
+    gb=GridOptionsBuilder.from_dataframe(df); gb.configure_default_column(sortable=True,filterable=True)
+    AgGrid(df,gridOptions=gb.build(),height=300)
+    # Fiche 360
+    sel=st.selectbox("Sélection contact",[""]+df["ID"].tolist())
+    if sel:
+        rec=df[df["ID"]==sel].iloc[0]
+        st.subheader(f"{rec['Nom']} {rec['Prénom']} ({rec['Score']:.0f})")
+        # Interactions
+        st.markdown("**Dernières interactions**")
+        dfi=load_df(DATA["interactions"],I_SCHEMA)
+        st.table(dfi.query("ID==@sel").tail(5)[["Date","Objet","Résultat"]])
+        # Participations
+        st.markdown("**Participations**")
+        dfp=load_df(DATA["participations"],P_SCHEMA)
+        st.table(dfp.query("ID==@sel")[["Inscription","ID_Événement"]])
+        # Paiements
+        st.markdown("**Paiements**")
+        dfpay=load_df(DATA["paiements"],PAY_SCHEMA)
+        st.table(dfpay.query("ID==@sel")[["Date_Paiement","Montant","Statut"]])
+        # Certifications
+        st.markdown("**Certifications**")
+        dfcert=load_df(DATA["certifications"],CERT_SCHEMA)
+        st.table(dfcert.query("ID==@sel")[["Type_Certif","Date_Obtention","Résultat"]])
 
-# --- PAGE Interactions ---
-elif page == "Interactions":
-    st.title("💬 Interactions")
-    df = load_df(DATA["interactions"], I_COLS)
-    dfc = load_df(DATA["contacts"], C_COLS)
-    opts = [""] + dfc["ID"].tolist()
-    with st.form("f_inter"):
-        idc = st.selectbox("ID Contact", opts)
-        date_i = st.date_input("Date", date.today())
-        canal = st.selectbox("Canal", SET["canaux"])
-        objet = st.text_input("Objet", "")
-        resume = st.text_area("Résumé", "")
-        resultat = st.selectbox("Résultat", SET.get("resultats_inter", ["Positif"])[0])
-        responsable = st.text_input("Responsable", "")
-        pa = st.text_area("Prochaine_Action", "")
-        rel = st.date_input("Relance (opt.)", value=None)
-        sub = st.form_submit_button("Enregistrer")
-        if sub and idc:
-            new = {"ID_Interaction":generate_id("INT",df,"ID_Interaction"),"ID":idc,
-                   "Date":date_i.isoformat(),"Canal":canal,"Objet":objet,"Résumé":resume,
-                   "Résultat":resultat,"Responsable":responsable,
-                   "Prochaine_Action":pa,"Relance":(rel.isoformat() if rel else "")}
-            df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
-            save_df(df, DATA["interactions"])
-            st.success("Interaction enregistrée")
-    if st.button("⬇️ Export Interactions CSV"):
-        st.download_button("Télécharger CSV", df.to_csv(index=False), file_name="interactions.csv")
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(sortable=True, filterable=True)
-    AgGrid(df, gridOptions=gb.build())
-
-# --- PAGE Événements ---
-elif page == "Événements":
-    st.title("📅 Événements")
-    df = load_df(DATA["evenements"], E_COLS)
-    with st.form("f_event"):
-        nom = st.text_input("Nom Événement", "")
-        typ = st.selectbox("Type", SET["types_evenements"])
-        dt = st.date_input("Date", date.today())
-        duree = st.number_input("Durée (h)", min_value=0.0, step=0.5)
-        lieu = st.text_input("Lieu", "")
-        form = st.text_area("Formateur(s)", "")
-        inv = st.text_area("Invité(s)", "")
-        obj = st.text_area("Objectif", "")
-        per = st.selectbox("Période", ["Matinée","Après-midi","Journée"])
-        notes = st.text_area("Notes", "")
-        sub = st.form_submit_button("Enregistrer")
-        if sub:
-            new = {"ID_Événement":generate_id("EVT",df,"ID_Événement"),"Nom_Événement":nom,
-                   "Type":typ,"Date":dt.isoformat(),"Durée_h":duree,"Lieu":lieu,
-                   "Formateur(s)":form,"Invité(s)":inv,"Objectif":obj,"Période":per,"Notes":notes}
-            df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
-            save_df(df, DATA["evenements"])
-            st.success("Événement enregistré")
-    if st.button("⬇️ Export Événements CSV"):
-        st.download_button("Télécharger CSV", df.to_csv(index=False), file_name="evenements.csv")
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(sortable=True, filterable=True)
-    AgGrid(df, gridOptions=gb.build())
-
-# --- PAGE Participations ---
-elif page == "Participations":
-    st.title("🙋 Participations")
-    df = load_df(DATA["participations"], P_COLS)
-    dfc = load_df(DATA["contacts"], C_COLS)
-    dfe = load_df(DATA["evenements"], E_COLS)
-    opts_c = [""] + dfc["ID"].tolist()
-    opts_e = [""] + dfe["ID_Événement"].tolist()
-    with st.form("f_part"):
-        idc = st.selectbox("ID Contact", opts_c)
-        ide = st.selectbox("ID Événement", opts_e)
-        role = st.selectbox("Rôle", ["Participant","Organisateur","Formateur","Invité"])
-        ins = st.date_input("Inscription", date.today())
-        arr = st.text_input("Arrivée (hh:mm)", "")
-        feedback = st.slider("Feedback", 1, 5, 3)
-        note = st.number_input("Note", min_value=0, max_value=20)
-        comm = st.text_area("Commentaire", "")
-        sub = st.form_submit_button("Enregistrer")
-        if sub and idc and ide:
-            new = {"ID_Participation":generate_id("PAR",df,"ID_Participation"),
-                   "ID":idc,"ID_Événement":ide,"Rôle":role,
-                   "Inscription":ins.isoformat(),"Arrivée":arr,
-                   "Temps_Présent":"AUTO","Feedback":feedback,"Note":note,
-                   "Commentaire":comm,"Nom Participant":"","Nom Événement":""}
-            df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
-            save_df(df, DATA["participations"])
-            st.success("Participation enregistrée")
-    if st.button("⬇️ Export Participations CSV"):
-        st.download_button("Télécharger CSV", df.to_csv(index=False), file_name="participations.csv")
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(sortable=True, filterable=True)
-    AgGrid(df, gridOptions=gb.build())
-
-# --- PAGE Paiements ---
-elif page == "Paiements":
-    st.title("💳 Paiements")
-    df = load_df(DATA["paiements"], PAY_COLS)
-    with st.form("f_pay"):
-        idc = st.text_input("ID Contact", "")
-        ide = st.text_input("ID Événement", "")
-        dp = st.date_input("Date Paiement", date.today())
-        mont = st.number_input("Montant", min_value=0.0, step=100.0)
-        moy = st.selectbox("Moyen", SET["moyens_paiement"])
-        stat = st.selectbox("Statut", SET.get("statuts_paiement", ["Réglé"]))
-        ref = st.text_input("Référence", "")
-        notes = st.text_area("Notes", "")
-        rel = st.date_input("Relance (opt.)", value=None)
-        sub = st.form_submit_button("Enregistrer")
-        if sub and idc and ide:
-            new = {"ID_Paiement":generate_id("PAY",df,"ID_Paiement"),"ID":idc,
-                   "ID_Événement":ide,"Date_Paiement":dp.isoformat(),"Montant":mont,
-                   "Moyen":moy,"Statut":stat,"Référence":ref,"Notes":notes,
-                   "Relance":(rel.isoformat() if rel else ""),"Nom Contact":"","Nom Événement":""}
-            df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
-            save_df(df, DATA["paiements"])
-            st.success("Paiement enregistré")
-    if st.button("⬇️ Export Paiements CSV"):
-        st.download_button("Télécharger CSV", df.to_csv(index=False), file_name="paiements.csv")
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(sortable=True, filterable=True)
-    AgGrid(df, gridOptions=gb.build())
-
-# --- PAGE Certifications ---
-elif page == "Certifications":
-    st.title("📜 Certifications")
-    df = load_df(DATA["certifications"], CERT_COLS)
-    with st.form("f_cert"):
-        idc = st.text_input("ID Contact", "")
-        tc = st.selectbox("Type Certif", SET["types_contact"])
-        de = st.date_input("Date Examen", date.today())
-        res = st.selectbox("Résultat", ["Réussi","Échoué","En attente"])
-        score = st.number_input("Score", min_value=0, step=1)
-        dob = st.date_input("Date Obtention", date.today())
-        valid = "AUTO"
-        ren = "AUTO"
-        notes = st.text_area("Notes", "")
-        sub = st.form_submit_button("Enregistrer")
-        if sub and idc:
-            new = {"ID_Certif":generate_id("CER",df,"ID_Certif"),"ID":idc,
-                   "Type_Certif":tc,"Date_Examen":de.isoformat(),"Résultat":res,
-                   "Score":score,"Date_Obtention":dob.isoformat(),
-                   "Validité":valid,"Renouvellement":ren,"Notes":notes,"Nom Contact":""}
-            df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
-            save_df(df, DATA["certifications"])
-            st.success("Certification enregistrée")
-    if st.button("⬇️ Export Certifications CSV"):
-        st.download_button("Télécharger CSV", df.to_csv(index=False), file_name="certifications.csv")
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(sortable=True, filterable=True)
-    AgGrid(df, gridOptions=gb.build())
+# --- PAGE Rapports ---
+elif page=="Rapports":
+    st.header("📊 Rapports Stratégiques")
+    # Prospects réguliers non convertis
+    dfp=load_df(DATA["participations"],P_SCHEMA)
+    dfpay=load_df(DATA["paiements"],PAY_SCHEMA)
+    dfc=load_df(DATA["contacts"],C_SCHEMA)
+    cntp=dfp.groupby("ID").size().reset_index(name="NbPart")
+    prospects=dfc.query("Type=='Prospect'")
+    reg=prospects.merge(cntp,on="ID").query("NbPart>=3 and ID not in @dfpay.query(\"Statut=='Réglé'\")['ID']")
+    st.subheader("Prospects réguliers non convertis")
+    st.table(reg[["ID","Nom","NbPart"]])
+    # Top20 entreprises
+    top20=dfc[dfc["Top20"]]
+    st.subheader("Contacts Top20 entreprises")
+    st.metric("Total Top20",len(top20))
+    # Relances urgentes
+    st.subheader("Relances urgentes")
+    dfi=load_df(DATA["interactions"],I_SCHEMA)
+    today=date.today().isoformat()
+    urg=dfi[dfi["Relance"]<today]
+    st.table(urg[["ID_Interaction","ID","Relance"]])
 
 # --- PAGE Paramètres ---
-elif page == "Paramètres":
-    st.title("⚙️ Paramètres")
-
-    st.markdown("### Référentiels principaux")
-    col1, col2 = st.columns(2)
+elif page=="Paramètres":
+    st.header("⚙️ Paramètres")
+    col1,col2=st.columns(2)
     with col1:
-        with st.expander("💰 Statuts de paiement"):
-            statuts_paiement = st.text_area("Liste des statuts de paiement", "\n".join(SET["statuts_paiement"]))
-        with st.expander("📨 Résultats d'interaction"):
-            resultats_inter = st.text_area("Liste des résultats possibles d'une interaction", "\n".join(SET["resultats_inter"]))
-        with st.expander("🧑‍💼 Types de contact"):
-            types_contact = st.text_area("Types de contact", "\n".join(SET["types_contact"]))
-        with st.expander("📋 Sources"):
-            sources = st.text_area("Sources", "\n".join(SET["sources"]))
+        sp="\n".join(SET["statuts_paiement"])
+        SET["statuts_paiement"]=st.text_area("statuts_paiement",sp).split("\n")
+        ri="\n".join(SET["resultats_inter"])
+        SET["resultats_inter"]=st.text_area("resultats_inter",ri).split("\n")
+        tc="\n".join(SET["types_contact"])
+        SET["types_contact"]=st.text_area("types_contact",tc).split("\n")
+        sc="\n".join(SET["sources"])
+        SET["sources"]=st.text_area("sources",sc).split("\n")
     with col2:
-        with st.expander("🕹 Statuts d'engagement"):
-            statuts_engagement = st.text_area("Statuts d'engagement", "\n".join(SET["statuts_engagement"]))
-        with st.expander("🏢 Secteurs"):
-            secteurs = st.text_area("Secteurs", "\n".join(SET["secteurs"]))
-        with st.expander("🌍 Pays"):
-            pays = st.text_area("Pays", "\n".join(SET["pays"]))
-        with st.expander("🛠 Canaux"):
-            canaux = st.text_area("Canaux de communication", "\n".join(SET["canaux"]))
-        with st.expander("🎫 Types d'événements"):
-            types_evenements = st.text_area("Types d'événements", "\n".join(SET["types_evenements"]))
-        with st.expander("💵 Moyens de paiement"):
-            moyens_paiement = st.text_area("Moyens de paiement", "\n".join(SET["moyens_paiement"]))
-
-if st.button("💾 Sauvegarder Paramètres"):
-    SET["statuts_paiement"] = statuts_paiement.split("\n")
-    SET["resultats_inter"] = resultats_inter.split("\n")
-    SET["types_contact"] = types_contact.split("\n")
-    SET["sources"] = sources.split("\n")
-    SET["statuts_engagement"] = statuts_engagement.split("\n")
-    SET["secteurs"] = secteurs.split("\n")
-    SET["pays"] = pays.split("\n")
-    SET["canaux"] = canaux.split("\n")
-    SET["types_evenements"] = types_evenements.split("\n")
-    SET["moyens_paiement"] = moyens_paiement.split("\n")
-    save_settings(SET)
-    st.success("Paramètres mis à jour ✅")
-
+        se="\n".join(SET["statuts_engagement"])
+        SET["statuts_engagement"]=st.text_area("statuts_engagement",se).split("\n")
+        sec="\n".join(SET["secteurs"])
+        SET["secteurs"]=st.text_area("secteurs",sec).split("\n")
+        py="\n".join(SET["pays"])
+        SET["pays"]=st.text_area("pays",py).split("\n")
+        cc="\n".join(SET["entreprises_cibles"])
+        SET["entreprises_cibles"]=st.text_area("entreprises_cibles",cc).split("\n")
+    if st.button("💾 Sauvegarder"):
+        save_settings(SET)
+        st.success("Paramètres mis à jour")
