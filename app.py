@@ -38,6 +38,9 @@ def save_settings(s):
     st.cache_data.clear()
 
 SET = load_settings()
+# --- pour debugger : Tu verras instantanément quelles clés sont présentes
+st.write("Vérifiez vos paramètres:")
+st.json(SET)
 
 # --- FONCTIONS DONNÉES ---
 def generate_id(prefix, df, col):
