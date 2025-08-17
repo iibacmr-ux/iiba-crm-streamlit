@@ -103,7 +103,39 @@ page = st.sidebar.selectbox("Menu", PAGES)
 
 # --- PAGE Dashboard 360 (omitted for brevity) ---
 if page == "Dashboard 360":
-    # ... existing dashboard code ...
+    if page=="Dashboard 360":
+    st.title("📈 Tableau de Bord Stratégique")
+    dfc=load_df(DATA["contacts"],C_COLS)
+    dfi=load_df(DATA["interactions"],I_COLS)
+    dfe=load_df(DATA["evenements"],E_COLS)
+    dfp=load_df(DATA["participations"],P_COLS)
+    dfpay=load_df(DATA["paiements"],PAY_COLS)
+    dfcert=load_df(DATA["certifications"],CERT_COLS)
+    # filtres année/mois
+    yrs=sorted({d[:4] for d in dfc["Date_Creation"]}) or [str(date.today().year)]
+    mths=["Tous"]+[f"{i:02d}" for i in range(1,13)]
+    col1,col2=st.columns(2)
+    yr=col1.selectbox("Année",yrs)
+    mn=col2.selectbox("Mois",mths,index=0)
+    def fil(df,col):
+        return df[(df[col].str[:4]==yr)&((mn=="Tous")|(df[col].str[5:7]==mn))]
+    dfc2,dfp2,dfpay2,dfcert2=dfl1,fil(dfp,"Inscription"),fil(dfpay,"Date_Paiement"),fil(dfcert,"Date_Obtention")
+    # KPI
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric("Prospects Actifs",len(dfc2[dfc2["Type"]=="Prospect"]))
+    c1.metric("Membres IIBA",len(dfc2[dfc2["Type"]=="Membre"]))
+    c2.metric("Événements",len(fil(dfe,"Date")))
+    c2.metric("Participations",len(dfp2))
+    benef=dfpay2[dfpay2["Statut"]=="Réglé"]["Montant"].sum()
+    c3.metric("CA réglé",f"{benef:,.0f}")
+    c3.metric("Impayés",len(dfpay2[dfpay2["Statut"]!="Réglé"]))
+    c4.metric("Certifs Obtenues",len(dfcert2[dfcert2["Résultat"]=="Réussi"]))
+    sc=dfp2["Feedback"].mean() if not dfp2.empty else 0
+    c4.metric("Score engagement",f"{sc:.1f}")
+    # export unifié
+    if st.button("⬇️ Export unifié CSV"):
+        uni=dfc.merge(dfi,on="ID",how="left").merge(dfp,on="ID",how="left")
+        st.download_button("Télécharger",uni.to_csv(index=False),file_name="crm_union.csv")
 
 # --- PAGE Contacts ---
 elif page == "Contacts":
