@@ -41,7 +41,7 @@ SET = load_settings()
 # --- pour debugger : Tu verras instantanément quelles clés sont présentes
 # ---st.write("Vérifiez vos paramètres:")
 # ---st.json(SET)
-st.write("Clés présentes dans settings : ", list(SET.keys()))
+# ---st.write("Clés présentes dans settings : ", list(SET.keys()))
 
 # --- FONCTIONS DONNÉES ---
 def generate_id(prefix, df, col):
@@ -160,7 +160,7 @@ elif page == "Contacts":
                              index=(SET["types_contact"].index(rec["Type"]) if rec else 0))
         source = st.selectbox("Source", SET["sources"],
                               index=(SET["sources"].index(rec["Source"]) if rec else 0))
-        statut = st.selectbox("Statut", SET["statuts_paiement"],
+        statut = st.selectbox("Statut", SET.get("statuts_paiement", ["Réglé"]),
                               index=(SET["statuts_paiement"].index(rec["Statut"]) if rec else 0))
         email = st.text_input("Email", rec["Email"] if rec else "")
         tel = st.text_input("Téléphone", rec["Téléphone"] if rec else "")
