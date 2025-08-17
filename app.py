@@ -349,16 +349,44 @@ elif page == "Certifications":
 
 # --- PAGE Paramètres ---
 elif page == "Paramètres":
-    st.title("⚙️ Paramètres")
-    s = SET
-    t1, t2 = st.tabs(["Référentiels","Général"])
-    with t1:
-        for key in DEFAULT:
-            current_list = s.get(key, DEFAULT[key])   # Sécurité : prend les valeurs existantes ou défaut
-            if not isinstance(current_list, list):
-                current_list = [str(current_list)]    # Si Single string, transforme en liste
-            val = "\n".join(current_list)
-            s[key] = st.text_area(key, val).split("\n")
-    if st.button("Sauvegarder Paramètres"):
-        save_settings(s)
-        st.success("Paramètres mis à jour")
+st.title("⚙️ Paramètres")
+
+st.markdown("### Référentiels principaux")
+col1, col2 = st.columns(2)
+with col1:
+    with st.expander("💰 Statuts de paiement"):
+        statuts_paiement = st.text_area("Liste des statuts de paiement", "\n".join(SET["statuts_paiement"]))
+    with st.expander("📨 Résultats d'interaction"):
+        resultats_inter = st.text_area("Liste des résultats possibles d'une interaction", "\n".join(SET["resultats_inter"]))
+    with st.expander("🧑‍💼 Types de contact"):
+        types_contact = st.text_area("Types de contact", "\n".join(SET["types_contact"]))
+    with st.expander("📋 Sources"):
+        sources = st.text_area("Sources", "\n".join(SET["sources"]))
+with col2:
+    with st.expander("🕹 Statuts d'engagement"):
+        statuts_engagement = st.text_area("Statuts d'engagement", "\n".join(SET["statuts_engagement"]))
+    with st.expander("🏢 Secteurs"):
+        secteurs = st.text_area("Secteurs", "\n".join(SET["secteurs"]))
+    with st.expander("🌍 Pays"):
+        pays = st.text_area("Pays", "\n".join(SET["pays"]))
+    with st.expander("🛠 Canaux"):
+        canaux = st.text_area("Canaux de communication", "\n".join(SET["canaux"]))
+    with st.expander("🎫 Types d'événements"):
+        types_evenements = st.text_area("Types d'événements", "\n".join(SET["types_evenements"]))
+    with st.expander("💵 Moyens de paiement"):
+        moyens_paiement = st.text_area("Moyens de paiement", "\n".join(SET["moyens_paiement"]))
+
+if st.button("💾 Sauvegarder Paramètres"):
+    SET["statuts_paiement"] = statuts_paiement.split("\n")
+    SET["resultats_inter"] = resultats_inter.split("\n")
+    SET["types_contact"] = types_contact.split("\n")
+    SET["sources"] = sources.split("\n")
+    SET["statuts_engagement"] = statuts_engagement.split("\n")
+    SET["secteurs"] = secteurs.split("\n")
+    SET["pays"] = pays.split("\n")
+    SET["canaux"] = canaux.split("\n")
+    SET["types_evenements"] = types_evenements.split("\n")
+    SET["moyens_paiement"] = moyens_paiement.split("\n")
+    save_settings(SET)
+    st.success("Paramètres mis à jour ✅")
+
