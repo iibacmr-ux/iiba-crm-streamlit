@@ -101,9 +101,8 @@ PAGES = ["Dashboard 360","Contacts","Interactions","Événements",
          "Participations","Paiements","Certifications","Paramètres"]
 page = st.sidebar.selectbox("Menu", PAGES)
 
-# --- PAGE Dashboard 360 (omitted for brevity) ---
-if page == "Dashboard 360":
-    if page=="Dashboard 360":
+# --- DASHBOARD 360 ---
+if page == "Dashboard 360": 
     st.title("📈 Tableau de Bord Stratégique")
     dfc=load_df(DATA["contacts"],C_COLS)
     dfi=load_df(DATA["interactions"],I_COLS)
