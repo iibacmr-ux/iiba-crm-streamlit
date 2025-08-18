@@ -112,8 +112,53 @@ else:
 
 # --- PAGE Dashboard
 if page == "Dashboard":
-    st.title("Dashboard global (à développer)")
-    st.write("Contenu à implémenter")
+    st.title("📈 Tableau de Bord Stratégique")
+
+    dfc = load_df(DATA["contacts"], C_COLS)
+    dfi = load_df(DATA["interactions"], I_COLS)
+    dfe = load_df(DATA["evenements"], E_COLS)
+    dfp = load_df(DATA["participations"], P_COLS)
+    dfpay = load_df(DATA["paiements"], PAY_COLS)
+    dfcert = load_df(DATA["certifications"], CERT_COLS)
+
+    years = sorted({d[:4] for d in dfc["Date_Creation"]}) or [str(date.today().year)]
+    months = ["Tous"] + [f"{i:02d}" for i in range(1, 13)]
+    col1, col2 = st.columns(2)
+    yr = col1.selectbox("Année", years)
+    mn = col2.selectbox("Mois", months, index=0)
+
+    def fil(df, col):
+        return df[(df[col].str[:4] == yr) & ((mn == "Tous") | (df[col].str[5:7] == mn))]
+
+    dfc_filtered = fil(dfc, "Date_Creation")
+    dfe_filtered = fil(dfe, "Date")
+    dfp_filtered = fil(dfp, "Inscription")
+    dfpay_filtered = fil(dfpay, "Date_Paiement")
+    dfcert_filtered = fil(dfcert, "Date_Obtention")
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric("Prospects Actifs", len(dfc_filtered[dfc_filtered["Type"] == "Prospect"]))
+    c1.metric("Membres IIBA", len(dfc_filtered[dfc_filtered["Type"] == "Membre"]))
+
+    c2.metric("Événements", len(dfe_filtered))
+    c2.metric("Participations", len(dfp_filtered))
+
+    ca_total = dfpay_filtered[dfpay_filtered["Statut"] == "Réglé"]["Montant"].sum()
+    impayes_count = len(dfpay_filtered[dfpay_filtered["Statut"] != "Réglé"])
+    c3.metric("CA réglé (FCFA)", f"{ca_total:,.0f}")
+    c3.metric("Paiements en attente", impayes_count)
+
+    certifs_obtenues = len(dfcert_filtered[dfcert_filtered["Résultat"] == "Réussi"])
+    avg_engagement_score = dfp_filtered["Feedback"].mean() if not dfp_filtered.empty else 0
+    c4.metric("Certifications Obtenues", certifs_obtenues)
+    c4.metric("Score Engagement moyen", f"{avg_engagement_score:.1f}")
+
+    # Bouton export unifié CSV
+    if st.button("⬇️ Export unifié CSV"):
+        merged_df = dfc.merge(dfi, on="ID", how="left").merge(dfp, on="ID", how="left")
+        csv_data = merged_df.to_csv(index=False)
+        st.download_button("Télécharger CSV combiné", csv_data, file_name="crm_union.csv")
 
 # --- PAGE Vue 360
 elif page == "Vue 360°":
@@ -158,133 +203,111 @@ elif page == "Vue 360°":
     else:
         st.info("Sélectionnez un contact dans le tableau ci-dessus pour activer les actions.")
 
-# --- PAGE Migration
-if page == "Migration":
-    st.title("📦 Migration / Import & Export de données")
-    migration_tabs = st.tabs(["Télécharger Template", "Importer données", "Historique"])
+# --- PAGE Migration (template, import, historique) ---
+elif page == "Migration":
+    st.title("📦 Migration et Import de données")
 
-    # Onglet 1: Template
+    migration_tabs = st.tabs(["Télécharger Template", "Importer Données", "Historique"])
+
+    # Template Excel
     with migration_tabs[0]:
-        st.header("Télécharger le fichier template Excel")
+        st.header("Télécharger le template Excel")
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            write_empty_sheet(writer, 'Contacts', C_COLS)
-            write_empty_sheet(writer, 'Interactions', I_COLS)
-            write_empty_sheet(writer, 'Événements', E_COLS)
-            write_empty_sheet(writer, 'Participations', P_COLS)
-            write_empty_sheet(writer, 'Paiements', PAY_COLS)
-            write_empty_sheet(writer, 'Certifications', CERT_COLS)
+            pd.DataFrame(columns=C_COLS.keys()).to_excel(writer, sheet_name='Contacts', index=False)
+            pd.DataFrame(columns=I_COLS.keys()).to_excel(writer, sheet_name='Interactions', index=False)
+            pd.DataFrame(columns=E_COLS.keys()).to_excel(writer, sheet_name='Événements', index=False)
+            pd.DataFrame(columns=P_COLS.keys()).to_excel(writer, sheet_name='Participations', index=False)
+            pd.DataFrame(columns=PAY_COLS.keys()).to_excel(writer, sheet_name='Paiements', index=False)
+            pd.DataFrame(columns=CERT_COLS.keys()).to_excel(writer, sheet_name='Certifications', index=False)
         output.seek(0)
         st.download_button(
-            label="Télécharger le template Excel",
+            label="Télécharger template Excel",
             data=output,
-            file_name="template_IIBA_Cameroun.xlsx",
+            file_name="template_iiba_cameroun.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-    # Onglet 2: Import
+    # Import données
     with migration_tabs[1]:
         st.header("Importer un fichier Excel complété")
-        uploaded_file = st.file_uploader("Choisissez un fichier Excel (.xlsx) à importer", type=["xlsx"])
+        uploaded_file = st.file_uploader("Charger un fichier .xlsx", type=["xlsx"])
         if uploaded_file:
             try:
                 wb = openpyxl.load_workbook(uploaded_file)
             except Exception as e:
-                st.error(f"Erreur à la lecture du fichier Excel : {e}")
+                st.error(f"Erreur lecture fichier Excel : {e}")
                 wb = None
-
             if wb:
                 required_sheets = {
-                    'Contacts': C_COLS,
-                    'Interactions': I_COLS,
-                    'Événements': E_COLS,
-                    'Participations': P_COLS,
-                    'Paiements': PAY_COLS,
-                    'Certifications': CERT_COLS
+                    "Contacts": C_COLS,
+                    "Interactions": I_COLS,
+                    "Événements": E_COLS,
+                    "Participations": P_COLS,
+                    "Paiements": PAY_COLS,
+                    "Certifications": CERT_COLS,
                 }
                 missing_sheets = [s for s in required_sheets if s not in wb.sheetnames]
                 if missing_sheets:
-                    st.error(f"Feuilles manquantes: {missing_sheets}")
+                    st.error(f"Feuilles manquantes dans le fichier : {missing_sheets}")
                 else:
                     data_to_import = {}
                     errors = []
                     for sheet, schema in required_sheets.items():
                         df = pd.read_excel(uploaded_file, sheet_name=sheet)
-                        missing_cols = [col for col in schema.keys() if col not in df.columns]
+                        missing_cols = [c for c in schema if c not in df.columns]
                         if missing_cols:
-                            errors.append(f"Feuille '{sheet}': colonnes manquantes: {missing_cols}")
+                            errors.append(f"Feuille {sheet} : colonnes manquantes {missing_cols}")
                         else:
                             data_to_import[sheet] = df
 
                     if errors:
-                        st.error("Erreurs dans le fichier :")
                         for err in errors:
-                            st.write(f"- {err}")
+                            st.error(err)
                     else:
-                        st.success("Fichier validé. Colonnes conformes.")
-
+                        st.success("Fichier valide, prêt à l'import.")
                         for sheet, df in data_to_import.items():
                             st.subheader(f"Aperçu - {sheet}")
-                            st.dataframe(df.head())
+                            st.dataframe(df.head(10))
 
-                        summary = {}
-                        for sheet, new_df in data_to_import.items():
-                            file_path = DATA[sheet.lower()]
-                            existing_df = load_df(file_path, required_sheets[sheet])
-                            id_col = list(required_sheets[sheet].keys())[0]
-                            new_ids = set(new_df[id_col].dropna())
-                            if existing_df.empty:
-                                added = len(new_ids)
-                                updated = 0
-                            else:
-                                existing_ids = set(existing_df[id_col].dropna())
-                                added = len(new_ids - existing_ids)
-                                updated = len(new_ids & existing_ids)
-                            summary[sheet] = {"à ajouter": added, "à mettre à jour": updated}
-
-                        st.markdown("### Opérations prévues")
-                        for sheet, counts in summary.items():
-                            st.write(f"- **{sheet}** : {counts['à ajouter']} ajouts, {counts['à mettre à jour']} MAJ")
-
-                        if st.button("Confirmer et importer"):
-                            user = "admin"
-                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            log_lines = [f"{timestamp} - Import lancé par {user}\n"]
-                            rollback_data = {}
+                        if st.button("Confirmer import"):
+                            log_lines = []
+                            import_success = True
                             try:
-                                existing_data = {s: load_df(DATA[s.lower()], required_sheets[s]) for s in required_sheets}
-                                for sheet in data_to_import:
+                                for sheet, new_df in data_to_import.items():
+                                    existing_df = load_df(DATA[sheet.lower()], required_sheets[sheet])
                                     id_col = list(required_sheets[sheet].keys())[0]
-                                    new_df = data_to_import[sheet]
-                                    orig_df = existing_data.get(sheet, pd.DataFrame())
-                                    rollback_data[sheet] = orig_df.copy()
-                                    filtered_orig = orig_df[~orig_df[id_col].isin(new_df[id_col].dropna())]
-                                    merged_df = pd.concat([filtered_orig, new_df], ignore_index=True)
-                                    save_df(merged_df, DATA[sheet.lower()])
-                                log_lines.append("Migration OK\n")
-                                st.success("Import réussi.")
+                                    # Remove existing rows with matching IDs, then append
+                                    existing_ids = set(existing_df[id_col].dropna())
+                                    new_ids = set(new_df[id_col].dropna())
+                                    updated_ids = existing_ids & new_ids
+                                    filtered_df = existing_df[~existing_df[id_col].isin(updated_ids)]
+                                    combined = pd.concat([filtered_df, new_df], ignore_index=True)
+                                    save_df(combined, DATA[sheet.lower()])
+                                log_lines.append(f"{datetime.now()} - Import réussi\n")
                             except Exception as e:
-                                log_lines.append(f"ERREUR migration : {e}\n")
-                                log_lines.append(traceback.format_exc())
-                                # rollback
-                                for sheet, df in rollback_data.items():
-                                    save_df(df, DATA[sheet.lower()])
-                                st.error(f"Erreur: rollback effectué. Détail: {e}")
+                                import_success = False
+                                log_lines.append(f"{datetime.now()} - Erreur import : {e}\n")
+                                st.error(f"Erreur lors de l'import: {e}")
                             with open("migrations.log", "a", encoding="utf-8") as f_log:
                                 f_log.writelines(log_lines)
+                            if import_success:
+                                st.success("Import exécuté avec succès.")
 
-    # Onglet 3: Historique
+    # Historique des imports
     with migration_tabs[2]:
         st.header("Historique des migrations")
         try:
             with open("migrations.log", "r", encoding="utf-8") as f_log:
-                st.text_area("Logs de migration", value=f_log.read(), height=400)
+                log_content = f_log.read()
+                st.text_area("Logs", log_content, height=400)
         except FileNotFoundError:
-            st.info("Pas encore de logs de migration.")
+            st.info("Aucun historique de migration disponible.")
 
 # --- PAGE RAPPORTS AVANCÉS ---
 elif page == "Rapports":
     st.title("📊 Rapports avancés")
+
     dfc = load_df(DATA["contacts"], C_COLS)
     dfe = load_df(DATA["evenements"], E_COLS)
     dfp = load_df(DATA["participations"], P_COLS)
@@ -293,56 +316,56 @@ elif page == "Rapports":
 
     years = sorted({d[:4] for d in dfc["Date_Creation"]}) or [str(date.today().year)]
     yr = st.selectbox("Année", years)
-    months = ["Tous"] + [f"{i:02d}" for i in range(1,13)]
-    mn = st.selectbox("Mois", months)
+    months = ["Tous"] + [f"{i:02d}" for i in range(1, 13)]
+    mn = st.selectbox("Mois", months, index=0)
 
     def fil(df, col):
-        return df[(df[col].str[:4]==yr) & ((mn=="Tous") | (df[col].str[5:7]==mn))]
+        return df[(df[col].str[:4] == yr) & ((mn == "Tous") | (df[col].str[5:7] == mn))]
 
-    dfc2 = fil(dfc, "Date_Creation")
-    dfe2 = fil(dfe, "Date")
-    dfpay2 = fil(dfpay, "Date_Paiement")
-    dfp2 = fil(dfp, "Inscription")
-    dfcert2 = fil(dfcert, "Date_Obtention")
+    dfc_f = fil(dfc, "Date_Creation")
+    dfe_f = fil(dfe, "Date")
+    dfp_f = fil(dfp, "Inscription")
+    dfpay_f = fil(dfpay, "Date_Paiement")
+    dfcert_f = fil(dfcert, "Date_Obtention")
 
-    total_contacts = len(dfc2)
-    new_prospects = len(dfc2[dfc2["Type"]=="Prospect"])
-    new_membres = len(dfc2[dfc2["Type"]=="Membre"])
-    nb_events = len(dfe2)
-    nb_participations = len(dfp2)
-    ca_total = dfpay2[dfpay2["Statut"]=="Réglé"]["Montant"].sum()
-    impayes = len(dfpay2[dfpay2["Statut"]!="Réglé"])
-    nb_certifs = len(dfcert2[dfcert2["Résultat"]=="Réussi"])
-    taux_conversion = (new_membres/(new_prospects+new_membres)*100) if (new_prospects+new_membres)>0 else 0
-    taux_partic_event = (nb_participations/nb_events) if nb_events>0 else 0
+    total_contacts = len(dfc_f)
+    prospects = len(dfc_f[dfc_f["Type"] == "Prospect"])
+    membres = len(dfc_f[dfc_f["Type"] == "Membre"])
+    nb_events = len(dfe_f)
+    nb_participations = len(dfp_f)
+    ca = dfpay_f[dfpay_f["Statut"] == "Réglé"]["Montant"].sum()
+    impayes = len(dfpay_f[dfpay_f["Statut"] != "Réglé"])
+    nb_certifs = len(dfcert_f[dfcert_f["Résultat"] == "Réussi"])
 
-    st.markdown("| Indicateur | Valeur |")
-    st.markdown(f"|---|---|")
-    st.markdown(f"| Nouveaux contacts | {total_contacts} |")
-    st.markdown(f"| Nouveaux prospects | {new_prospects} |")
-    st.markdown(f"| Membres (nouveaux ou actifs) | {new_membres} |")
-    st.markdown(f"| Evénements | {nb_events} |")
-    st.markdown(f"| Participations | {nb_participations} |")
-    st.markdown(f"| Taux de participation par événement | {taux_partic_event:.1f} |")
-    st.markdown(f"| Chiffre d'affaires encaissé | {ca_total:,.0f} FCFA |")
-    st.markdown(f"| Impayés | {impayes} |")
-    st.markdown(f"| Taux conversion prospects > membres | {taux_conversion:.1f}% |")
+    taux_conversion = (membres / max(prospects + membres, 1)) * 100
+    taux_participation = (nb_participations / max(nb_events, 1))
+
+    st.markdown("| KPI | Valeur |")
+    st.markdown("| --- | -----: |")
+    st.markdown(f"| Total contacts | {total_contacts} |")
+    st.markdown(f"| Nouveaux prospects | {prospects} |")
+    st.markdown(f"| Membres | {membres} |")
+    st.markdown(f"| Nombre d'événements | {nb_events} |")
+    st.markdown(f"| Nombre de participations | {nb_participations} |")
+    st.markdown(f"| Taux de participation moyen par événement | {taux_participation:.2f} |")
+    st.markdown(f"| Chiffre d'affaires encaissé (FCFA) | {ca:,.0f} |")
+    st.markdown(f"| Paiements en attente | {impayes} |")
     st.markdown(f"| Certifications obtenues | {nb_certifs} |")
+    st.markdown(f"| Taux de conversion prospects > membres (%) | {taux_conversion:.2f} |")
 
-    # Export Excel Rapports
-    if st.button("Exporter le rapport en Excel"):
+    if st.button("Exporter rapport Excel"):
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            dfc2.to_excel(writer, sheet_name='Contacts', index=False)
-            dfe2.to_excel(writer, sheet_name='Evenements', index=False)
-            dfp2.to_excel(writer, sheet_name='Participations', index=False)
-            dfpay2.to_excel(writer, sheet_name='Paiements', index=False)
-            dfcert2.to_excel(writer, sheet_name='Certifications', index=False)
+            dfc_f.to_excel(writer, sheet_name='Contacts', index=False)
+            dfe_f.to_excel(writer, sheet_name='Evenements', index=False)
+            dfp_f.to_excel(writer, sheet_name='Participations', index=False)
+            dfpay_f.to_excel(writer, sheet_name='Paiements', index=False)
+            dfcert_f.to_excel(writer, sheet_name='Certifications', index=False)
         output.seek(0)
         st.download_button(
-            label="Télécharger rapport Excel",
+            label="Télécharger le rapport Excel",
             data=output,
-            file_name="rapport_IIBA.xlsx",
+            file_name=f"rapport_{yr}_{mn}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
