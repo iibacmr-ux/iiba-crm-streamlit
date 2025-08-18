@@ -160,38 +160,36 @@ if page == "Dashboard 360":
         uni = dfc.merge(dfi, on="ID", how="left").merge(dfp, on="ID", how="left")
         st.download_button("Télécharger", uni.to_csv(index=False), file_name="crm_union.csv")
 
-# --- PAGE Contacts ---
 elif page == "Contacts":
     st.title("👤 Contacts")
+
     df = load_df(DATA["contacts"], C_COLS)
-    sel = st.selectbox("Sélection", [""] + df["ID"].tolist())
+
+    sel = st.selectbox("Sélectionner un contact par ID", [""] + df["ID"].tolist())
     rec = df[df["ID"] == sel].iloc[0] if sel else None
 
-    with st.form("f_contacts"):
+    # Formulaire pour affichage/modification/création contact
+    with st.form("form_contacts", clear_on_submit=False):
         if sel:
             st.text_input("ID", rec["ID"], disabled=True)
-        nom = st.text_input("Nom", rec["Nom"] if rec else "")
-        prenom = st.text_input("Prénom", rec["Prénom"] if rec else "")
+        nom = st.text_input("Nom", rec["Nom"] if rec is not None else "")
+        prenom = st.text_input("Prénom", rec["Prénom"] if rec is not None else "")
         genre = st.selectbox("Genre", ["", "Homme", "Femme", "Autre"],
-                             index=(["", "Homme", "Femme", "Autre"].index(rec["Genre"]) if rec else 0))
-        titre = st.text_input("Titre", rec["Titre"] if rec else "")
-        societe = st.text_input("Société", rec["Société"] if rec else "")
-        secteur = st.selectbox("Secteur", SET["secteurs"],
-                               index=(SET["secteurs"].index(rec["Secteur"]) if rec else 0))
-        typec = st.selectbox("Type", SET["types_contact"],
-                             index=(SET["types_contact"].index(rec["Type"]) if rec else 0))
-        source = st.selectbox("Source", SET["sources"],
-                              index=(SET["sources"].index(rec["Source"]) if rec else 0))
-        statut = st.selectbox("Statut", SET.get("statuts_paiement", ["Réglé"]),
-                              index=(SET["statuts_paiement"].index(rec["Statut"]) if rec else 0))
-        email = st.text_input("Email", rec["Email"] if rec else "")
-        tel = st.text_input("Téléphone", rec["Téléphone"] if rec else "")
-        ville = st.text_input("Ville", rec["Ville"] if rec else "")
-        pays = st.selectbox("Pays", SET["pays"],
-                            index=(SET["pays"].index(rec["Pays"]) if rec else 0))
-        linkedin = st.text_input("LinkedIn", rec["LinkedIn"] if rec else "")
-        notes = st.text_area("Notes", rec["Notes"] if rec else "")
-        dc = st.text_input("Date_Creation", rec["Date_Creation"] if rec else date.today().isoformat())
+                             index=(["", "Homme", "Femme", "Autre"].index(rec["Genre"]) if rec is not None else 0))
+        titre = st.text_input("Titre", rec["Titre"] if rec is not None else "")
+        societe = st.text_input("Société", rec["Société"] if rec is not None else "")
+        secteur = st.selectbox("Secteur", SET["secteurs"], index=(SET["secteurs"].index(rec["Secteur"]) if rec is not None else 0))
+        typec = st.selectbox("Type", SET["types_contact"], index=(SET["types_contact"].index(rec["Type"]) if rec is not None else 0))
+        source = st.selectbox("Source", SET["sources"], index=(SET["sources"].index(rec["Source"]) if rec is not None else 0))
+        statut = st.selectbox("Statut", SET.get("statuts_paiement", ["Réglé"]), index=(SET["statuts_paiement"].index(rec["Statut"]) if rec is not None else 0))
+        email = st.text_input("Email", rec["Email"] if rec is not None else "")
+        tel = st.text_input("Téléphone", rec["Téléphone"] if rec is not None else "")
+        ville = st.text_input("Ville", rec["Ville"] if rec is not None else "")
+        pays = st.selectbox("Pays", SET["pays"], index=(SET["pays"].index(rec["Pays"]) if rec is not None else 0))
+        linkedin = st.text_input("LinkedIn", rec["LinkedIn"] if rec is not None else "")
+        notes = st.text_area("Notes", rec["Notes"] if rec is not None else "")
+        dc = st.text_input("Date Création", rec["Date_Creation"] if rec is not None else date.today().isoformat())
+
         submit = st.form_submit_button("Enregistrer")
 
         if submit:
@@ -201,20 +199,32 @@ elif page == "Contacts":
                                email, tel, ville, pays, typec, source, statut,
                                linkedin, notes, dc]
             else:
-                new = {"ID": generate_id("CNT", df, "ID"), "Nom": nom, "Prénom": prenom, "Genre": genre,
-                       "Titre": titre, "Société": societe, "Secteur": secteur, "Email": email,
-                       "Téléphone": tel, "Ville": ville, "Pays": pays, "Type": typec, "Source": source,
-                       "Statut": statut, "LinkedIn": linkedin, "Notes": notes, "Date_Creation": dc}
+                new_id = generate_id("CNT", df, "ID")
+                new = {"ID": new_id, "Nom": nom, "Prénom": prenom, "Genre": genre, "Titre": titre,
+                       "Société": societe, "Secteur": secteur, "Email": email, "Téléphone": tel,
+                       "Ville": ville, "Pays": pays, "Type": typec, "Source": source,
+                       "Statut": statut, "Linkedin": linkedin, "Notes": notes, "Date_Creation": dc}
                 df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
+
             save_df(df, DATA["contacts"])
             st.success("Contact enregistré")
 
-    if st.button("⬇️ Export Contacts CSV"):
+    # Export CSV complet
+    if st.button("⬇️ Exporter la liste complète au format CSV"):
         st.download_button("Télécharger CSV", df.to_csv(index=False), file_name="contacts.csv")
 
+    # Affichage tableau interactif avec AgGrid
     gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(sortable=True, filterable=True)
-    AgGrid(df, gridOptions=gb.build())
+    gb.configure_default_column(sortable=True, filterable=True, resizable=True)
+    gb.configure_selection(selection_mode="single", use_checkbox=True)
+    grid_response = AgGrid(df, gridOptions=gb.build(), height=400, fit_columns_on_grid_load=True, key="contacts_grid")
+
+    # Récupérer ligne sélectionnée
+    selected = grid_response['selected_rows']
+    if selected:
+        sel_id = selected[0]['ID']
+        st.write(f"Contact sélectionné : {sel_id}")
+
 
 # --- PAGE Interactions ---
 elif page == "Interactions":
