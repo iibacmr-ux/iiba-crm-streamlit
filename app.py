@@ -101,12 +101,13 @@ CERT_COLS = {
     "Validité": "", "Renouvellement": "", "Notes": "", "Nom Contact": ""
 }
 
-# --- Handle navigation redirection ---
-
+# --- Handle navigation redirection --- 
 if "redirect_page" in st.session_state:
     page = st.session_state.pop("redirect_page")
 else:
-    page = st.sidebar.selectbox("Menu", ["Dashboard", "Vue 360°", "Contacts", "Interactions", "Evenements", "Participations", "Paiements", "Certifications", "Rapports", "Migration", "Paramètres"])
+    page = st.sidebar.selectbox(
+        "Menu", ["Dashboard", "Vue 360°", "Contacts", "Interactions", "Evenements", 
+                 "Participations", "Paiements", "Certifications", "Rapports", "Migration", "Paramètres"])
 
 # --------- Pages ---------
 
