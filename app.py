@@ -110,7 +110,7 @@ CERT_COLS = {
 }
 
 # --- PAGES ---
-PAGES = ["Dashboard 360", "Vue 360","Contacts","Interactions","Événements",
+PAGES = ["Dashboard 360", "Vue 360°","Contacts","Interactions","Événements",
          "Participations","Paiements","Certifications","Rapports","Paramètres","Migration"]
 
 page = st.sidebar.selectbox("Menu", PAGES)
