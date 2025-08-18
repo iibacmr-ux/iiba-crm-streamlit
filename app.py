@@ -767,7 +767,6 @@ if mode_mig == "Import Excel global (.xlsx)":
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         except Exception as e:
             st.warning(f"Impossible de générer le modèle Excel : {e}")
-
                 if up is None: raise ValueError("Aucun fichier fourni.")
                 xls = pd.ExcelFile(up)
                 sheet = "Global" if "Global" in xls.sheet_names else xls.sheet_names[0]
