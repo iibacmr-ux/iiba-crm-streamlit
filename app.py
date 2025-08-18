@@ -110,7 +110,7 @@ CERT_COLS = {
 }
 
 # --- PAGES ---
-PAGES = ["Dashboard 360","Contacts","Interactions","Événements",
+PAGES = ["Dashboard 360", "Vue 360","Contacts","Interactions","Événements",
          "Participations","Paiements","Certifications","Rapports","Paramètres","Migration"]
 
 page = st.sidebar.selectbox("Menu", PAGES)
@@ -159,6 +159,53 @@ if page == "Dashboard 360":
     if st.button("⬇️ Export unifié CSV"):
         uni = dfc.merge(dfi, on="ID", how="left").merge(dfp, on="ID", how="left")
         st.download_button("Télécharger", uni.to_csv(index=False), file_name="crm_union.csv")
+
+elif page == "Vue 360°":
+    st.title("👁 Vue 360° des Contacts")
+    df = load_df(DATA["contacts"], C_COLS)
+
+    # Sélection d'un contact pour focus (tableau)
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(sortable=True, filterable=True)
+    gb.configure_selection(selection_mode="single", use_checkbox=True)
+    grid_response = AgGrid(df, gridOptions=gb.build(), height=350, fit_columns_on_grid_load=True, key="contact_grid")
+    selected = grid_response['selected_rows']
+
+    st.markdown("### Actions disponibles")
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    # Bouton Créer nouveau contact
+    if col1.button("➕ Nouveau contact"):
+        st.session_state["contact_action"] = "new"
+        st.session_state["contact_id"] = None
+        st.switch_page("Contacts")
+
+    # Si un contact est sélectionné dans la grille
+    if selected:
+        contact_id = selected[0]['ID']
+        st.write(f"Contact sélectionné : **{contact_id}** {selected['Nom']} {selected['Prénom']}")
+
+        # Actions sur le contact
+        if col2.button("✏️ Modifier ce contact"):
+            st.session_state["contact_action"] = "edit"
+            st.session_state["contact_id"] = contact_id
+            st.switch_page("Contacts")
+        if col3.button("💬 Interactions"):
+            st.session_state["focus_contact"] = contact_id
+            st.switch_page("Interactions")
+        if col4.button("🙋 Participations"):
+            st.session_state["focus_contact"] = contact_id
+            st.switch_page("Participations")
+        if col5.button("💳 Paiements"):
+            st.session_state["focus_contact"] = contact_id
+            st.switch_page("Paiements")
+    else:
+        st.info("Sélectionnez un contact dans la grille ci-dessus pour afficher les actions.")
+
+    st.markdown("---")
+    st.caption("La grille AG Grid permet de filtrer et sélectionner vos contacts. Les boutons d'action facilitent la navigation Salesforce-like au sein du CRM.")
+
 
 elif page == "Contacts":
     st.title("👤 Contacts")
@@ -224,7 +271,6 @@ elif page == "Contacts":
     if selected:
         sel_id = selected[0]['ID']
         st.write(f"Contact sélectionné : {sel_id}")
-
 
 # --- PAGE Interactions ---
 elif page == "Interactions":
