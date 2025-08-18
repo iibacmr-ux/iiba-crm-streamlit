@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 IIBA Cameroun — CRM (monofichier)
-Version : Import Excel global + validations + rapports
+Version : Import Excel global + validations + rapports (corrigée)
 Dépendances : streamlit, pandas, numpy, altair, openpyxl, streamlit-aggrid
 """
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from pathlib import Path
 import io, json, re
 
@@ -337,7 +337,7 @@ if page == "CRM (Grille centrale)":
                     if ok:
                         new_id = generate_id("INT", df_inter, "ID_Interaction")
                         row = {"ID_Interaction":new_id,"ID":sel_id,"Date":dti.isoformat(),"Canal":canal,"Objet":obj,"Résumé":resume,"Résultat":resu,"Prochaine_Action":"","Relance":(rel.isoformat() if rel else ""),"Responsable":resp}
-                        global df_inter; df_inter = pd.concat([df_inter, pd.DataFrame([row])], ignore_index=True)
+                        df_inter = pd.concat([df_inter, pd.DataFrame([row])], ignore_index=True)
                         save_df(df_inter, PATHS["inter"])
                         st.success(f"Interaction enregistrée ({new_id}).")
             with tabs[1]:
@@ -352,7 +352,7 @@ if page == "CRM (Grille centrale)":
                         if ok:
                             new_id = generate_id("PAR", df_parts, "ID_Participation")
                             row = {"ID_Participation":new_id,"ID":sel_id,"ID_Événement":ide,"Rôle":role,"Inscription":"","Arrivée":"","Temps_Present":"","Feedback":fb,"Note":str(note),"Commentaire":""}
-                            global df_parts; df_parts = pd.concat([df_parts, pd.DataFrame([row])], ignore_index=True)
+                            df_parts = pd.concat([df_parts, pd.DataFrame([row])], ignore_index=True)
                             save_df(df_parts, PATHS["parts"])
                             st.success(f"Participation ajoutée ({new_id}).")
             with tabs[2]:
@@ -369,7 +369,7 @@ if page == "CRM (Grille centrale)":
                         if ok:
                             new_id = generate_id("PAY", df_pay, "ID_Paiement")
                             row = {"ID_Paiement":new_id,"ID":sel_id,"ID_Événement":ide,"Date_Paiement":dtp.isoformat(),"Montant":str(montant),"Moyen":moyen,"Statut":statut,"Référence":ref,"Notes":"","Relance":""}
-                            global df_pay; df_pay = pd.concat([df_pay, pd.DataFrame([row])], ignore_index=True)
+                            df_pay = pd.concat([df_pay, pd.DataFrame([row])], ignore_index=True)
                             save_df(df_pay, PATHS["pay"])
                             st.success(f"Paiement enregistré ({new_id}).")
             with tabs[3]:
@@ -384,7 +384,7 @@ if page == "CRM (Grille centrale)":
                     if ok:
                         new_id = generate_id("CER", df_cert, "ID_Certif")
                         row = {"ID_Certif":new_id,"ID":sel_id,"Type_Certif":tc,"Date_Examen":dte.isoformat(),"Résultat":res,"Score":str(sc),"Date_Obtention":(dto.isoformat() if dto else ""), "Validité":"","Renouvellement":"","Notes":""}
-                        global df_cert; df_cert = pd.concat([df_cert, pd.DataFrame([row])], ignore_index=True)
+                        df_cert = pd.concat([df_cert, pd.DataFrame([row])], ignore_index=True)
                         save_df(df_cert, PATHS["cert"])
                         st.success(f"Certification ajoutée ({new_id}).")
             with tabs[4]:
@@ -425,17 +425,26 @@ elif page == "Événements":
             typ = b.selectbox("Type", SET["types_evenements"], index=SET["types_evenements"].index(data.get("Type", SET["types_evenements"][0])) if data.get("Type") in SET["types_evenements"] else 0)
             lieu = c.selectbox("Lieu", SET["lieux"], index=SET["lieux"].index(data.get("Lieu", SET["lieux"][0])) if data.get("Lieu") in SET["lieux"] else 0)
             d,e,f = st.columns(3)
-            dte = d.date_input("Date", value=parse_date(data.get("Date")) or date.today())
-            duree = e.number_input("Durée (h)", min_value=0.0, max_value=999.0, value=float(data.get("Durée_h") or 0.0))
+            from datetime import timedelta
+            default_date = parse_date(data.get("Date")) or date.today()
+            dte = d.date_input("Date", value=default_date)
+            try:
+                duree_init = float(data.get("Durée_h") or 0.0)
+            except Exception:
+                duree_init = 0.0
+            duree = e.number_input("Durée (h)", min_value=0.0, max_value=999.0, value=duree_init)
             formateur = f.text_input("Formateur(s)", value=data.get("Formateur",""))
             obj = st.text_area("Objectif", value=data.get("Objectif",""))
             st.markdown("##### Coûts (FCFA)")
             c1,c2,c3,c4,c5 = st.columns(5)
-            cout_salle = c1.number_input("Salle", min_value=0.0, value=float(data.get("Cout_Salle") or 0.0))
-            cout_form = c2.number_input("Formateur", min_value=0.0, value=float(data.get("Cout_Formateur") or 0.0))
-            cout_log  = c3.number_input("Logistique", min_value=0.0, value=float(data.get("Cout_Logistique") or 0.0))
-            cout_pub  = c4.number_input("Publicité", min_value=0.0, value=float(data.get("Cout_Pub") or 0.0))
-            cout_aut  = c5.number_input("Autres", min_value=0.0, value=float(data.get("Cout_Autres") or 0.0))
+            def _num(x): 
+                try: return float(x)
+                except Exception: return 0.0
+            cout_salle = c1.number_input("Salle", min_value=0.0, value=_num(data.get("Cout_Salle")))
+            cout_form = c2.number_input("Formateur", min_value=0.0, value=_num(data.get("Cout_Formateur")))
+            cout_log  = c3.number_input("Logistique", min_value=0.0, value=_num(data.get("Cout_Logistique")))
+            cout_pub  = c4.number_input("Publicité", min_value=0.0, value=_num(data.get("Cout_Pub")))
+            cout_aut  = c5.number_input("Autres", min_value=0.0, value=_num(data.get("Cout_Autres")))
             cout_total = cout_salle + cout_form + cout_log + cout_pub + cout_aut
             notes = st.text_area("Notes", value=data.get("Notes",""))
             ok = st.form_submit_button("💾 Enregistrer")
@@ -446,7 +455,7 @@ elif page == "Événements":
                     row = {"ID_Événement":new_id,"Nom_Événement":nom,"Type":typ,"Date":dte.isoformat(),"Durée_h":duree,"Lieu":lieu,
                            "Formateur":formateur,"Objectif":obj,"Periode":dte.strftime("%B %Y"),
                            "Cout_Salle":cout_salle,"Cout_Formateur":cout_form,"Cout_Logistique":cout_log,"Cout_Pub":cout_pub,"Cout_Autres":cout_aut,"Cout_Total":cout_total,"Notes":notes}
-                    global df_events; df_events = pd.concat([df_events, pd.DataFrame([row])], ignore_index=True)
+                    df_events = pd.concat([df_events, pd.DataFrame([row])], ignore_index=True)
                     save_df(df_events, PATHS["events"])
                     st.success(f"Événement créé ({new_id}).")
                 else:
@@ -644,22 +653,24 @@ elif page == "Admin":
     # -----------------------------
     # Import EXCEL GLOBAL
     # -----------------------------
-    
-if mode_mig == "Import Excel global (.xlsx)":
+    if mode_mig == "Import Excel global (.xlsx)":
         up = st.file_uploader("Fichier Excel global (.xlsx)", type=["xlsx"], key="xlsx_up")
         st.caption("Le classeur doit contenir une feuille **Global** (ou la première feuille) avec la colonne **__TABLE__** pour indiquer la table cible.")
         if st.button("Importer l'Excel global"):
             log = {"timestamp": datetime.now().isoformat(), "import_type":"excel_global", "counts": {}, "errors": []}
             try:
-                if up is None: raise ValueError("Aucun fichier fourni.")
+                if up is None:
+                    raise ValueError("Aucun fichier fourni.")
                 xls = pd.ExcelFile(up)
                 sheet = "Global" if "Global" in xls.sheet_names else xls.sheet_names[0]
                 gdf = pd.read_excel(xls, sheet_name=sheet, dtype=str)
-                if "__TABLE__" not in gdf.columns: raise ValueError("La colonne '__TABLE__' est manquante.")
+                if "__TABLE__" not in gdf.columns:
+                    raise ValueError("La colonne '__TABLE__' est manquante.")
                 # Normalisation : colonnes manquantes → vides
                 gcols = ["__TABLE__"] + sorted(set(sum(ALL_SCHEMAS.values(), [])))
                 for c in gcols:
-                    if c not in gdf.columns: gdf[c] = ""
+                    if c not in gdf.columns:
+                        gdf[c] = ""
                 # CONTACTS : validation + dédup (incluant base existante)
                 sub_c = gdf[gdf["__TABLE__"]=="contacts"].copy()
                 sub_c = sub_c[C_COLS].fillna("")
@@ -674,7 +685,9 @@ if mode_mig == "Import Excel global (.xlsx)":
                         return ("tel", norm(r["Téléphone"]))
                     else:
                         return ("nps", (norm(r.get("Nom","")), norm(r.get("Prénom","")), norm(r.get("Société",""))))
-                existing_keys = set(_key_contact(r) for _, r in df_contacts.fillna("").to_dict(orient="records").__iter__())
+                existing_keys = set()
+                for rec in df_contacts.fillna("").to_dict(orient="records"):
+                    existing_keys.add(_key_contact(rec))
                 keep_rows = []
                 for _, r in valid_c.iterrows():
                     k = _key_contact(r)
@@ -686,14 +699,13 @@ if mode_mig == "Import Excel global (.xlsx)":
                         existing_keys.add(k)
                 valid_c = pd.DataFrame(keep_rows, columns=C_COLS) if keep_rows else pd.DataFrame(columns=C_COLS)
                 # IDs manquants : séquence continue à partir de la base existante
-                import re as _re
-                patt = _re.compile(r"^CNT_(\d+)$")
+                patt = re.compile(r"^CNT_(\d+)$")
                 base_max = 0
                 for x in df_contacts["ID"].dropna().astype(str):
                     m = patt.match(x.strip())
                     if m:
                         try: base_max = max(base_max, int(m.group(1)))
-                        except: pass
+                        except Exception: pass
                 next_id = base_max + 1
                 ids = []
                 for _, r in valid_c.iterrows():
@@ -704,27 +716,26 @@ if mode_mig == "Import Excel global (.xlsx)":
                     ids.append(rid)
                 if not valid_c.empty:
                     valid_c["ID"] = ids
-                # Save (append à la base existante)
-                global df_contacts
-                if not valid_c.empty:
+                    # Append à la base existante
                     df_contacts = pd.concat([df_contacts, valid_c[C_COLS]], ignore_index=True)
                     save_df(df_contacts, PATHS["contacts"])
-                log["counts"]["contacts"] = len(valid_c)
-                # AUTRES TABLES (IDs auto si vides)
+                log["counts"]["contacts"] = int(len(valid_c))
+
+                # AUTRES TABLES (IDs auto si vides + append)
                 def save_subset(tbl, cols, path, prefix):
                     sub = gdf[gdf["__TABLE__"]==tbl].copy()
                     sub = sub[cols].fillna("")
                     id_col = cols[0]
                     if id_col in sub.columns:
                         # Continuité d'IDs : repartir du max existant de la table
-                        patt = _re.compile(rf"^{prefix}_(\d+)$")
+                        patt = re.compile(rf"^{prefix}_(\d+)$")
                         base_df = ensure_df(path, cols)
                         base_max = 0
                         for x in base_df[id_col].dropna().astype(str):
                             m = patt.match(x.strip())
                             if m:
                                 try: base_max = max(base_max, int(m.group(1)))
-                                except: pass
+                                except Exception: pass
                         gen = base_max + 1
                         new_ids = []
                         for _, r in sub.iterrows():
@@ -738,12 +749,14 @@ if mode_mig == "Import Excel global (.xlsx)":
                     base_df = ensure_df(path, cols)
                     sub = pd.concat([base_df, sub], ignore_index=True)
                     save_df(sub, path)
-                    log["counts"][tbl] = len(sub)
+                    log["counts"][tbl] = int(len(sub))
+
                 save_subset("interactions", I_COLS, PATHS["inter"], "INT")
                 save_subset("evenements", E_COLS, PATHS["events"], "EVT")
                 save_subset("participations", P_COLS, PATHS["parts"], "PAR")
                 save_subset("paiements", PAY_COLS, PATHS["pay"], "PAY")
                 save_subset("certifications", CERT_COLS, PATHS["cert"], "CER")
+
                 st.success("Import Excel global terminé.")
                 # Rapport
                 st.markdown("#### Rapport d'import")
@@ -767,90 +780,17 @@ if mode_mig == "Import Excel global (.xlsx)":
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         except Exception as e:
             st.warning(f"Impossible de générer le modèle Excel : {e}")
-                if up is None: raise ValueError("Aucun fichier fourni.")
-                xls = pd.ExcelFile(up)
-                sheet = "Global" if "Global" in xls.sheet_names else xls.sheet_names[0]
-                gdf = pd.read_excel(xls, sheet_name=sheet, dtype=str)
-                if "__TABLE__" not in gdf.columns: raise ValueError("La colonne '__TABLE__' est manquante.")
-                # Normalisation : colonnes manquantes → vides
-                gcols = ["__TABLE__"] + sorted(set(sum(ALL_SCHEMAS.values(), [])))
-                for c in gcols:
-                    if c not in gdf.columns: gdf[c] = ""
-                # CONTACTS : validation + dédup
-                sub_c = gdf[gdf["__TABLE__"]=="contacts"].copy()
-                sub_c = sub_c[C_COLS].fillna("")
-                sub_c["Top20"] = sub_c["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
-                valid_c, rejects_c = dedupe_contacts(sub_c)
-                # IDs manquants
-                ids = []
-                for _, r in valid_c.iterrows():
-                    rid = r["ID"]
-                    if not isinstance(rid, str) or rid.strip()=="" or rid.strip().lower()=="nan":
-                        rid = generate_id("CNT", df_contacts, "ID")
-                        df_contacts_id_tmp = pd.concat([df_contacts, valid_c.iloc[[:1]]]) # just to increase if needed
-                    ids.append(rid)
-                valid_c["ID"] = ids
-                # Save
-                global df_contacts; df_contacts = valid_c[C_COLS].reset_index(drop=True)
-                save_df(df_contacts, PATHS["contacts"])
-                log["counts"]["contacts"] = len(valid_c)
-                # AUTRES TABLES (sans validation forte ici)
-                def save_subset(tbl, cols, path, prefix):
-                    sub = gdf[gdf["__TABLE__"]==tbl].copy()
-                    sub = sub[cols].fillna("")
-                    # ID auto si vide
-                    id_col = cols[0]
-                    if id_col in sub.columns:
-                        gen = 1
-                        new_ids = []
-                        for _, r in sub.iterrows():
-                            cur = r[id_col]
-                            if not isinstance(cur, str) or cur.strip()=="" or cur.strip().lower()=="nan":
-                                new_ids.append(f"{prefix}_{str(gen).zfill(3)}"); gen += 1
-                            else:
-                                new_ids.append(cur.strip())
-                        sub[id_col] = new_ids
-                    save_df(sub, path)
-                    log["counts"][tbl] = len(sub)
-                save_subset("interactions", I_COLS, PATHS["inter"], "INT")
-                save_subset("evenements", E_COLS, PATHS["events"], "EVT")
-                save_subset("participations", P_COLS, PATHS["parts"], "PAR")
-                save_subset("paiements", PAY_COLS, PATHS["pay"], "PAY")
-                save_subset("certifications", CERT_COLS, PATHS["cert"], "CER")
-                st.success("Import Excel global terminé.")
-                # Rapport
-                st.markdown("#### Rapport d'import")
-                st.json(log)
-                if not pd.DataFrame(rejects_c).empty:
-                    st.warning(f"Lignes **contacts** rejetées : {len(rejects_c)}")
-                    st.dataframe(rejects_c, use_container_width=True)
-                else:
-                    st.info("Aucune ligne contact rejetée.")
-            except Exception as e:
-                st.error(f"Erreur d'import Excel global : {e}")
-
-        st.markdown("##### Modèle Excel à télécharger")
-        try:
-            buf = io.BytesIO()
-            with pd.ExcelWriter(buf, engine="openpyxl") as w:
-                # Construire un exemple de modèle vide avec toutes colonnes
-                gcols = ["__TABLE__"] + sorted(set(sum(ALL_SCHEMAS.values(), [])))
-                pd.DataFrame(columns=gcols).to_excel(w, index=False, sheet_name="Global")
-            st.download_button("⬇️ Modèle Global (xlsx)", buf.getvalue(),
-                               file_name="IIBA_global_template.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        except Exception as e:
-            st.warning(f"Impossible de générer le modèle Excel : {e}")
 
     # -----------------------------
     # Import CSV GLOBAL
     # -----------------------------
     elif mode_mig == "Import CSV global":
         up = st.file_uploader("CSV global (colonne __TABLE__)", type=["csv"], key="g_up")
-        if st.button("Importer le CSV global"):
+        if st.button("Importer le CSV global") and up is not None:
             try:
                 gdf = pd.read_csv(up, dtype=str, encoding="utf-8")
-                if "__TABLE__" not in gdf.columns: raise ValueError("La colonne __TABLE__ est manquante.")
+                if "__TABLE__" not in gdf.columns:
+                    raise ValueError("La colonne __TABLE__ est manquante.")
                 def save_subset(tbl, cols, path, prefix):
                     sub = gdf[gdf["__TABLE__"]==tbl].copy()
                     for c in cols:
@@ -866,7 +806,17 @@ if mode_mig == "Import Excel global (.xlsx)":
                             st.warning(f"Lignes contacts rejetées : {len(rejects)}")
                             st.dataframe(rejects, use_container_width=True)
                     if id_col in sub.columns:
-                        gen = 1; ids=[]
+                        # Continuité des IDs
+                        patt = re.compile(rf"^{prefix}_(\d+)$")
+                        base_df = ensure_df(path, cols)
+                        base_max = 0
+                        for x in base_df[id_col].dropna().astype(str):
+                            m = patt.match(x.strip())
+                            if m:
+                                try: base_max = max(base_max, int(m.group(1)))
+                                except Exception: pass
+                        gen = base_max + 1
+                        ids=[]
                         for _, r in sub.iterrows():
                             rid = r[id_col]
                             if not isinstance(rid,str) or rid.strip()=="" or rid.strip().lower()=="nan":
@@ -874,7 +824,10 @@ if mode_mig == "Import Excel global (.xlsx)":
                             else:
                                 ids.append(rid.strip())
                         sub[id_col] = ids
-                    save_df(sub, path)
+                    # append
+                    base_df = ensure_df(path, cols)
+                    out = pd.concat([base_df, sub], ignore_index=True)
+                    save_df(out, path)
                 save_subset("contacts", C_COLS, PATHS["contacts"], "CNT")
                 save_subset("interactions", I_COLS, PATHS["inter"], "INT")
                 save_subset("evenements", E_COLS, PATHS["events"], "EVT")
