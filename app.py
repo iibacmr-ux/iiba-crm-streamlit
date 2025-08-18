@@ -110,10 +110,12 @@ else:
 
 # --------- Pages ---------
 
+# --- PAGE Dashboard
 if page == "Dashboard":
     st.title("Dashboard global (à développer)")
     st.write("Contenu à implémenter")
 
+# --- PAGE Vue 360
 elif page == "Vue 360°":
     st.title("👁 Vue 360° des Contacts")
     df = load_df(DATA["contacts"], C_COLS)
@@ -156,11 +158,193 @@ elif page == "Vue 360°":
     else:
         st.info("Sélectionnez un contact dans le tableau ci-dessus pour activer les actions.")
 
-elif page == "Migration":
-    st.title("Migration: à compléter selon code précédent")
+# --- PAGE Migration
+if page == "Migration":
+    st.title("📦 Migration / Import & Export de données")
+    migration_tabs = st.tabs(["Télécharger Template", "Importer données", "Historique"])
 
+    # Onglet 1: Template
+    with migration_tabs[0]:
+        st.header("Télécharger le fichier template Excel")
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            write_empty_sheet(writer, 'Contacts', C_COLS)
+            write_empty_sheet(writer, 'Interactions', I_COLS)
+            write_empty_sheet(writer, 'Événements', E_COLS)
+            write_empty_sheet(writer, 'Participations', P_COLS)
+            write_empty_sheet(writer, 'Paiements', PAY_COLS)
+            write_empty_sheet(writer, 'Certifications', CERT_COLS)
+        output.seek(0)
+        st.download_button(
+            label="Télécharger le template Excel",
+            data=output,
+            file_name="template_IIBA_Cameroun.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    # Onglet 2: Import
+    with migration_tabs[1]:
+        st.header("Importer un fichier Excel complété")
+        uploaded_file = st.file_uploader("Choisissez un fichier Excel (.xlsx) à importer", type=["xlsx"])
+        if uploaded_file:
+            try:
+                wb = openpyxl.load_workbook(uploaded_file)
+            except Exception as e:
+                st.error(f"Erreur à la lecture du fichier Excel : {e}")
+                wb = None
+
+            if wb:
+                required_sheets = {
+                    'Contacts': C_COLS,
+                    'Interactions': I_COLS,
+                    'Événements': E_COLS,
+                    'Participations': P_COLS,
+                    'Paiements': PAY_COLS,
+                    'Certifications': CERT_COLS
+                }
+                missing_sheets = [s for s in required_sheets if s not in wb.sheetnames]
+                if missing_sheets:
+                    st.error(f"Feuilles manquantes: {missing_sheets}")
+                else:
+                    data_to_import = {}
+                    errors = []
+                    for sheet, schema in required_sheets.items():
+                        df = pd.read_excel(uploaded_file, sheet_name=sheet)
+                        missing_cols = [col for col in schema.keys() if col not in df.columns]
+                        if missing_cols:
+                            errors.append(f"Feuille '{sheet}': colonnes manquantes: {missing_cols}")
+                        else:
+                            data_to_import[sheet] = df
+
+                    if errors:
+                        st.error("Erreurs dans le fichier :")
+                        for err in errors:
+                            st.write(f"- {err}")
+                    else:
+                        st.success("Fichier validé. Colonnes conformes.")
+
+                        for sheet, df in data_to_import.items():
+                            st.subheader(f"Aperçu - {sheet}")
+                            st.dataframe(df.head())
+
+                        summary = {}
+                        for sheet, new_df in data_to_import.items():
+                            file_path = DATA[sheet.lower()]
+                            existing_df = load_df(file_path, required_sheets[sheet])
+                            id_col = list(required_sheets[sheet].keys())[0]
+                            new_ids = set(new_df[id_col].dropna())
+                            if existing_df.empty:
+                                added = len(new_ids)
+                                updated = 0
+                            else:
+                                existing_ids = set(existing_df[id_col].dropna())
+                                added = len(new_ids - existing_ids)
+                                updated = len(new_ids & existing_ids)
+                            summary[sheet] = {"à ajouter": added, "à mettre à jour": updated}
+
+                        st.markdown("### Opérations prévues")
+                        for sheet, counts in summary.items():
+                            st.write(f"- **{sheet}** : {counts['à ajouter']} ajouts, {counts['à mettre à jour']} MAJ")
+
+                        if st.button("Confirmer et importer"):
+                            user = "admin"
+                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            log_lines = [f"{timestamp} - Import lancé par {user}\n"]
+                            rollback_data = {}
+                            try:
+                                existing_data = {s: load_df(DATA[s.lower()], required_sheets[s]) for s in required_sheets}
+                                for sheet in data_to_import:
+                                    id_col = list(required_sheets[sheet].keys())[0]
+                                    new_df = data_to_import[sheet]
+                                    orig_df = existing_data.get(sheet, pd.DataFrame())
+                                    rollback_data[sheet] = orig_df.copy()
+                                    filtered_orig = orig_df[~orig_df[id_col].isin(new_df[id_col].dropna())]
+                                    merged_df = pd.concat([filtered_orig, new_df], ignore_index=True)
+                                    save_df(merged_df, DATA[sheet.lower()])
+                                log_lines.append("Migration OK\n")
+                                st.success("Import réussi.")
+                            except Exception as e:
+                                log_lines.append(f"ERREUR migration : {e}\n")
+                                log_lines.append(traceback.format_exc())
+                                # rollback
+                                for sheet, df in rollback_data.items():
+                                    save_df(df, DATA[sheet.lower()])
+                                st.error(f"Erreur: rollback effectué. Détail: {e}")
+                            with open("migrations.log", "a", encoding="utf-8") as f_log:
+                                f_log.writelines(log_lines)
+
+    # Onglet 3: Historique
+    with migration_tabs[2]:
+        st.header("Historique des migrations")
+        try:
+            with open("migrations.log", "r", encoding="utf-8") as f_log:
+                st.text_area("Logs de migration", value=f_log.read(), height=400)
+        except FileNotFoundError:
+            st.info("Pas encore de logs de migration.")
+
+# --- PAGE RAPPORTS AVANCÉS ---
 elif page == "Rapports":
-    st.title("Rapports: à compléter selon code précédent")
+    st.title("📊 Rapports avancés")
+    dfc = load_df(DATA["contacts"], C_COLS)
+    dfe = load_df(DATA["evenements"], E_COLS)
+    dfp = load_df(DATA["participations"], P_COLS)
+    dfpay = load_df(DATA["paiements"], PAY_COLS)
+    dfcert = load_df(DATA["certifications"], CERT_COLS)
+
+    years = sorted({d[:4] for d in dfc["Date_Creation"]}) or [str(date.today().year)]
+    yr = st.selectbox("Année", years)
+    months = ["Tous"] + [f"{i:02d}" for i in range(1,13)]
+    mn = st.selectbox("Mois", months)
+
+    def fil(df, col):
+        return df[(df[col].str[:4]==yr) & ((mn=="Tous") | (df[col].str[5:7]==mn))]
+
+    dfc2 = fil(dfc, "Date_Creation")
+    dfe2 = fil(dfe, "Date")
+    dfpay2 = fil(dfpay, "Date_Paiement")
+    dfp2 = fil(dfp, "Inscription")
+    dfcert2 = fil(dfcert, "Date_Obtention")
+
+    total_contacts = len(dfc2)
+    new_prospects = len(dfc2[dfc2["Type"]=="Prospect"])
+    new_membres = len(dfc2[dfc2["Type"]=="Membre"])
+    nb_events = len(dfe2)
+    nb_participations = len(dfp2)
+    ca_total = dfpay2[dfpay2["Statut"]=="Réglé"]["Montant"].sum()
+    impayes = len(dfpay2[dfpay2["Statut"]!="Réglé"])
+    nb_certifs = len(dfcert2[dfcert2["Résultat"]=="Réussi"])
+    taux_conversion = (new_membres/(new_prospects+new_membres)*100) if (new_prospects+new_membres)>0 else 0
+    taux_partic_event = (nb_participations/nb_events) if nb_events>0 else 0
+
+    st.markdown("| Indicateur | Valeur |")
+    st.markdown(f"|---|---|")
+    st.markdown(f"| Nouveaux contacts | {total_contacts} |")
+    st.markdown(f"| Nouveaux prospects | {new_prospects} |")
+    st.markdown(f"| Membres (nouveaux ou actifs) | {new_membres} |")
+    st.markdown(f"| Evénements | {nb_events} |")
+    st.markdown(f"| Participations | {nb_participations} |")
+    st.markdown(f"| Taux de participation par événement | {taux_partic_event:.1f} |")
+    st.markdown(f"| Chiffre d'affaires encaissé | {ca_total:,.0f} FCFA |")
+    st.markdown(f"| Impayés | {impayes} |")
+    st.markdown(f"| Taux conversion prospects > membres | {taux_conversion:.1f}% |")
+    st.markdown(f"| Certifications obtenues | {nb_certifs} |")
+
+    # Export Excel Rapports
+    if st.button("Exporter le rapport en Excel"):
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            dfc2.to_excel(writer, sheet_name='Contacts', index=False)
+            dfe2.to_excel(writer, sheet_name='Evenements', index=False)
+            dfp2.to_excel(writer, sheet_name='Participations', index=False)
+            dfpay2.to_excel(writer, sheet_name='Paiements', index=False)
+            dfcert2.to_excel(writer, sheet_name='Certifications', index=False)
+        output.seek(0)
+        st.download_button(
+            label="Télécharger rapport Excel",
+            data=output,
+            file_name="rapport_IIBA.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 # --- PAGE Contacts détaillée avec UI moderne, formulaire complet, validation, export et grille interactive ---
 elif page == "Contacts":
