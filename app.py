@@ -331,7 +331,8 @@ if page == "CRM (Grille centrale)":
                     obj = st.text_input("Objet")
                     resu = st.selectbox("Résultat", SET["resultats_inter"])
                     resume = st.text_area("Résumé")
-                    rel = st.date_input("Relance", value=None)
+                    add_rel = st.checkbox("Planifier une relance ?")
+                    rel = st.date_input("Relance", value=date.today()) if add_rel else None
                     ok = st.form_submit_button("💾 Enregistrer l'interaction")
                     if ok:
                         new_id = generate_id("INT", df_inter, "ID_Interaction")
@@ -377,7 +378,8 @@ if page == "CRM (Grille centrale)":
                     dte = st.date_input("Date Examen", value=date.today())
                     res = st.selectbox("Résultat", ["Réussi","Échoué","En cours","Reporté"])
                     sc = st.number_input("Score", min_value=0, max_value=100, value=0)
-                    dto = st.date_input("Date Obtention", value=None)
+                    has_dto = st.checkbox("Renseigner une date d'obtention ?")
+                    dto = st.date_input("Date Obtention", value=date.today()) if has_dto else None
                     ok = st.form_submit_button("💾 Enregistrer la certification")
                     if ok:
                         new_id = generate_id("CER", df_cert, "ID_Certif")
@@ -642,12 +644,130 @@ elif page == "Admin":
     # -----------------------------
     # Import EXCEL GLOBAL
     # -----------------------------
-    if mode_mig == "Import Excel global (.xlsx)":
+    
+if mode_mig == "Import Excel global (.xlsx)":
         up = st.file_uploader("Fichier Excel global (.xlsx)", type=["xlsx"], key="xlsx_up")
         st.caption("Le classeur doit contenir une feuille **Global** (ou la première feuille) avec la colonne **__TABLE__** pour indiquer la table cible.")
         if st.button("Importer l'Excel global"):
             log = {"timestamp": datetime.now().isoformat(), "import_type":"excel_global", "counts": {}, "errors": []}
             try:
+                if up is None: raise ValueError("Aucun fichier fourni.")
+                xls = pd.ExcelFile(up)
+                sheet = "Global" if "Global" in xls.sheet_names else xls.sheet_names[0]
+                gdf = pd.read_excel(xls, sheet_name=sheet, dtype=str)
+                if "__TABLE__" not in gdf.columns: raise ValueError("La colonne '__TABLE__' est manquante.")
+                # Normalisation : colonnes manquantes → vides
+                gcols = ["__TABLE__"] + sorted(set(sum(ALL_SCHEMAS.values(), [])))
+                for c in gcols:
+                    if c not in gdf.columns: gdf[c] = ""
+                # CONTACTS : validation + dédup (incluant base existante)
+                sub_c = gdf[gdf["__TABLE__"]=="contacts"].copy()
+                sub_c = sub_c[C_COLS].fillna("")
+                sub_c["Top20"] = sub_c["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
+                valid_c, rejects_c = dedupe_contacts(sub_c)
+                # Filtrage des doublons par rapport à la base existante
+                def _key_contact(r):
+                    def norm(s): return str(s).strip().lower()
+                    if r.get("Email",""):
+                        return ("email", norm(r["Email"]))
+                    elif r.get("Téléphone",""):
+                        return ("tel", norm(r["Téléphone"]))
+                    else:
+                        return ("nps", (norm(r.get("Nom","")), norm(r.get("Prénom","")), norm(r.get("Société",""))))
+                existing_keys = set(_key_contact(r) for _, r in df_contacts.fillna("").to_dict(orient="records").__iter__())
+                keep_rows = []
+                for _, r in valid_c.iterrows():
+                    k = _key_contact(r)
+                    if k in existing_keys:
+                        rr = r.to_dict(); rr["_Raison"] = "Doublon avec base existante"
+                        rejects_c = pd.concat([rejects_c, pd.DataFrame([rr])], ignore_index=True) if isinstance(rejects_c, pd.DataFrame) else pd.DataFrame([rr])
+                    else:
+                        keep_rows.append(r)
+                        existing_keys.add(k)
+                valid_c = pd.DataFrame(keep_rows, columns=C_COLS) if keep_rows else pd.DataFrame(columns=C_COLS)
+                # IDs manquants : séquence continue à partir de la base existante
+                import re as _re
+                patt = _re.compile(r"^CNT_(\d+)$")
+                base_max = 0
+                for x in df_contacts["ID"].dropna().astype(str):
+                    m = patt.match(x.strip())
+                    if m:
+                        try: base_max = max(base_max, int(m.group(1)))
+                        except: pass
+                next_id = base_max + 1
+                ids = []
+                for _, r in valid_c.iterrows():
+                    rid = r["ID"]
+                    if not isinstance(rid, str) or rid.strip()=="" or rid.strip().lower()=="nan":
+                        rid = f"CNT_{str(next_id).zfill(3)}"
+                        next_id += 1
+                    ids.append(rid)
+                if not valid_c.empty:
+                    valid_c["ID"] = ids
+                # Save (append à la base existante)
+                global df_contacts
+                if not valid_c.empty:
+                    df_contacts = pd.concat([df_contacts, valid_c[C_COLS]], ignore_index=True)
+                    save_df(df_contacts, PATHS["contacts"])
+                log["counts"]["contacts"] = len(valid_c)
+                # AUTRES TABLES (IDs auto si vides)
+                def save_subset(tbl, cols, path, prefix):
+                    sub = gdf[gdf["__TABLE__"]==tbl].copy()
+                    sub = sub[cols].fillna("")
+                    id_col = cols[0]
+                    if id_col in sub.columns:
+                        # Continuité d'IDs : repartir du max existant de la table
+                        patt = _re.compile(rf"^{prefix}_(\d+)$")
+                        base_df = ensure_df(path, cols)
+                        base_max = 0
+                        for x in base_df[id_col].dropna().astype(str):
+                            m = patt.match(x.strip())
+                            if m:
+                                try: base_max = max(base_max, int(m.group(1)))
+                                except: pass
+                        gen = base_max + 1
+                        new_ids = []
+                        for _, r in sub.iterrows():
+                            cur = r[id_col]
+                            if not isinstance(cur, str) or cur.strip()=="" or cur.strip().lower()=="nan":
+                                new_ids.append(f"{prefix}_{str(gen).zfill(3)}"); gen += 1
+                            else:
+                                new_ids.append(cur.strip())
+                        sub[id_col] = new_ids
+                    # Append à la base existante
+                    base_df = ensure_df(path, cols)
+                    sub = pd.concat([base_df, sub], ignore_index=True)
+                    save_df(sub, path)
+                    log["counts"][tbl] = len(sub)
+                save_subset("interactions", I_COLS, PATHS["inter"], "INT")
+                save_subset("evenements", E_COLS, PATHS["events"], "EVT")
+                save_subset("participations", P_COLS, PATHS["parts"], "PAR")
+                save_subset("paiements", PAY_COLS, PATHS["pay"], "PAY")
+                save_subset("certifications", CERT_COLS, PATHS["cert"], "CER")
+                st.success("Import Excel global terminé.")
+                # Rapport
+                st.markdown("#### Rapport d'import")
+                st.json(log)
+                if isinstance(rejects_c, pd.DataFrame) and not rejects_c.empty:
+                    st.warning(f"Lignes **contacts** rejetées : {len(rejects_c)}")
+                    st.dataframe(rejects_c, use_container_width=True)
+                else:
+                    st.info("Aucune ligne contact rejetée.")
+            except Exception as e:
+                st.error(f"Erreur d'import Excel global : {e}")
+
+        st.markdown("##### Modèle Excel à télécharger")
+        try:
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as w:
+                gcols = ["__TABLE__"] + sorted(set(sum(ALL_SCHEMAS.values(), [])))
+                pd.DataFrame(columns=gcols).to_excel(w, index=False, sheet_name="Global")
+            st.download_button("⬇️ Modèle Global (xlsx)", buf.getvalue(),
+                               file_name="IIBA_global_template.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        except Exception as e:
+            st.warning(f"Impossible de générer le modèle Excel : {e}")
+
                 if up is None: raise ValueError("Aucun fichier fourni.")
                 xls = pd.ExcelFile(up)
                 sheet = "Global" if "Global" in xls.sheet_names else xls.sheet_names[0]
