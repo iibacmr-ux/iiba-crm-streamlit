@@ -2,9 +2,7 @@
 # - Centralizes ALL dropdown lists into parametres.csv (no settings.json)
 # - Keeps the "good" page structure (CRM, Événements, Rapports, Admin) without separate pages
 # - Preserves advanced Admin/Migration (Excel Global & Multi-onglets), Reset DB, Purge ID
-# - Keeps scoring/labels (Score_composite, Tags, Proba_conversion) & KPI/Reports
-from pathlib import Path
-app_code = r'''# -*- coding: utf-8 -*-
+# - Keeps scoring/labels (Score_composite, Tags, Proba_conversion) & KPI/Reports 
 """
 IIBA Cameroun — CRM Streamlit (monofichier)
 Version : Centralisation complète des paramètres (listes + scoring + affichage + KPI/targets) dans parametres.csv
@@ -1077,3 +1075,4 @@ elif page=="Admin":
                 st.success("Import CSV global terminé.")
             except Exception as e:
                 st.error
+
