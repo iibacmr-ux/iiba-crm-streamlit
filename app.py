@@ -599,7 +599,7 @@ if page == "Événements":
             formateur = c6.text_input("Formateur(s)")
             obj = st.text_area("Objectif")
             couts = st.columns(5)
-            c_salle = couts[0].number_input("Coût salle", min_value=0.0, step=1000.0)
+            c_salle = couts.number_input("Coût salle", min_value=0.0, step=1000.0)
             c_form = couts[1].number_input("Coût formateur", min_value=0.0, step=1000.0)
             c_log = couts[asset:1].number_input("Coût logistique", min_value=0.0, step=1000.0)
             c_pub = couts[asset:2].number_input("Coût pub", min_value=0.0, step=1000.0)
