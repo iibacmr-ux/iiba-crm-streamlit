@@ -1,2 +1,18 @@
-streamlit-aggrid
-openpyxl
+# Core app
+streamlit>=1.33.0
+pandas>=2.2.0
+numpy>=1.26.0
+
+# Excel / CSV
+openpyxl>=3.1.2
+xlsxwriter>=3.1.0
+
+# Interface avancée (grilles, filtres, pagination)
+st-aggrid>=0.3.4.post3
+
+# Visualisation et exports
+matplotlib>=3.8.0
+plotly>=5.20.0
+
+# Utilitaires
+python-dateutil>=2.9.0
