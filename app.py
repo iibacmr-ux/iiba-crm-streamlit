@@ -1,745 +1,687 @@
-# -*- coding: utf-8 -*-
-"""
-IIBA Cameroun — CRM Streamlit (monofichier)
-Version : CRM + Events + Rapports + Admin/Migration (Global & Multi-onglets)
-Améliorations :
-- Sélection contact robuste : sélecteur maître + auto-sync AgGrid + bouton de secours
-- Grilles paginées (AgGrid), filtres, export Excel, logs migrations, reset DB, purge ID
-"""
-
-from datetime import datetime, date
-from pathlib import Path
-import io, json, re, unicodedata
-
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import os, json
+from datetime import datetime, date
+from st_aggrid import AgGrid, GridOptionsBuilder
+import io
+import openpyxl
+import traceback
 
-# AgGrid
-try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
-    HAS_AGGRID = True
-except Exception:
-    HAS_AGGRID = False
+# --- CONFIGURATION ---
+st.set_page_config(page_title="IIBA Cameroun CRM", page_icon="📊", layout="wide")
 
-st.set_page_config(page_title="IIBA Cameroun — CRM", page_icon="📊", layout="wide")
-
-# ------------------------------------------------------------------
-# Fichiers & schémas
-# ------------------------------------------------------------------
-DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True)
-PATHS = {
-    "contacts": DATA_DIR / "contacts.csv",
-    "inter": DATA_DIR / "interactions.csv",
-    "events": DATA_DIR / "evenements.csv",
-    "parts": DATA_DIR / "participations.csv",
-    "pay": DATA_DIR / "paiements.csv",
-    "cert": DATA_DIR / "certifications.csv",
-    "settings": DATA_DIR / "settings.json",
-    "logs": DATA_DIR / "migration_logs.jsonl",
+DATA = {
+    "contacts": "contacts.csv",
+    "interactions": "interactions.csv",
+    "evenements": "evenements.csv",
+    "participations": "participations.csv",
+    "paiements": "paiements.csv",
+    "certifications": "certifications.csv",
+    "settings": "settings.json"
 }
-
-C_COLS = ["ID","Nom","Prénom","Genre","Titre","Société","Secteur","Email","Téléphone","LinkedIn",
-          "Ville","Pays","Type","Source","Statut","Score_Engagement","Date_Creation","Notes","Top20"]
-I_COLS = ["ID_Interaction","ID","Date","Canal","Objet","Résumé","Résultat","Prochaine_Action","Relance","Responsable"]
-E_COLS = ["ID_Événement","Nom_Événement","Type","Date","Durée_h","Lieu","Formateur","Objectif","Periode",
-          "Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total","Notes"]
-P_COLS = ["ID_Participation","ID","ID_Événement","Rôle","Inscription","Arrivée","Temps_Present","Feedback","Note","Commentaire"]
-PAY_COLS = ["ID_Paiement","ID","ID_Événement","Date_Paiement","Montant","Moyen","Statut","Référence","Notes","Relance"]
-CERT_COLS = ["ID_Certif","ID","Type_Certif","Date_Examen","Résultat","Score","Date_Obtention","Validité","Renouvellement","Notes"]
-
-ALL_SCHEMAS = {
-    "contacts": C_COLS, "interactions": I_COLS, "evenements": E_COLS,
-    "participations": P_COLS, "paiements": PAY_COLS, "certifications": CERT_COLS,
-}
-TABLE_ID_COL = {"contacts":"ID","interactions":"ID_Interaction","evenements":"ID_Événement",
-                "participations":"ID_Participation","paiements":"ID_Paiement","certifications":"ID_Certif"}
 
 DEFAULT = {
-    "genres":["Homme","Femme","Autre"],
-    "secteurs":["Banque","Télécom","IT","Éducation","Santé","ONG","Industrie","Public","Autre"],
-    "types_contact":["Membre","Prospect","Formateur","Partenaire"],
-    "sources":["Afterwork","Formation","LinkedIn","Recommandation","Site Web","Salon","Autre"],
-    "statuts_engagement":["Actif","Inactif","À relancer"],
-    "canaux":["Appel","Email","WhatsApp","Zoom","Présentiel","Autre"],
-    "villes":["Douala","Yaoundé","Limbe","Bafoussam","Garoua","Autres"],
-    "pays":["Cameroun","Côte d'Ivoire","Sénégal","France","Canada","Autres"],
-    "types_evenements":["Formation","Groupe d'étude","BA MEET UP","Webinaire","Conférence","Certification"],
-    "lieux":["Présentiel","Zoom","Hybride"],
-    "resultats_inter":["Positif","Négatif","À suivre","Sans suite"],
-    "statuts_paiement":["Réglé","Partiel","Non payé"],
-    "moyens_paiement":["Mobile Money","Virement","CB","Cash"],
-    "types_certif":["ECBA","CCBA","CBAP","PBA"],
-    "entreprises_cibles":["Dangote","MUPECI","SALAM","SUNU IARD","ENEO","PAD","PAK"],
+    "statuts_paiement": ["Réglé", "Partiel", "Non payé"],
+    "resultats_inter": ["Positif", "Négatif", "Neutre", "À relancer", "À suivre", "Sans suite"],
+    "types_contact": ["Membre", "Prospect", "Formateur", "Partenaire"],
+    "sources": ["Afterwork", "Formation", "LinkedIn", "Recommandation", "Site Web", "Salon", "Autre"],
+    "statuts_engagement": ["Actif", "Inactif", "À relancer"],
+    "secteurs": ["IT", "Finance", "Éducation", "Santé", "Consulting", "Autre", "Côte d’Ivoire", "Sénégal"],
+    "pays": ["Cameroun", "France", "Canada", "Belgique", "Autre"],
+    "canaux": ["Email", "Téléphone", "WhatsApp", "LinkedIn", "Réunion", "Autre"],
+    "types_evenements": ["Atelier", "Conférence", "Formation", "Webinaire", "Afterwork", "BA MEET UP", "Groupe d’étude"],
+    "moyens_paiement": ["Chèque", "Espèces", "Virement", "CB", "Mobile Money", "Autre"]
 }
 
+@st.cache_data
 def load_settings():
-    if PATHS["settings"].exists():
-        try: d = json.loads(PATHS["settings"].read_text(encoding="utf-8"))
-        except Exception: d = DEFAULT.copy()
-    else: d = DEFAULT.copy()
-    for k,v in DEFAULT.items():
-        if k not in d or not isinstance(d[k],list): d[k]=v
-    return d
+    if os.path.exists(DATA["settings"]):
+        return json.load(open(DATA["settings"], encoding="utf-8"))
+    json.dump(DEFAULT, open(DATA["settings"], "w", encoding="utf-8"), indent=2)
+    return DEFAULT
 
-def save_settings(d:dict):
-    PATHS["settings"].write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+def save_settings(s):
+    json.dump(s, open(DATA["settings"], "w", encoding="utf-8"), indent=2)
+    st.cache_data.clear()
 
 SET = load_settings()
 
-# ------------------------------------------------------------------
-# Utilitaires
-# ------------------------------------------------------------------
-def ensure_df(path:Path, cols:list)->pd.DataFrame:
-    if path.exists():
-        try: df = pd.read_csv(path, dtype=str, encoding="utf-8")
-        except Exception: df = pd.DataFrame(columns=cols)
-    else: df = pd.DataFrame(columns=cols)
-    for c in cols:
-        if c not in df.columns: df[c]=""
-    return df[cols]
+def load_df(file, cols):
+    if os.path.exists(file):
+        df = pd.read_csv(file, encoding="utf-8")
+    else:
+        df = pd.DataFrame(columns=cols)
+    for c, v in cols.items():
+        if c not in df.columns:
+            df[c] = v() if callable(v) else v
+    return df[list(cols.keys())]
 
-def save_df(df:pd.DataFrame, path:Path): df.to_csv(path, index=False, encoding="utf-8")
+def save_df(df, file):
+    df.to_csv(file, index=False, encoding="utf-8")
 
-def parse_date(s:str):
-    if not s or str(s).strip()=="" or str(s).lower()=="nan": return None
-    for fmt in ("%Y-%m-%d","%d/%m/%Y","%Y/%m/%d"):
-        try: return datetime.strptime(str(s), fmt).date()
-        except: pass
-    try: return pd.to_datetime(s).date()
-    except: return None
+def generate_id(prefix, df, col):
+    nums = [int(str(x).split("_")[1]) for x in df[col] if isinstance(x, str) and "_" in str(x)]
+    n = max(nums) if nums else 0
+    return f"{prefix}_{n+1:03d}"
 
-def email_ok(s:str)->bool:
-    if not s or str(s).strip()=="" or str(s).lower()=="nan": return True
-    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(s).strip()))
+C_COLS = {
+    "ID": lambda: None, "Nom": "", "Prénom": "", "Genre": "", "Titre": "",
+    "Société": "", "Secteur": SET['secteurs'][0], "Email": "", "Téléphone": "",
+    "Ville": "", "Pays": SET['pays'][0], "Type": SET['types_contact'][0], "Source": SET['sources'][0],
+    "Statut": SET['statuts_paiement'][0], "LinkedIn": "", "Notes": "", "Date_Creation": lambda: date.today().isoformat()
+}
 
-def phone_ok(s:str)->bool:
-    if not s or str(s).strip()=="" or str(s).lower()=="nan": return True
-    s2 = re.sub(r"[ \.\-\(\)]","",str(s)).replace("+","")
-    return s2.isdigit() and len(s2)>=8
+I_COLS = {
+    "ID_Interaction": lambda: None, "ID": "", "Date": date.today().isoformat(), "Canal": SET['canaux'][0],
+    "Objet": "", "Résumé": "", "Résultat": SET['resultats_inter'][0], "Responsable": "",
+    "Prochaine_Action": "", "Relance": ""
+}
 
-def generate_id(prefix:str, df:pd.DataFrame, id_col:str, width:int=3)->str:
-    if df.empty or id_col not in df.columns: return f"{prefix}_{str(1).zfill(width)}"
-    patt = re.compile(rf"^{re.escape(prefix)}_(\d+)$"); mx=0
-    for x in df[id_col].dropna().astype(str):
-        m=patt.match(x.strip()); 
-        if m:
-            try: mx=max(mx,int(m.group(1)))
-            except: pass
-    return f"{prefix}_{str(mx+1).zfill(width)}"
+E_COLS = {
+    "ID_Événement": lambda: None, "Nom_Événement": "", "Type": SET['types_evenements'][0], "Date": date.today().isoformat(),
+    "Durée_h": 0.0, "Lieu": "", "Formateur(s)": "", "Invité(s)": "", "Objectif": "", "Période": "Matinée",
+    "Notes": "", "Coût_Total": 0.0, "Recettes": 0.0, "Bénéfice": 0.0
+}
 
-def log_event(kind:str, payload:dict):
-    rec={"ts":datetime.now().isoformat(),"kind":kind,**payload}
-    with PATHS["logs"].open("a", encoding="utf-8") as f: f.write(json.dumps(rec, ensure_ascii=False)+"\n")
+P_COLS = {
+    "ID_Participation": lambda: None, "ID": "", "ID_Événement": "", "Rôle": "Participant", 
+    "Inscription": date.today().isoformat(), "Arrivée": "", "Temps_Present": "AUTO", "Feedback": 3, 
+    "Note": 0, "Commentaire": "", "Nom Participant": "", "Nom Événement": ""
+}
 
-def dedupe_contacts(df:pd.DataFrame):
-    df=df.copy(); rejects=[]; seen=set(); keep=[]
-    def norm(s): return str(s).strip().lower()
-    for _,r in df.iterrows():
-        if not email_ok(r.get("Email","")):
-            rr=r.to_dict(); rr["_Raison"]="Email invalide"; rejects.append(rr); continue
-        if not phone_ok(r.get("Téléphone","")):
-            rr=r.to_dict(); rr["_Raison"]="Téléphone invalide"; rejects.append(rr); continue
-        if r.get("Email",""): key=("email",norm(r["Email"]))
-        elif r.get("Téléphone",""): key=("tel",norm(r["Téléphone"]))
-        else: key=("nps",(norm(r.get("Nom","")),norm(r.get("Prénom","")),norm(r.get("Société",""))))
-        if key in seen:
-            rr=r.to_dict(); rr["_Raison"]="Doublon détecté (fichier)"; rejects.append(rr); continue
-        seen.add(key); keep.append(r)
-    return pd.DataFrame(keep, columns=C_COLS), pd.DataFrame(rejects)
+PAY_COLS = {
+    "ID_Paiement": lambda: None, "ID": "", "ID_Événement": "", "Date_Paiement": date.today().isoformat(),
+    "Montant": 0.0, "Moyen": SET['moyens_paiement'][0], "Statut": SET['statuts_paiement'][0],
+    "Référence": "", "Notes": "", "Relance": "", "Nom Contact": "", "Nom Événement": ""
+}
 
-def strip_accents(s): 
-    import unicodedata as _u
-    return ''.join(c for c in _u.normalize('NFD', str(s)) if _u.category(c)!='Mn')
+CERT_COLS = {
+    "ID_Certif": lambda: None, "ID": "", "Type_Certif": SET['types_contact'][0], "Date_Examen": date.today().isoformat(),
+    "Résultat": "Réussi", "Score": 0, "Date_Obtention": date.today().isoformat(),
+    "Validité": "", "Renouvellement": "", "Notes": "", "Nom Contact": ""
+}
 
-# ------------------------------------------------------------------
-# Charger données
-# ------------------------------------------------------------------
-df_contacts = ensure_df(PATHS["contacts"], C_COLS)
-df_inter    = ensure_df(PATHS["inter"], I_COLS)
-df_events   = ensure_df(PATHS["events"], E_COLS)
-df_parts    = ensure_df(PATHS["parts"], P_COLS)
-df_pay      = ensure_df(PATHS["pay"], PAY_COLS)
-df_cert     = ensure_df(PATHS["cert"], CERT_COLS)
-if not df_contacts.empty:
-    df_contacts["Top20"] = df_contacts["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
+# --- Handle navigation redirection --- 
+if "redirect_page" in st.session_state:
+    page = st.session_state.pop("redirect_page")
+else:
+    page = st.sidebar.selectbox(
+        "Menu", ["Dashboard", "Vue 360°", "Contacts", "Interactions", "Evenements", 
+                 "Participations", "Paiements", "Certifications", "Rapports", "Migration", "Paramètres"])
 
-# ------------------------------------------------------------------
-# Sidebar
-# ------------------------------------------------------------------
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Aller à", ["CRM (Grille centrale)","Événements","Rapports","Admin"], index=0)
-this_year = datetime.now().year
-annee = st.sidebar.selectbox("Année", ["Toutes"]+[str(this_year-1),str(this_year),str(this_year+1)], index=1)
-mois   = st.sidebar.selectbox("Mois", ["Tous"]+[f"{m:02d}" for m in range(1,13)], index=0)
+# --------- Pages ---------
 
-# ------------------------------------------------------------------
-# Aides analytiques
-# ------------------------------------------------------------------
-def filtered_tables_for_period(year_sel:str, month_sel:str):
-    def in_period(d:pd.Series)->pd.Series:
-        p=d.map(parse_date); m=p.notna()
-        if year_sel!="Toutes": y=int(year_sel); m=m & p.map(lambda x: x and x.year==y)
-        if month_sel!="Tous": mm=int(month_sel); m=m & p.map(lambda x: x and x.month==mm)
-        return m.fillna(False)
-    dfe2 = df_events[in_period(df_events["Date"])].copy() if not df_events.empty else df_events.copy()
-    dfp2 = df_parts.copy()
-    if not df_events.empty and not df_parts.empty:
-        evd = df_events.set_index("ID_Événement")["Date"].map(parse_date)
-        dfp2["_d"] = dfp2["ID_Événement"].map(evd)
-        if year_sel!="Toutes": dfp2 = dfp2[dfp2["_d"].map(lambda x: x and x.year==int(year_sel))]
-        if month_sel!="Tous": dfp2 = dfp2[dfp2["_d"].map(lambda x: x and x.month==int(month_sel))]
-    dfpay2 = df_pay[in_period(df_pay["Date_Paiement"])].copy() if not df_pay.empty else df_pay.copy()
-    dfcert2 = df_cert[in_period(df_cert["Date_Obtention"]) | in_period(df_cert["Date_Examen"])].copy() if not df_cert.empty else df_cert.copy()
-    return dfe2, dfp2, dfpay2, dfcert2
+# --- PAGE Dashboard
+if page == "Dashboard":
+    st.title("📈 Tableau de Bord Stratégique")
 
-# ------------------------------------------------------------------
-# PAGE CRM
-# ------------------------------------------------------------------
-if page=="CRM (Grille centrale)":
-    st.title("👥 CRM — Grille centrale (Contacts)")
-    colf1,colf2,colf3,colf4 = st.columns([2,1,1,1])
-    q = colf1.text_input("Recherche (nom, société, email)…","")
-    page_size = colf2.selectbox("Taille de page", [20,50,100,200], index=0)
-    type_filtre = colf3.selectbox("Type", ["Tous"]+SET["types_contact"])
-    top20_only = colf4.checkbox("Top-20 uniquement", value=False)
+    dfc = load_df(DATA["contacts"], C_COLS)
+    dfi = load_df(DATA["interactions"], I_COLS)
+    dfe = load_df(DATA["evenements"], E_COLS)
+    dfp = load_df(DATA["participations"], P_COLS)
+    dfpay = load_df(DATA["paiements"], PAY_COLS)
+    dfcert = load_df(DATA["certifications"], CERT_COLS)
 
-    dfc = df_contacts.copy()
-    if q:
-        qs=q.lower()
-        dfc=dfc[dfc.apply(lambda r: qs in str(r["Nom"]).lower() or qs in str(r["Prénom"]).lower()
-                          or qs in str(r["Société"]).lower() or qs in str(r["Email"]).lower(), axis=1)]
-    if type_filtre!="Tous": dfc=dfc[dfc["Type"]==type_filtre]
-    if top20_only: dfc=dfc[dfc["Top20"]==True]
+    years = sorted({d[:4] for d in dfc["Date_Creation"]}) or [str(date.today().year)]
+    months = ["Tous"] + [f"{i:02d}" for i in range(1, 13)]
+    col1, col2 = st.columns(2)
+    yr = col1.selectbox("Année", years)
+    mn = col2.selectbox("Mois", months, index=0)
 
-    # ---- Sélecteur maître
-    def _label_contact(row):
-        return f"{row['ID']} — {row['Prénom']} {row['Nom']} — {row['Société']}"
-    options = [] if dfc.empty else dfc.apply(_label_contact, axis=1).tolist()
-    id_map = {} if dfc.empty else dict(zip(options, dfc["ID"]))
-    colsel, _ = st.columns([3,1])
-    sel_label = colsel.selectbox("Contact sélectionné (sélecteur maître)", [""]+options, index=0, key="select_contact_label")
-    if sel_label:
-        st.session_state["selected_contact_id"] = id_map[sel_label]
+    def fil(df, col):
+        return df[(df[col].str[:4] == yr) & ((mn == "Tous") | (df[col].str[5:7] == mn))]
 
-    # ---- Grille paginée + auto-sync
-    sel_id = st.session_state.get("selected_contact_id")
-    table_cols = ["ID","Nom","Prénom","Société","Type","Statut","Email","Téléphone","Ville","Pays","Top20"]
-    if HAS_AGGRID and not dfc.empty:
-        gob = GridOptionsBuilder.from_dataframe(dfc[table_cols])
-        gob.configure_selection("single", use_checkbox=True)
-        gob.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size)
-        gob.configure_side_bar()
-        grid = AgGrid(
-            dfc[table_cols],
-            gridOptions=gob.build(),
-            height=520,
-            update_mode=GridUpdateMode.SELECTION_CHANGED,
-            allow_unsafe_jscode=True
+    dfc_filtered = fil(dfc, "Date_Creation")
+    dfe_filtered = fil(dfe, "Date")
+    dfp_filtered = fil(dfp, "Inscription")
+    dfpay_filtered = fil(dfpay, "Date_Paiement")
+    dfcert_filtered = fil(dfcert, "Date_Obtention")
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric("Prospects Actifs", len(dfc_filtered[dfc_filtered["Type"] == "Prospect"]))
+    c1.metric("Membres IIBA", len(dfc_filtered[dfc_filtered["Type"] == "Membre"]))
+
+    c2.metric("Événements", len(dfe_filtered))
+    c2.metric("Participations", len(dfp_filtered))
+
+    ca_total = dfpay_filtered[dfpay_filtered["Statut"] == "Réglé"]["Montant"].sum()
+    impayes_count = len(dfpay_filtered[dfpay_filtered["Statut"] != "Réglé"])
+    c3.metric("CA réglé (FCFA)", f"{ca_total:,.0f}")
+    c3.metric("Paiements en attente", impayes_count)
+
+    certifs_obtenues = len(dfcert_filtered[dfcert_filtered["Résultat"] == "Réussi"])
+    avg_engagement_score = dfp_filtered["Feedback"].mean() if not dfp_filtered.empty else 0
+    c4.metric("Certifications Obtenues", certifs_obtenues)
+    c4.metric("Score Engagement moyen", f"{avg_engagement_score:.1f}")
+
+    # Bouton export unifié CSV
+    if st.button("⬇️ Export unifié CSV"):
+        merged_df = dfc.merge(dfi, on="ID", how="left").merge(dfp, on="ID", how="left")
+        csv_data = merged_df.to_csv(index=False)
+        st.download_button("Télécharger CSV combiné", csv_data, file_name="crm_union.csv")
+
+# --- PAGE Vue 360
+elif page == "Vue 360°":
+    st.title("👁 Vue 360° des Contacts")
+    df = load_df(DATA["contacts"], C_COLS)
+
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(sortable=True, filterable=True)
+    gb.configure_selection('single', use_checkbox=True)
+    grid_response = AgGrid(df, gb.build(), height=350, fit_columns_on_grid_load=True, key='vue360')
+    selected = grid_response['selected_rows']
+
+    col_add, col_edit, col_inter, col_part, col_pay = st.columns(5)
+
+    if col_add.button("➕ Nouveau contact"):
+        st.session_state["redirect_page"] = "Contacts"
+        st.session_state["contact_action"] = "new"
+        st.session_state["contact_id"] = None
+        st.experimental_rerun()
+
+    if selected:
+        sel_id = selected[0]['ID']
+        st.write(f"Selected contact: **{sel_id}** {selected[0].get('Nom','')} {selected[0].get('Prénom','')}")
+
+        if col_edit.button("✏️ Editer contact"):
+            st.session_state["redirect_page"] = "Contacts"
+            st.session_state["contact_action"] = "edit"
+            st.session_state["contact_id"] = sel_id
+            st.experimental_rerun()
+        if col_inter.button("💬 Interactions"):
+            st.session_state["redirect_page"] = "Interactions"
+            st.session_state["focus_contact"] = sel_id
+            st.experimental_rerun()
+        if col_part.button("🙋 Participations"):
+            st.session_state["redirect_page"] = "Participations"
+            st.session_state["focus_contact"] = sel_id
+            st.experimental_rerun()
+        if col_pay.button("💳 Paiements"):
+            st.session_state["redirect_page"] = "Paiements"
+            st.session_state["focus_contact"] = sel_id
+            st.experimental_rerun()
+    else:
+        st.info("Sélectionnez un contact dans le tableau ci-dessus pour activer les actions.")
+
+# --- PAGE Migration (template, import, historique) ---
+elif page == "Migration":
+    st.title("📦 Migration et Import de données")
+
+    migration_tabs = st.tabs(["Télécharger Template", "Importer Données", "Historique"])
+
+    # Template Excel
+    with migration_tabs[0]:
+        st.header("Télécharger le template Excel")
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            pd.DataFrame(columns=C_COLS.keys()).to_excel(writer, sheet_name='Contacts', index=False)
+            pd.DataFrame(columns=I_COLS.keys()).to_excel(writer, sheet_name='Interactions', index=False)
+            pd.DataFrame(columns=E_COLS.keys()).to_excel(writer, sheet_name='Événements', index=False)
+            pd.DataFrame(columns=P_COLS.keys()).to_excel(writer, sheet_name='Participations', index=False)
+            pd.DataFrame(columns=PAY_COLS.keys()).to_excel(writer, sheet_name='Paiements', index=False)
+            pd.DataFrame(columns=CERT_COLS.keys()).to_excel(writer, sheet_name='Certifications', index=False)
+        output.seek(0)
+        st.download_button(
+            label="Télécharger template Excel",
+            data=output,
+            file_name="template_iiba_cameroun.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        # Bouton de secours
-        if st.button("✅ Utiliser la sélection de la grille"):
-            if grid.get("selected_rows"):
-                st.session_state["selected_contact_id"] = grid["selected_rows"][0]["ID"]
-                st.rerun()
-            else:
-                st.warning("Aucune ligne sélectionnée.")
-        # Auto-sync + re-run si la sélection change
-        if grid and grid.get("selected_rows"):
-            new_sel = grid["selected_rows"][0]["ID"]
-            if new_sel and new_sel != st.session_state.get("_grid_sel_id"):
-                st.session_state["_grid_sel_id"] = new_sel
-                st.session_state["selected_contact_id"] = new_sel
-                st.rerun()
+
+    # Import données
+    with migration_tabs[1]:
+        st.header("Importer un fichier Excel complété")
+        uploaded_file = st.file_uploader("Charger un fichier .xlsx", type=["xlsx"])
+        if uploaded_file:
+            try:
+                wb = openpyxl.load_workbook(uploaded_file)
+            except Exception as e:
+                st.error(f"Erreur lecture fichier Excel : {e}")
+                wb = None
+            if wb:
+                required_sheets = {
+                    "Contacts": C_COLS,
+                    "Interactions": I_COLS,
+                    "Événements": E_COLS,
+                    "Participations": P_COLS,
+                    "Paiements": PAY_COLS,
+                    "Certifications": CERT_COLS,
+                }
+                missing_sheets = [s for s in required_sheets if s not in wb.sheetnames]
+                if missing_sheets:
+                    st.error(f"Feuilles manquantes dans le fichier : {missing_sheets}")
+                else:
+                    data_to_import = {}
+                    errors = []
+                    for sheet, schema in required_sheets.items():
+                        df = pd.read_excel(uploaded_file, sheet_name=sheet)
+                        missing_cols = [c for c in schema if c not in df.columns]
+                        if missing_cols:
+                            errors.append(f"Feuille {sheet} : colonnes manquantes {missing_cols}")
+                        else:
+                            data_to_import[sheet] = df
+
+                    if errors:
+                        for err in errors:
+                            st.error(err)
+                    else:
+                        st.success("Fichier valide, prêt à l'import.")
+                        for sheet, df in data_to_import.items():
+                            st.subheader(f"Aperçu - {sheet}")
+                            st.dataframe(df.head(10))
+
+                        if st.button("Confirmer import"):
+                            log_lines = []
+                            import_success = True
+                            try:
+                                for sheet, new_df in data_to_import.items():
+                                    existing_df = load_df(DATA[sheet.lower()], required_sheets[sheet])
+                                    id_col = list(required_sheets[sheet].keys())[0]
+                                    # Remove existing rows with matching IDs, then append
+                                    existing_ids = set(existing_df[id_col].dropna())
+                                    new_ids = set(new_df[id_col].dropna())
+                                    updated_ids = existing_ids & new_ids
+                                    filtered_df = existing_df[~existing_df[id_col].isin(updated_ids)]
+                                    combined = pd.concat([filtered_df, new_df], ignore_index=True)
+                                    save_df(combined, DATA[sheet.lower()])
+                                log_lines.append(f"{datetime.now()} - Import réussi\n")
+                            except Exception as e:
+                                import_success = False
+                                log_lines.append(f"{datetime.now()} - Erreur import : {e}\n")
+                                st.error(f"Erreur lors de l'import: {e}")
+                            with open("migrations.log", "a", encoding="utf-8") as f_log:
+                                f_log.writelines(log_lines)
+                            if import_success:
+                                st.success("Import exécuté avec succès.")
+
+    # Historique des imports
+    with migration_tabs[2]:
+        st.header("Historique des migrations")
+        try:
+            with open("migrations.log", "r", encoding="utf-8") as f_log:
+                log_content = f_log.read()
+                st.text_area("Logs", log_content, height=400)
+        except FileNotFoundError:
+            st.info("Aucun historique de migration disponible.")
+
+# --- PAGE RAPPORTS AVANCÉS ---
+elif page == "Rapports":
+    st.title("📊 Rapports avancés")
+
+    dfc = load_df(DATA["contacts"], C_COLS)
+    dfe = load_df(DATA["evenements"], E_COLS)
+    dfp = load_df(DATA["participations"], P_COLS)
+    dfpay = load_df(DATA["paiements"], PAY_COLS)
+    dfcert = load_df(DATA["certifications"], CERT_COLS)
+
+    years = sorted({d[:4] for d in dfc["Date_Creation"]}) or [str(date.today().year)]
+    yr = st.selectbox("Année", years)
+    months = ["Tous"] + [f"{i:02d}" for i in range(1, 13)]
+    mn = st.selectbox("Mois", months, index=0)
+
+    def fil(df, col):
+        return df[(df[col].str[:4] == yr) & ((mn == "Tous") | (df[col].str[5:7] == mn))]
+
+    dfc_f = fil(dfc, "Date_Creation")
+    dfe_f = fil(dfe, "Date")
+    dfp_f = fil(dfp, "Inscription")
+    dfpay_f = fil(dfpay, "Date_Paiement")
+    dfcert_f = fil(dfcert, "Date_Obtention")
+
+    total_contacts = len(dfc_f)
+    prospects = len(dfc_f[dfc_f["Type"] == "Prospect"])
+    membres = len(dfc_f[dfc_f["Type"] == "Membre"])
+    nb_events = len(dfe_f)
+    nb_participations = len(dfp_f)
+    ca = dfpay_f[dfpay_f["Statut"] == "Réglé"]["Montant"].sum()
+    impayes = len(dfpay_f[dfpay_f["Statut"] != "Réglé"])
+    nb_certifs = len(dfcert_f[dfcert_f["Résultat"] == "Réussi"])
+
+    taux_conversion = (membres / max(prospects + membres, 1)) * 100
+    taux_participation = (nb_participations / max(nb_events, 1))
+
+    st.markdown("| KPI | Valeur |")
+    st.markdown("| --- | -----: |")
+    st.markdown(f"| Total contacts | {total_contacts} |")
+    st.markdown(f"| Nouveaux prospects | {prospects} |")
+    st.markdown(f"| Membres | {membres} |")
+    st.markdown(f"| Nombre d'événements | {nb_events} |")
+    st.markdown(f"| Nombre de participations | {nb_participations} |")
+    st.markdown(f"| Taux de participation moyen par événement | {taux_participation:.2f} |")
+    st.markdown(f"| Chiffre d'affaires encaissé (FCFA) | {ca:,.0f} |")
+    st.markdown(f"| Paiements en attente | {impayes} |")
+    st.markdown(f"| Certifications obtenues | {nb_certifs} |")
+    st.markdown(f"| Taux de conversion prospects > membres (%) | {taux_conversion:.2f} |")
+
+    if st.button("Exporter rapport Excel"):
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            dfc_f.to_excel(writer, sheet_name='Contacts', index=False)
+            dfe_f.to_excel(writer, sheet_name='Evenements', index=False)
+            dfp_f.to_excel(writer, sheet_name='Participations', index=False)
+            dfpay_f.to_excel(writer, sheet_name='Paiements', index=False)
+            dfcert_f.to_excel(writer, sheet_name='Certifications', index=False)
+        output.seek(0)
+        st.download_button(
+            label="Télécharger le rapport Excel",
+            data=output,
+            file_name=f"rapport_{yr}_{mn}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+# --- PAGE Contacts détaillée avec UI moderne, formulaire complet, validation, export et grille interactive ---
+elif page == "Contacts":
+    st.title("👤 Gestion des Contacts")
+
+    df = load_df(DATA["contacts"], C_COLS)
+    contact_action = st.session_state.get('contact_action', 'view')
+    contact_id = st.session_state.get('contact_id', None)
+
+    if contact_action == 'edit' and contact_id:
+        rec = df.loc[df['ID'] == contact_id].squeeze()
     else:
-        st.info("Installez `streamlit-aggrid` pour la pagination/sélection avancée.")
-        st.dataframe(dfc[table_cols], use_container_width=True)
+        rec = None
 
-    st.markdown("---")
-    cL,cR = st.columns([1,2])
-    with cL:
-        st.subheader("Fiche Contact")
-        sel_id = st.session_state.get("selected_contact_id")
-        if sel_id:
-            c = df_contacts[df_contacts["ID"]==sel_id]
-            if not c.empty:
-                d=c.iloc[0].to_dict()
-                st.markdown(f"**{d.get('Prénom','')} {d.get('Nom','')}** — {d.get('Titre','')} chez **{d.get('Société','')}**")
-                st.write(f"{d.get('Email','')} • {d.get('Téléphone','')} • {d.get('LinkedIn','')}")
-                st.write(f"{d.get('Ville','')}, {d.get('Pays','')} — {d.get('Secteur','')}")
-                st.write(f"Type: **{d.get('Type','')}** | Statut: **{d.get('Statut','')}** | Score: **{d.get('Score_Engagement','')}** | Top20: **{d.get('Top20','')}**")
-            else:
-                st.warning("ID introuvable (rafraîchissez la page).")
+    with st.form("form_contact"):
+        if rec is not None:
+            st.text_input("ID", rec["ID"], disabled=True)
+        nom = st.text_input("Nom", rec["Nom"] if rec is not None else "")
+        prenom = st.text_input("Prénom", rec["Prénom"] if rec is not None else "")
+        genre = st.selectbox("Genre", ["", "Homme", "Femme", "Autre"],
+                             index=(["", "Homme", "Femme", "Autre"].index(rec["Genre"]) if rec is not None else 0))
+        titre = st.text_input("Titre", rec["Titre"] if rec is not None else "")
+        societe = st.text_input("Société", rec["Société"] if rec is not None else "")
+        secteur = st.selectbox("Secteur", SET["secteurs"],
+                               index=(SET["secteurs"].index(rec["Secteur"]) if rec is not None else 0))
+        typec = st.selectbox("Type", SET["types_contact"],
+                             index=(SET["types_contact"].index(rec["Type"]) if rec is not None else 0))
+        source = st.selectbox("Source", SET["sources"],
+                              index=(SET["sources"].index(rec["Source"]) if rec is not None else 0))
+        statut = st.selectbox("Statut", SET.get("statuts_paiement", ["Réglé"]),
+                              index=(SET["statuts_paiement"].index(rec["Statut"]) if rec is not None else 0))
+        email = st.text_input("Email", rec["Email"] if rec is not None else "")
+        tel = st.text_input("Téléphone", rec["Téléphone"] if rec is not None else "")
+        ville = st.text_input("Ville", rec["Ville"] if rec is not None else "")
+        pays = st.selectbox("Pays", SET["pays"],
+                            index=(SET["pays"].index(rec["Pays"]) if rec is not None else 0))
+        linkedin = st.text_input("LinkedIn", rec["LinkedIn"] if rec is not None else "")
+        notes = st.text_area("Notes", rec["Notes"] if rec is not None else "")
+        dc = st.text_input("Date Création", rec["Date_Creation"] if rec is not None else date.today().isoformat())
+
+        submit = st.form_submit_button("Enregistrer")
+
+    if submit:
+        if rec is not None:
+            idx = df[df["ID"] == rec["ID"]].index[0]
+            df.loc[idx] = [rec["ID"], nom, prenom, genre, titre, societe, secteur,
+                           email, tel, ville, pays, typec, source, statut,
+                           linkedin, notes, dc]
         else:
-            st.info("Sélectionnez un contact via la grille ou le sélecteur maître.")
+            new_id = generate_id("CNT", df, "ID")
+            new = {"ID": new_id, "Nom": nom, "Prénom": prenom, "Genre": genre, "Titre": titre,
+                   "Société": societe, "Secteur": secteur, "Email": email, "Téléphone": tel,
+                   "Ville": ville, "Pays": pays, "Type": typec, "Source": source,
+                   "Statut": statut, "LinkedIn": linkedin, "Notes": notes, "Date_Creation": dc}
+            df = pd.concat([df, pd.DataFrame([new])], ignore_index=True)
+        save_df(df, DATA["contacts"])
+        st.success("Contact enregistré")
+        st.session_state.pop("contact_action", None)
+        st.session_state.pop("contact_id", None)
 
-    with cR:
-        st.subheader("Actions liées au contact sélectionné")
-        sel_id = st.session_state.get("selected_contact_id")
-        if not sel_id:
-            st.info("Sélectionnez un contact pour créer une interaction, participation, paiement ou certification.")
+    c1, c2 = st.columns([3,1])
+    with c1:
+        st.markdown("### Liste des contacts")
+        gb = GridOptionsBuilder.from_dataframe(df)
+        gb.configure_default_column(sortable=True, filterable=True, resizable=True)
+        gb.configure_selection(selection_mode="single", use_checkbox=True)
+        grid_response = AgGrid(df, gridOptions=gb.build(), height=400, fit_columns_on_grid_load=True)
+        selected = grid_response["selected_rows"]
+    with c2:
+        if selected:
+            sel_id = selected[0]["ID"]
+            st.write(f"Contact sélectionné: **{selected[0]['Nom']} {selected[0]['Prénom']}** (ID: {sel_id})")
+            if st.button("Modifier ce contact"):
+                st.session_state["contact_action"] = "edit"
+                st.session_state["contact_id"] = sel_id
+                st.experimental_rerun()
+            if st.button("Voir Interactions"):
+                st.session_state["focus_contact"] = sel_id
+                st.session_state["redirect_page"] = "Interactions"
+                st.experimental_rerun()
+            if st.button("Voir Participations"):
+                st.session_state["focus_contact"] = sel_id
+                st.session_state["redirect_page"] = "Participations"
+                st.experimental_rerun()
+            if st.button("Voir Paiements"):
+                st.session_state["focus_contact"] = sel_id
+                st.session_state["redirect_page"] = "Paiements"
+                st.experimental_rerun()
         else:
-            tabs = st.tabs(["➕ Interaction","➕ Participation","➕ Paiement","➕ Certification","📑 Vue 360°"])
-            with tabs[0]:
-                with st.form("add_inter"):
-                    c1,c2,c3 = st.columns(3)
-                    dti=c1.date_input("Date", value=date.today())
-                    canal=c2.selectbox("Canal", SET["canaux"])
-                    resp=c3.selectbox("Responsable", ["Aymard","Alix","Autre"])
-                    obj=st.text_input("Objet")
-                    resu=st.selectbox("Résultat", SET["resultats_inter"])
-                    resume=st.text_area("Résumé")
-                    add_rel=st.checkbox("Planifier une relance ?"); rel=st.date_input("Relance", value=date.today()) if add_rel else None
-                    ok=st.form_submit_button("💾 Enregistrer l'interaction")
-                    if ok:
-                        nid=generate_id("INT", df_inter, "ID_Interaction")
-                        row={"ID_Interaction":nid,"ID":sel_id,"Date":dti.isoformat(),"Canal":canal,"Objet":obj,"Résumé":resume,"Résultat":resu,"Prochaine_Action":"","Relance":(rel.isoformat() if rel else ""),"Responsable":resp}
-                        globals()["df_inter"]=pd.concat([df_inter, pd.DataFrame([row])], ignore_index=True); save_df(df_inter, PATHS["inter"]); st.success(f"Interaction enregistrée ({nid}).")
-            with tabs[1]:
-                with st.form("add_part"):
-                    if df_events.empty: st.warning("Créez d'abord un événement.")
-                    else:
-                        ide=st.selectbox("Événement", df_events["ID_Événement"].tolist())
-                        role=st.selectbox("Rôle", ["Participant","Animateur","Invité"])
-                        fb=st.selectbox("Feedback", ["Très satisfait","Satisfait","Moyen","Insatisfait"])
-                        note=st.number_input("Note (1-5)", min_value=1,max_value=5,value=5)
-                        ok=st.form_submit_button("💾 Enregistrer la participation")
-                        if ok:
-                            nid=generate_id("PAR", df_parts, "ID_Participation")
-                            row={"ID_Participation":nid,"ID":sel_id,"ID_Événement":ide,"Rôle":role,"Inscription":"","Arrivée":"","Temps_Present":"","Feedback":fb,"Note":str(note),"Commentaire":""}
-                            globals()["df_parts"]=pd.concat([df_parts, pd.DataFrame([row])], ignore_index=True); save_df(df_parts, PATHS["parts"]); st.success(f"Participation ajoutée ({nid}).")
-            with tabs[2]:
-                with st.form("add_pay"):
-                    if df_events.empty: st.warning("Créez d'abord un événement.")
-                    else:
-                        ide=st.selectbox("Événement", df_events["ID_Événement"].tolist())
-                        dtp=st.date_input("Date paiement", value=date.today())
-                        montant=st.number_input("Montant (FCFA)", min_value=0, step=1000)
-                        moyen=st.selectbox("Moyen", SET["moyens_paiement"])
-                        statut=st.selectbox("Statut", SET["statuts_paiement"])
-                        ref=st.text_input("Référence")
-                        ok=st.form_submit_button("💾 Enregistrer le paiement")
-                        if ok:
-                            nid=generate_id("PAY", df_pay, "ID_Paiement")
-                            row={"ID_Paiement":nid,"ID":sel_id,"ID_Événement":ide,"Date_Paiement":dtp.isoformat(),"Montant":str(montant),"Moyen":moyen,"Statut":statut,"Référence":ref,"Notes":"","Relance":""}
-                            globals()["df_pay"]=pd.concat([df_pay, pd.DataFrame([row])], ignore_index=True); save_df(df_pay, PATHS["pay"]); st.success(f"Paiement enregistré ({nid}).")
-            with tabs[3]:
-                with st.form("add_cert"):
-                    tc=st.selectbox("Type Certification", SET["types_certif"])
-                    dte=st.date_input("Date Examen", value=date.today())
-                    res=st.selectbox("Résultat", ["Réussi","Échoué","En cours","Reporté"])
-                    sc=st.number_input("Score", min_value=0, max_value=100, value=0)
-                    has_dto=st.checkbox("Renseigner une date d'obtention ?"); dto=st.date_input("Date Obtention", value=date.today()) if has_dto else None
-                    ok=st.form_submit_button("💾 Enregistrer la certification")
-                    if ok:
-                        nid=generate_id("CER", df_cert, "ID_Certif")
-                        row={"ID_Certif":nid,"ID":sel_id,"Type_Certif":tc,"Date_Examen":dte.isoformat(),"Résultat":res,"Score":str(sc),"Date_Obtention":(dto.isoformat() if dto else ""), "Validité":"","Renouvellement":"","Notes":""}
-                        globals()["df_cert"]=pd.concat([df_cert, pd.DataFrame([row])], ignore_index=True); save_df(df_cert, PATHS["cert"]); st.success(f"Certification ajoutée ({nid}).")
-            with tabs[4]:
-                st.markdown("#### Vue 360°")
-                if not df_inter.empty:
-                    st.write("**Interactions**"); st.dataframe(df_inter[df_inter["ID"]==sel_id][["Date","Canal","Objet","Résultat","Relance","Responsable"]], use_container_width=True)
-                if not df_parts.empty:
-                    st.write("**Participations**"); dfp=df_parts[df_parts["ID"]==sel_id].copy()
-                    if not df_events.empty:
-                        ev_names=df_events.set_index("ID_Événement")["Nom_Événement"]; dfp["Événement"]=dfp["ID_Événement"].map(ev_names)
-                    st.dataframe(dfp[["Événement","Rôle","Feedback","Note"]], use_container_width=True)
-                if not df_pay.empty:
-                    st.write("**Paiements**"); st.dataframe(df_pay[df_pay["ID"]==sel_id][["ID_Événement","Date_Paiement","Montant","Moyen","Statut","Référence"]], use_container_width=True)
-                if not df_cert.empty:
-                    st.write("**Certifications**"); st.dataframe(df_cert[df_cert["ID"]==sel_id][["Type_Certif","Date_Examen","Résultat","Score","Date_Obtention"]], use_container_width=True)
+            st.info("Sélectionnez un contact dans la liste pour voir les actions.")
 
-# ------------------------------------------------------------------
-# PAGE ÉVÉNEMENTS
-# ------------------------------------------------------------------
-elif page=="Événements":
+    if st.button("⬇️ Exporter tous les contacts (CSV)"):
+        csv_data = df.to_csv(index=False)
+        st.download_button("Télécharger CSV", csv_data, file_name="contacts_export.csv")
+
+# --- PAGE Interactions avec filtrage contact + UI avancée ---
+elif page == "Interactions":
+    st.title("💬 Interactions")
+    dfc = load_df(DATA["contacts"], C_COLS)
+    dfi = load_df(DATA["interactions"], I_COLS)
+
+    focus_contact = st.session_state.get("focus_contact")
+    if focus_contact:
+        dfi = dfi[dfi["ID"] == focus_contact]
+        st.markdown(f"Affichage des interactions pour contact **{focus_contact}**")
+
+    with st.form("form_interaction"):
+        idc = st.selectbox("ID Contact", [""] + dfc["ID"].tolist(), index=(dfc[dfc["ID"]==focus_contact].index[0]+1 if focus_contact else 0))
+        date_i = st.date_input("Date interaction", date.today())
+        canal = st.selectbox("Canal", SET["canaux"])
+        objet = st.text_input("Objet", "")
+        resume = st.text_area("Résumé", "")
+        resultat = st.selectbox("Résultat", SET["resultats_inter"])
+        responsable = st.text_input("Responsable", "")
+        prochaine_action = st.text_area("Prochaine action", "")
+        relance = st.date_input("Date relance (optionnel)", value=None)
+
+        submit = st.form_submit_button("Enregistrer interaction")
+
+    if submit and idc:
+        new = {"ID_Interaction": generate_id("INT", dfi, "ID_Interaction"), "ID": idc,
+               "Date": date_i.isoformat(), "Canal": canal, "Objet": objet,
+               "Résumé": resume, "Résultat": resultat, "Responsable": responsable,
+               "Prochaine_Action": prochaine_action, "Relance": relance.isoformat() if relance else ""}
+        
+        dfi = pd.concat([dfi, pd.DataFrame([new])], ignore_index=True)
+        save_df(dfi, DATA["interactions"])
+        st.success("Interaction enregistrée")
+        st.experimental_rerun()
+
+    st.markdown("### Liste des interactions")
+    gb = GridOptionsBuilder.from_dataframe(dfi)
+    gb.configure_default_column(sortable=True, filterable=True, resizable=True)
+    AgGrid(dfi, gridOptions=gb.build(), height=400, fit_columns_on_grid_load=True)
+
+# --- PAGE Événements avec vue détaillée et formulaire ---
+elif page == "Evenements":
     st.title("📅 Événements")
-    filt = st.text_input("Filtre rapide (nom, type, lieu, notes…)", "")
-    page_size_evt = st.selectbox("Taille de page", [20,50,100,200], index=0, key="pg_evt")
-    df_show=df_events.copy()
-    if filt:
-        t=filt.lower()
-        df_show=df_show[df_show.apply(lambda r: any(t in str(r[c]).lower() for c in ["Nom_Événement","Type","Lieu","Notes"]), axis=1)]
-    if HAS_AGGRID:
-        gob=GridOptionsBuilder.from_dataframe(df_show)
-        gob.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size_evt)
-        gob.configure_default_column(filter=True, sortable=True, resizable=True)
-        gob.configure_side_bar()
-        AgGrid(df_show, gridOptions=gob.build(), height=520, update_mode=GridUpdateMode.NO_UPDATE, allow_unsafe_jscode=True)
-    else:
-        st.dataframe(df_show, use_container_width=True)
+    dfe = load_df(DATA["evenements"], E_COLS)
 
-# ------------------------------------------------------------------
-# PAGE RAPPORTS
-# ------------------------------------------------------------------
-elif page=="Rapports":
-    st.title("📑 Rapports & Export")
-    dfe2, dfp2, dfpay2, dfcert2 = filtered_tables_for_period(annee, mois)
-    dfc2 = df_contacts.copy()
-    total_contacts=len(dfc2)
-    prospects_actifs=len(dfc2[(dfc2["Type"]=="Prospect") & (dfc2["Statut"]=="Actif")])
-    membres=len(dfc2[dfc2["Type"]=="Membre"])
-    ca_regle=impayes=0.0
-    if not dfpay2.empty:
-        dfpay2["Montant"]=pd.to_numeric(dfpay2["Montant"], errors="coerce").fillna(0.0)
-        ca_regle=float(dfpay2[dfpay2["Statut"]=="Réglé"]["Montant"].sum())
-        impayes=float(dfpay2[dfpay2["Statut"]!="Réglé"]["Montant"].sum())
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric("👥 Contacts", total_contacts)
-    c2.metric("🧲 Prospects actifs", prospects_actifs)
-    c3.metric("🏆 Membres", membres)
-    c4.metric("💰 CA réglé", f"{int(ca_regle):,} FCFA".replace(","," "))
+    with st.form("form_evenement"):
+        nom = st.text_input("Nom de l'événement")
+        typ = st.selectbox("Type", SET["types_evenements"])
+        dt = st.date_input("Date", date.today())
+        duree = st.number_input("Durée (heures)", min_value=0.0, step=0.5)
+        lieu = st.text_input("Lieu")
+        formateurs = st.text_area("Formateur(s)")
+        invites = st.text_area("Invité(s)")
+        objectif = st.text_area("Objectif")
+        periode = st.selectbox("Période", ["Matinée", "Après-midi", "Journée"])
+        notes = st.text_area("Notes")
 
-    st.markdown("---"); st.markdown("### Export Excel (multi-onglets)")
-    buf=io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        df_contacts.to_excel(w, index=False, sheet_name="contacts")
-        df_inter.to_excel(w, index=False, sheet_name="interactions")
-        df_events.to_excel(w, index=False, sheet_name="evenements")
-        df_parts.to_excel(w, index=False, sheet_name="participations")
-        df_pay.to_excel(w, index=False, sheet_name="paiements")
-        df_cert.to_excel(w, index=False, sheet_name="certifications")
-    st.download_button("⬇️ Télécharger la base (Excel, 6 feuilles)", buf.getvalue(),
-                       file_name="IIBA_base.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        submit = st.form_submit_button("Enregistrer événement")
 
-# ------------------------------------------------------------------
-# PAGE ADMIN — Paramètres / Migration / Reset / Purge
-# ------------------------------------------------------------------
-elif page=="Admin":
-    st.title("⚙️ Admin — Paramètres, Migration & Maintenance")
+    if submit:
+        new = {"ID_Événement": generate_id("EVT", dfe, "ID_Événement"), "Nom_Événement": nom,
+               "Type": typ, "Date": dt.isoformat(), "Durée_h": duree, "Lieu": lieu,
+               "Formateur(s)": formateurs, "Invité(s)": invites, "Objectif": objectif,
+               "Période": periode, "Notes": notes, "Coût_Total": 0.0, "Recettes": 0.0, "Bénéfice": 0.0}
+        dfe = pd.concat([dfe, pd.DataFrame([new])], ignore_index=True)
+        save_df(dfe, DATA["evenements"])
+        st.success("Événement enregistré")
+        st.experimental_rerun()
 
-    st.markdown("#### Paramètres (listes déroulantes)")
-    with st.form("set_form"):
-        c1,c2,c3=st.columns(3)
-        genres=c1.text_area("Genres","\n".join(SET["genres"]))
-        types_contact=c2.text_area("Types de contact","\n".join(SET["types_contact"]))
-        statuts_eng=c3.text_area("Statuts d'engagement","\n".join(SET["statuts_engagement"]))
-        s1,s2,s3=st.columns(3)
-        secteurs=s1.text_area("Secteurs","\n".join(SET["secteurs"]))
-        pays=s2.text_area("Pays","\n".join(SET["pays"]))
-        villes=s3.text_area("Villes","\n".join(SET["villes"]))
-        s4,s5,s6=st.columns(3)
-        sources=s4.text_area("Sources","\n".join(SET["sources"]))
-        canaux=s5.text_area("Canaux","\n".join(SET["canaux"]))
-        resint=s6.text_area("Résultats interaction","\n".join(SET["resultats_inter"]))
-        e1,e2,e3=st.columns(3)
-        types_evt=e1.text_area("Types événements","\n".join(SET["types_evenements"]))
-        lieux=e2.text_area("Lieux","\n".join(SET["lieux"]))
-        moyens=e3.text_area("Moyens paiement","\n".join(SET["moyens_paiement"]))
-        e4,e5=st.columns(2)
-        statpay=e4.text_area("Statuts paiement","\n".join(SET["statuts_paiement"]))
-        tcert=e5.text_area("Types certification","\n".join(SET["types_certif"]))
-        top20=st.text_area("Entreprises cibles (Top-20 / GECAM)","\n".join(SET["entreprises_cibles"]))
-        ok=st.form_submit_button("💾 Enregistrer")
-        if ok:
-            SET.update({
-                "genres":[x.strip() for x in genres.splitlines() if x.strip()],
-                "types_contact":[x.strip() for x in types_contact.splitlines() if x.strip()],
-                "statuts_engagement":[x.strip() for x in statuts_eng.splitlines() if x.strip()],
-                "secteurs":[x.strip() for x in secteurs.splitlines() if x.strip()],
-                "pays":[x.strip() for x in pays.splitlines() if x.strip()],
-                "villes":[x.strip() for x in villes.splitlines() if x.strip()],
-                "sources":[x.strip() for x in sources.splitlines() if x.strip()],
-                "canaux":[x.strip() for x in canaux.splitlines() if x.strip()],
-                "resultats_inter":[x.strip() for x in resint.splitlines() if x.strip()],
-                "types_evenements":[x.strip() for x in types_evt.splitlines() if x.strip()],
-                "lieux":[x.strip() for x in lieux.splitlines() if x.strip()],
-                "moyens_paiement":[x.strip() for x in moyens.splitlines() if x.strip()],
-                "statuts_paiement":[x.strip() for x in statpay.splitlines() if x.strip()],
-                "types_certif":[x.strip() for x in tcert.splitlines() if x.strip()],
-                "entreprises_cibles":[x.strip() for x in top20.splitlines() if x.strip()],
-            }); save_settings(SET); st.success("Paramètres enregistrés.")
+    st.markdown("### Liste des événements")
+    gb = GridOptionsBuilder.from_dataframe(dfe)
+    gb.configure_default_column(sortable=True, filterable=True, resizable=True)
+    AgGrid(dfe, gridOptions=gb.build(), height=400, fit_columns_on_grid_load=True)
 
-    st.markdown("---")
-    st.header("📦 Migration — Global & Multi-onglets (logs & collisions d'ID)")
-    mode_mig = st.radio("Mode de migration", ["Import Excel global (.xlsx)","Import Excel multi-onglets (.xlsx)","Import CSV global","Par table (CSV)"], horizontal=True)
+# --- PAGE Participations avec filtre contact + grille ---
+elif page == "Participations":
+    st.title("🙋 Participations")
+    dfp = load_df(DATA["participations"], P_COLS)
+    dfc = load_df(DATA["contacts"], C_COLS)
+    dfe = load_df(DATA["evenements"], E_COLS)
 
-    # --------- Import Excel Global
-    if mode_mig=="Import Excel global (.xlsx)":
-        up = st.file_uploader("Fichier Excel global (.xlsx)", type=["xlsx"], key="xlsx_up")
-        st.caption("La feuille doit contenir la colonne **__TABLE__**.")
-        if st.button("Importer l'Excel global") and up is not None:
-            log={"timestamp":datetime.now().isoformat(),"import_type":"excel_global","counts":{},"errors":[],"collisions":{}}
-            try:
-                xls=pd.ExcelFile(up); sheet="Global" if "Global" in xls.sheet_names else xls.sheet_names[0]
-                gdf=pd.read_excel(xls, sheet_name=sheet, dtype=str)
-                if "__TABLE__" not in gdf.columns: raise ValueError("Colonne '__TABLE__' manquante.")
-                gcols=["__TABLE__"]+sorted(set(sum(ALL_SCHEMAS.values(),[])))
-                for c in gcols:
-                    if c not in gdf.columns: gdf[c]=""
-                # Contacts
-                sub_c=gdf[gdf["__TABLE__"]=="contacts"].copy(); sub_c=sub_c[C_COLS].fillna("")
-                sub_c["Top20"]=sub_c["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
-                valid_c, rejects_c = dedupe_contacts(sub_c)
-                base=df_contacts.copy(); collisions=[]
-                if "ID" in valid_c.columns and not valid_c.empty:
-                    incoming=set(x for x in valid_c["ID"].astype(str) if x and x.lower()!="nan")
-                    existing=set(base["ID"].astype(str))
-                    collisions=sorted(list(incoming & existing))
-                    if collisions: base=base[~base["ID"].isin(collisions)]
-                patt=re.compile(r"^CNT_(\d+)$"); base_max=0
-                for x in base["ID"].dropna().astype(str):
-                    m=patt.match(x.strip())
-                    if m:
-                        try: base_max=max(base_max,int(m.group(1)))
-                        except: pass
-                next_id=base_max+1; new_rows=[]
-                for _,r in valid_c.iterrows():
-                    rid=r["ID"]
-                    if not isinstance(rid,str) or rid.strip()=="" or rid.strip().lower()=="nan":
-                        rid=f"CNT_{str(next_id).zfill(3)}"; next_id+=1
-                    rr=r.to_dict(); rr["ID"]=rid; new_rows.append(rr)
-                globals()["df_contacts"]=pd.concat([base, pd.DataFrame(new_rows, columns=C_COLS)], ignore_index=True); save_df(df_contacts, PATHS["contacts"])
-                log["counts"]["contacts"]=len(new_rows); log["collisions"]["contacts"]=collisions
-                if isinstance(rejects_c, pd.DataFrame) and not rejects_c.empty:
-                    st.warning(f"Lignes contacts rejetées : {len(rejects_c)}"); st.dataframe(rejects_c, use_container_width=True)
+    focus_contact = st.session_state.get("focus_contact", None)
+    if focus_contact:
+        dfp = dfp[dfp["ID"] == focus_contact]
+        st.markdown(f"Participations pour contact **{focus_contact}**")
 
-                # Autres tables
-                def save_subset(tbl, cols, path, prefix):
-                    sub=gdf[gdf["__TABLE__"]==tbl].copy(); sub=sub[cols].fillna("")
-                    id_col=cols[0]; base_df=ensure_df(path, cols)
-                    incoming=set(x for x in sub[id_col].astype(str) if x and x.lower()!="nan")
-                    existing=set(base_df[id_col].astype(str))
-                    coll=sorted(list(incoming & existing))
-                    if coll: base_df=base_df[~base_df[id_col].isin(coll)]
-                    patt=re.compile(rf"^{prefix}_(\d+)$"); base_max=0
-                    for x in base_df[id_col].dropna().astype(str):
-                        m=patt.match(x.strip())
-                        if m:
-                            try: base_max=max(base_max,int(m.group(1)))
-                            except: pass
-                    gen=base_max+1; new_rows=[]
-                    for _,r in sub.iterrows():
-                        cur=r[id_col]
-                        if not isinstance(cur,str) or cur.strip()=="" or cur.strip().lower()=="nan":
-                            cur=f"{prefix}_{str(gen).zfill(3)}"; gen+=1
-                        rr=r.to_dict(); rr[id_col]=cur; new_rows.append(rr)
-                    out=pd.concat([base_df, pd.DataFrame(new_rows, columns=cols)], ignore_index=True); save_df(out, path)
-                    log["counts"][tbl]=len(new_rows); log["collisions"][tbl]=coll
-                save_subset("interactions", I_COLS, PATHS["inter"], "INT")
-                save_subset("evenements", E_COLS, PATHS["events"], "EVT")
-                save_subset("participations", P_COLS, PATHS["parts"], "PAR")
-                save_subset("paiements", PAY_COLS, PATHS["pay"], "PAY")
-                save_subset("certifications", CERT_COLS, PATHS["cert"], "CER")
-                st.success("Import Excel global terminé."); st.json(log); log_event("import_excel_global", log)
-            except Exception as e:
-                st.error(f"Erreur d'import Excel global : {e}"); log_event("error_import_excel_global", {"error":str(e)})
+    with st.form("form_participation"):
+        idc = st.selectbox("ID Contact", [""] + dfc["ID"].tolist())
+        ide = st.selectbox("ID Événement", [""] + dfe["ID_Événement"].tolist())
+        role = st.selectbox("Rôle", ["Participant", "Organisateur", "Formateur", "Invité"])
+        inscription = st.date_input("Date inscription", date.today())
+        arrivee = st.text_input("Heure arrivée (HH:MM)")
+        feedback = st.slider("Feedback", 1, 5, 3)
+        note = st.number_input("Note (0-20)", min_value=0, max_value=20)
+        commentaire = st.text_area("Commentaire")
 
-        # Modèle global
-        buf=io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as w:
-            gcols=["__TABLE__"]+sorted(set(sum(ALL_SCHEMAS.values(),[])))
-            pd.DataFrame(columns=gcols).to_excel(w, index=False, sheet_name="Global")
-        st.download_button("⬇️ Modèle Global (xlsx)", buf.getvalue(), file_name="IIBA_global_template.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        submit = st.form_submit_button("Enregistrer participation")
 
-    # --------- Import Excel Multi-onglets
-    elif mode_mig=="Import Excel multi-onglets (.xlsx)":
-        up = st.file_uploader("Classeur Excel (6 feuilles : contacts, interactions, evenements, participations, paiements, certifications)", type=["xlsx"], key="xlsx_multi")
-        if st.button("Importer l'Excel multi-onglets") and up is not None:
-            log={"timestamp":datetime.now().isoformat(),"import_type":"excel_multisheets","counts":{},"errors":[],"collisions":{}}
-            try:
-                xls=pd.ExcelFile(up)
-                def norm(s): return strip_accents(str(s)).lower().strip()
-                sheets={norm(n):n for n in xls.sheet_names}
-                aliases={"contacts":["contacts","contact"],
-                         "interactions":["interactions","interaction"],
-                         "evenements":["evenements","événements","events"],
-                         "participations":["participations","participation"],
-                         "paiements":["paiements","paiement","payments"],
-                         "certifications":["certifications","certification"]}
-                found={}
-                for tbl, names in aliases.items():
-                    for n in names:
-                        k=norm(n)
-                        if k in sheets: found[tbl]=sheets[k]; break
+    if submit and idc and ide:
+        new = {"ID_Participation": generate_id("PAR", dfp, "ID_Participation"), "ID": idc, "ID_Événement": ide,
+               "Rôle": role, "Inscription": inscription.isoformat(), "Arrivée": arrivee,
+               "Temps_Present": "AUTO", "Feedback": feedback, "Note": note,
+               "Commentaire": commentaire, "Nom Participant": "", "Nom Événement": ""}
+        dfp = pd.concat([dfp, pd.DataFrame([new])], ignore_index=True)
+        save_df(dfp, DATA["participations"])
+        st.success("Participation enregistrée")
+        st.experimental_rerun()
 
-                # Contacts
-                if "contacts" in found:
-                    gdf=pd.read_excel(xls, sheet_name=found["contacts"], dtype=str).fillna("")
-                    for c in C_COLS:
-                        if c not in gdf.columns: gdf[c]=""
-                    sub_c=gdf[C_COLS].fillna("")
-                    sub_c["Top20"]=sub_c["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
-                    valid_c, rejects_c = dedupe_contacts(sub_c)
-                    base=df_contacts.copy(); collisions=[]
-                    if "ID" in valid_c.columns and not valid_c.empty:
-                        incoming=set(x for x in valid_c["ID"].astype(str) if x and x.lower()!="nan")
-                        existing=set(base["ID"].astype(str)); collisions=sorted(list(incoming & existing))
-                        if collisions: base=base[~base["ID"].isin(collisions)]
-                    patt=re.compile(r"^CNT_(\d+)$"); base_max=0
-                    for x in base["ID"].dropna().astype(str):
-                        m=patt.match(x.strip())
-                        if m:
-                            try: base_max=max(base_max,int(m.group(1)))
-                            except: pass
-                    next_id=base_max+1; new_rows=[]
-                    for _,r in valid_c.iterrows():
-                        rid=r["ID"]
-                        if not isinstance(rid,str) or rid.strip()=="" or rid.strip().lower()=="nan":
-                            rid=f"CNT_{str(next_id).zfill(3)}"; next_id+=1
-                        rr=r.to_dict(); rr["ID"]=rid; new_rows.append(rr)
-                    globals()["df_contacts"]=pd.concat([base, pd.DataFrame(new_rows, columns=C_COLS)], ignore_index=True); save_df(df_contacts, PATHS["contacts"])
-                    log["counts"]["contacts"]=len(new_rows); log["collisions"]["contacts"]=collisions
-                    if 'rejects_c' in locals() and not rejects_c.empty:
-                        st.warning(f"Lignes contacts rejetées : {len(rejects_c)}"); st.dataframe(rejects_c, use_container_width=True)
+    st.markdown("### Liste des participations")
+    gb = GridOptionsBuilder.from_dataframe(dfp)
+    gb.configure_default_column(sortable=True, filterable=True, resizable=True)
+    AgGrid(dfp, gridOptions=gb.build(), height=400, fit_columns_on_grid_load=True)
 
-                def save_sheet(tbl, cols, path, prefix):
-                    if tbl not in found: return 0, []
-                    sdf=pd.read_excel(xls, sheet_name=found[tbl], dtype=str).fillna("")
-                    for c in cols:
-                        if c not in sdf.columns: sdf[c]=""
-                    sdf=sdf[cols]
-                    id_col=cols[0]; base_df=ensure_df(path, cols)
-                    incoming=set(x for x in sdf[id_col].astype(str) if x and x.lower()!="nan")
-                    existing=set(base_df[id_col].astype(str))
-                    coll=sorted(list(incoming & existing))
-                    if coll: base_df=base_df[~base_df[id_col].isin(coll)]
-                    patt=re.compile(rf"^{prefix}_(\d+)$"); base_max=0
-                    for x in base_df[id_col].dropna().astype(str):
-                        m=patt.match(x.strip())
-                        if m:
-                            try: base_max=max(base_max,int(m.group(1)))
-                            except: pass
-                    gen=base_max+1; new_rows=[]
-                    for _,r in sdf.iterrows():
-                        cur=r[id_col]
-                        if not isinstance(cur,str) or cur.strip()=="" or cur.strip().lower()=="nan":
-                            cur=f"{prefix}_{str(gen).zfill(3)}"; gen+=1
-                        rr=r.to_dict(); rr[id_col]=cur; new_rows.append(rr)
-                    out=pd.concat([base_df, pd.DataFrame(new_rows, columns=cols)], ignore_index=True); save_df(out, path)
-                    return len(new_rows), coll
-                for spec in [("interactions",I_COLS,PATHS["inter"],"INT"),
-                             ("evenements",E_COLS,PATHS["events"],"EVT"),
-                             ("participations",P_COLS,PATHS["parts"],"PAR"),
-                             ("paiements",PAY_COLS,PATHS["pay"],"PAY"),
-                             ("certifications",CERT_COLS,PATHS["cert"],"CER")]:
-                    cnt, coll = save_sheet(*spec); log["counts"][spec[0]]=cnt; log["collisions"][spec[0]]=coll
+# --- PAGE Paiements avec filtre contact + formulaire ---
+elif page == "Paiements":
+    st.title("💳 Paiements")
+    dfpay = load_df(DATA["paiements"], PAY_COLS)
+    dfc = load_df(DATA["contacts"], C_COLS)
+    dfe = load_df(DATA["evenements"], E_COLS)
 
-                st.success("Import Excel multi-onglets terminé."); st.json(log); log_event("import_excel_multisheets", log)
-            except Exception as e:
-                st.error(f"Erreur d'import multi-onglets : {e}"); log_event("error_import_excel_multisheets", {"error":str(e)})
+    focus_contact = st.session_state.get("focus_contact", None)
+    if focus_contact:
+        dfpay = dfpay[dfpay["ID"] == focus_contact]
+        st.markdown(f"Paiements pour contact **{focus_contact}**")
 
-        # Modèle multi-onglets
-        bufm=io.BytesIO()
-        with pd.ExcelWriter(bufm, engine="openpyxl") as w:
-            pd.DataFrame(columns=C_COLS).to_excel(w, index=False, sheet_name="contacts")
-            pd.DataFrame(columns=I_COLS).to_excel(w, index=False, sheet_name="interactions")
-            pd.DataFrame(columns=E_COLS).to_excel(w, index=False, sheet_name="evenements")
-            pd.DataFrame(columns=P_COLS).to_excel(w, index=False, sheet_name="participations")
-            pd.DataFrame(columns=PAY_COLS).to_excel(w, index=False, sheet_name="paiements")
-            pd.DataFrame(columns=CERT_COLS).to_excel(w, index=False, sheet_name="certifications")
-        st.download_button("⬇️ Modèle Multi-onglets (xlsx)", bufm.getvalue(), file_name="IIBA_multisheets_template.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with st.form("form_paiement"):
+        idc = st.selectbox("ID Contact", [""] + dfc["ID"].tolist())
+        ide = st.selectbox("ID Événement", [""] + dfe["ID_Événement"].tolist())
+        date_pay = st.date_input("Date paiement", date.today())
+        montant = st.number_input("Montant FCFA", min_value=0.0, step=100.0)
+        moyen = st.selectbox("Moyen de paiement", SET["moyens_paiement"])
+        statut = st.selectbox("Statut paiement", SET["statuts_paiement"])
+        reference = st.text_input("Référence paiement")
+        notes = st.text_area("Notes")
+        relance = st.date_input("Date relance (optionnelle)", value=None)
 
-    # --------- Import CSV Global + Export Global
-    elif mode_mig=="Import CSV global":
-        up=st.file_uploader("CSV global (colonne __TABLE__)", type=["csv"], key="g_up")
-        if st.button("Importer le CSV global") and up is not None:
-            try:
-                gdf=pd.read_csv(up, dtype=str, encoding="utf-8")
-                if "__TABLE__" not in gdf.columns: raise ValueError("Colonne __TABLE__ manquante.")
-                def save_subset(tbl, cols, path, prefix):
-                    sub=gdf[gdf["__TABLE__"]==tbl].copy()
-                    for c in cols:
-                        if c not in sub.columns: sub[c]=""
-                    sub=sub[cols].fillna("")
-                    id_col=cols[0]; base_df=ensure_df(path, cols)
-                    incoming=set(x for x in sub[id_col].astype(str) if x and x.lower()!="nan")
-                    existing=set(base_df[id_col].astype(str)); coll=sorted(list(incoming & existing))
-                    if coll: base_df=base_df[~base_df[id_col].isin(coll)]
-                    patt=re.compile(rf"^{prefix}_(\d+)$"); base_max=0
-                    for x in base_df[id_col].dropna().astype(str):
-                        m=patt.match(x.strip())
-                        if m:
-                            try: base_max=max(base_max,int(m.group(1)))
-                            except: pass
-                    gen=base_max+1; ids=[]
-                    for _,r in sub.iterrows():
-                        rid=r[id_col]
-                        if not isinstance(rid,str) or rid.strip()=="" or rid.strip().lower()=="nan":
-                            ids.append(f"{prefix}_{str(gen).zfill(3)}"); gen+=1
-                        else: ids.append(rid.strip())
-                    sub[id_col]=ids; out=pd.concat([base_df, sub], ignore_index=True); save_df(out, path)
-                save_subset("contacts", C_COLS, PATHS["contacts"], "CNT")
-                save_subset("interactions", I_COLS, PATHS["inter"], "INT")
-                save_subset("evenements", E_COLS, PATHS["events"], "EVT")
-                save_subset("participations", P_COLS, PATHS["parts"], "PAR")
-                save_subset("paiements", PAY_COLS, PATHS["pay"], "PAY")
-                save_subset("certifications", CERT_COLS, PATHS["cert"], "CER")
-                st.success("Import CSV global terminé.")
-            except Exception as e:
-                st.error(f"Erreur d'import CSV global : {e}")
-        # Export global (Excel)
-        gcols=["__TABLE__"]+sorted(set(sum(ALL_SCHEMAS.values(),[])))
-        rows=[]
-        for tbl, df in [("contacts",df_contacts),("interactions",df_inter),("evenements",df_events),("participations",df_parts),("paiements",df_pay),("certifications",df_cert)]:
-            d=df.copy().fillna(""); d["__TABLE__"]=tbl
-            for c in gcols:
-                if c not in d.columns: d[c]=""
-            rows.append(d[gcols])
-        gexport=pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=gcols)
-        bufg=io.BytesIO()
-        with pd.ExcelWriter(bufg, engine="openpyxl") as w: gexport.to_excel(w, index=False, sheet_name="Global")
-        st.download_button("⬇️ Export Excel (Global)", bufg.getvalue(), file_name="IIBA_export_global.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        submit = st.form_submit_button("Enregistrer paiement")
 
-    # --------- Par table (CSV)
-    else:
-        cimp, cexp = st.columns(2)
-        with cimp:
-            st.subheader("Importer (par table)")
-            up_kind=st.selectbox("Table", list(ALL_SCHEMAS.keys()))
-            up=st.file_uploader("CSV", type=["csv"])
-            if st.button("Importer", key="imp_table") and up is not None:
-                df_new=pd.read_csv(up, dtype=str, encoding="utf-8")
-                cols=ALL_SCHEMAS[up_kind]
-                for c in cols:
-                    if c not in df_new.columns: df_new[c]=""
-                df_new=df_new[cols]; save_df(df_new, PATHS["contacts" if up_kind=="contacts" else "inter" if up_kind=="interactions" else "events" if up_kind=="evenements" else "parts" if up_kind=="participations" else "pay" if up_kind=="paiements" else "cert"])
-                st.success("Import terminé.")
-        with cexp:
-            st.subheader("Exporter (par table)")
-            kind=st.selectbox("Table à exporter", list(ALL_SCHEMAS.keys()))
-            if st.button("Exporter", key="exp_table"):
-                dfx=(df_contacts if kind=="contacts" else df_inter if kind=="interactions" else df_events if kind=="evenements" else df_parts if kind=="participations" else df_pay if kind=="paiements" else df_cert)
-                st.download_button("⬇️ Télécharger CSV", dfx.to_csv(index=False).encode("utf-8"), file_name=f"{kind}.csv", mime="text/csv")
+    if submit and idc and ide:
+        new = {"ID_Paiement": generate_id("PAY", dfpay, "ID_Paiement"), "ID": idc, "ID_Événement": ide,
+               "Date_Paiement": date_pay.isoformat(), "Montant": montant, "Moyen": moyen, "Statut": statut,
+               "Référence": reference, "Notes": notes, "Relance": relance.isoformat() if relance else "", 
+               "Nom Contact": "", "Nom Événement": ""}
+        dfpay = pd.concat([dfpay, pd.DataFrame([new])], ignore_index=True)
+        save_df(dfpay, DATA["paiements"])
+        st.success("Paiement enregistré")
+        st.experimental_rerun()
 
-    st.markdown("---"); st.header("🧹 Maintenance — Réinitialiser & Purger")
-    with st.expander("Réinitialiser la base (⚠️ supprime tous les CSV)", expanded=False):
-        confirm=st.checkbox("Je confirme la suppression de toutes les tables CSV.")
-        if st.button("🗑️ Réinitialiser la base", disabled=not confirm):
-            try:
-                for k,p in PATHS.items():
-                    if k in ("settings","logs"): continue
-                    if p.exists(): p.unlink(missing_ok=True)
-                globals()["df_contacts"]=ensure_df(PATHS["contacts"], C_COLS); save_df(df_contacts, PATHS["contacts"])
-                globals()["df_inter"]=ensure_df(PATHS["inter"], I_COLS); save_df(df_inter, PATHS["inter"])
-                globals()["df_events"]=ensure_df(PATHS["events"], E_COLS); save_df(df_events, PATHS["events"])
-                globals()["df_parts"]=ensure_df(PATHS["parts"], P_COLS); save_df(df_parts, PATHS["parts"])
-                globals()["df_pay"]=ensure_df(PATHS["pay"], PAY_COLS); save_df(df_pay, PATHS["pay"])
-                globals()["df_cert"]=ensure_df(PATHS["cert"], CERT_COLS); save_df(df_cert, PATHS["cert"])
-                st.success("Base réinitialisée."); log_event("reset_db", {"status":"ok"})
-            except Exception as e:
-                st.error(f"Échec de la réinitialisation : {e}"); log_event("error_reset_db", {"error":str(e)})
+    st.markdown("### Liste des paiements")
+    gb = GridOptionsBuilder.from_dataframe(dfpay)
+    gb.configure_default_column(sortable=True, filterable=True, resizable=True)
+    AgGrid(dfpay, gridOptions=gb.build(), height=400, fit_columns_on_grid_load=True)
 
-    with st.expander("Purger un ID (supprime 1 enregistrement)", expanded=False):
-        tbl=st.selectbox("Table", list(ALL_SCHEMAS.keys()), key="purge_tbl")
-        id_col=TABLE_ID_COL[tbl]; target_id=st.text_input(f"ID à supprimer ({id_col})", key="purge_id")
-        if st.button("🧽 Purger l'ID"):
-            if not target_id.strip(): st.error("Veuillez saisir un ID.")
-            else:
-                try:
-                    path=PATHS["contacts" if tbl=="contacts" else "inter" if tbl=="interactions" else "events" if tbl=="evenements" else "parts" if tbl=="participations" else "pay" if tbl=="paiements" else "cert"]
-                    dfx=ensure_df(path, ALL_SCHEMAS[tbl]); before=len(dfx); dfx=dfx[dfx[id_col]!=target_id.strip()]; save_df(dfx, path)
-                    if tbl=="contacts": globals()["df_contacts"]=dfx
-                    elif tbl=="interactions": globals()["df_inter"]=dfx
-                    elif tbl=="evenements": globals()["df_events"]=dfx
-                    elif tbl=="participations": globals()["df_parts"]=dfx
-                    elif tbl=="paiements": globals()["df_pay"]=dfx
-                    else: globals()["df_cert"]=dfx
-                    st.success(f"{before-len(dfx)} ligne(s) supprimée(s)."); log_event("purge_id", {"table":tbl,"id":target_id,"deleted":before-len(dfx)})
-                except Exception as e:
-                    st.error(f"Échec de la purge : {e}"); log_event("error_purge_id", {"table":tbl,"id":target_id,"error":str(e)})
+# --- PAGE Certifications avec filtre contact + formulaire ---
+elif page == "Certifications":
+    st.title("📜 Certifications")
+    dfcert = load_df(DATA["certifications"], CERT_COLS)
+    dfc = load_df(DATA["contacts"], C_COLS)
 
-st.sidebar.markdown("---"); st.sidebar.caption("© IIBA Cameroun — CRM monofichier")
+    focus_contact = st.session_state.get("focus_contact", None)
+    if focus_contact:
+        dfcert = dfcert[dfcert["ID"] == focus_contact]
+        st.markdown(f"Certifications pour contact **{focus_contact}**")
+
+    with st.form("form_certification"):
+        idc = st.selectbox("ID Contact", [""] + dfc["ID"].tolist())
+        type_certif = st.selectbox("Type de certification", SET["types_contact"])
+        date_exam = st.date_input("Date examen", date.today())
+        resultat = st.selectbox("Résultat", ["Réussi", "Échoué", "En attente"])
+        score = st.number_input("Score", min_value=0, step=1)
+        date_obtention = st.date_input("Date obtention", date.today())
+        notes = st.text_area("Notes")
+
+        submit = st.form_submit_button("Enregistrer certification")
+
+    if submit and idc:
+        new = {"ID_Certif": generate_id("CER", dfcert, "ID_Certif"), "ID": idc, "Type_Certif": type_certif,
+               "Date_Examen": date_exam.isoformat(), "Résultat": resultat, "Score": score,
+               "Date_Obtention": date_obtention.isoformat(), "Validité": "AUTO", "Renouvellement": "AUTO",
+               "Notes": notes, "Nom Contact": ""}
+        dfcert = pd.concat([dfcert, pd.DataFrame([new])], ignore_index=True)
+        save_df(dfcert, DATA["certifications"])
+        st.success("Certification enregistrée")
+        st.experimental_rerun()
+
+    st.markdown("### Liste des certifications")
+    gb = GridOptionsBuilder.from_dataframe(dfcert)
+    gb.configure_default_column(sortable=True, filterable=True, resizable=True)
+    AgGrid(dfcert, gridOptions=gb.build(), height=400, fit_columns_on_grid_load=True)
+
+# --- PAGE Paramètres avec affichage et sauvegarde des référentiels ---
+elif page == "Paramètres":
+    st.title("⚙️ Paramètres")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        statuts_paiement = st.text_area("Statuts de paiement", "\n".join(SET["statuts_paiement"]))
+        resultats_inter = st.text_area("Résultats d'interaction", "\n".join(SET["resultats_inter"]))
+        types_contact = st.text_area("Types de contact", "\n".join(SET["types_contact"]))
+        sources = st.text_area("Sources", "\n".join(SET["sources"]))
+    with col2:
+        statuts_engagement = st.text_area("Statuts d'engagement", "\n".join(SET["statuts_engagement"]))
+        secteurs = st.text_area("Secteurs", "\n".join(SET["secteurs"]))
+        pays = st.text_area("Pays", "\n".join(SET["pays"]))
+        canaux = st.text_area("Canaux de communication", "\n".join(SET["canaux"]))
+        types_evenements = st.text_area("Types d'événements", "\n".join(SET["types_evenements"]))
+        moyens_paiement = st.text_area("Moyens de paiement", "\n".join(SET["moyens_paiement"]))
+
+    if st.button("💾 Sauvegarder paramètres"):
+        SET["statuts_paiement"] = statuts_paiement.split("\n")
+        SET["resultats_inter"] = resultats_inter.split("\n")
+        SET["types_contact"] = types_contact.split("\n")
+        SET["sources"] = sources.split("\n")
+        SET["statuts_engagement"] = statuts_engagement.split("\n")
+        SET["secteurs"] = secteurs.split("\n")
+        SET["pays"] = pays.split("\n")
+        SET["canaux"] = canaux.split("\n")
+        SET["types_evenements"] = types_evenements.split("\n")
+        SET["moyens_paiement"] = moyens_paiement.split("\n")
+        save_settings(SET)
+        st.success("Paramètres sauvegardés avec succès !")
