@@ -987,19 +987,19 @@ elif page == "Admin":
                         save_df(df, path)
                         # Réinjecter en mémoire
                         if tbl=="contacts": 
-                            df_contacts = df
+                df_contacts = df
                         elif tbl=="interactions":
-                            df_inter = df
+                        df_inter = df
                         elif tbl=="evenements":
-                            df_events = df
+                        df_events = df
                         elif tbl=="participations":
-                            df_parts = df
+                        df_parts = df
                         elif tbl=="paiements":
-                            df_pay = df
+                        df_pay = df
                         elif tbl=="certifications":
-                            df_cert = df
-                            st.success(f"{before-after} ligne(s) supprimée(s) dans {tbl}.")
-                            log_event("purge_id", {"table": tbl, "id": target_id, "deleted": before-after})
+                        df_cert = df
+                        st.success(f"{before-after} ligne(s) supprimée(s) dans {tbl}.")
+                        log_event("purge_id", {"table": tbl, "id": target_id, "deleted": before-after})
                 except Exception as e:
                     st.error(f"Échec de la purge : {e}")
                     log_event("error_purge_id", {"table": tbl, "id": target_id, "error": str(e)})
