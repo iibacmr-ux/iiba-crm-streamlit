@@ -265,7 +265,10 @@ def aggregates_for_contacts(today=None):
     ag = pd.DataFrame(index=df_contacts["ID"])
     ag["Interactions"] = ag.index.map(inter_count).fillna(0).astype(int)
     ag["Interactions_recent"] = ag.index.map(recent_inter).fillna(0).astype(int)
-    ag["Dernier_contact"] = ag.index.map(last_contact).dt.date
+    # remonte la date la plus récente de contact, gère les valeurs manquantes
+    ag["Dernier_contact"] = ag.index.map(last_contact)  # série de Timestamps ou NaT
+    ag["Dernier_contact"] = pd.to_datetime(ag["Dernier_contact"], errors="coerce")  # convertit en datetime
+    ag["Dernier_contact"] = ag["Dernier_contact"].dt.date  # extrait la date, les NaT deviennent None
     ag["Resp_principal"] = ag.index.map(resp_max).fillna("")
     ag["Participations"] = ag.index.map(parts_count).fillna(0).astype(int)
     ag["A_animé_ou_invité"] = ag.index.map(has_anim).fillna(False)
@@ -598,12 +601,14 @@ if page == "Événements":
             duree = c5.number_input("Durée (h)", min_value=0.0, step=0.5, value=2.0)
             formateur = c6.text_input("Formateur(s)")
             obj = st.text_area("Objectif")
+            
             couts = st.columns(5)
             c_salle = couts.number_input("Coût salle", min_value=0.0, step=1000.0)
-            c_form = couts[1].number_input("Coût formateur", min_value=0.0, step=1000.0)
-            c_log = couts[asset:1].number_input("Coût logistique", min_value=0.0, step=1000.0)
-            c_pub = couts[asset:2].number_input("Coût pub", min_value=0.0, step=1000.0)
-            c_aut = couts.number_input("Autres coûts", min_value=0.0, step=1000.0)
+            c_form  = couts[1].number_input("Coût formateur", min_value=0.0, step=1000.0)
+            c_log   = couts[asset:1].number_input("Coût logistique", min_value=0.0, step=1000.0)
+            c_pub   = couts[asset:2].number_input("Coût pub", min_value=0.0, step=1000.0)
+            c_aut   = couts.number_input("Autres coûts", min_value=0.0, step=1000.0)
+            
             notes = st.text_area("Notes")
             ok = st.form_submit_button("💾 Créer l'événement")
             if ok:
