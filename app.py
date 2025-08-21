@@ -842,8 +842,17 @@ elif page == "Rapports":
 elif page == "Admin":
     st.title("⚙️ Admin — Import & Calcul Automatique des KPI")
 
+    # Upload du fichier Excel
+    excel_file = st.file_uploader(
+        label="📂 Sélectionnez le fichier Excel (Stagiaire-Maeva.xlsx)",
+        type=["xlsx"]
+    )
+    if excel_file is None:
+        st.info("Veuillez uploader votre fichier Excel pour démarrer le calcul des KPI.")
+        st.stop()
+        
     @st.cache_data
-    def load_and_compute_kpis(path: str = "Stagiaire-Maeva.xlsx") -> pd.DataFrame:
+    def load_and_compute_kpis(excel_buffer) -> pd.DataFrame:
         # Chargement de tous les onglets
         all_sheets = pd.read_excel(path, sheet_name=None)
 
