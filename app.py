@@ -686,6 +686,14 @@ if page == "CRM (Grille centrale)":
 if page == "Événements":
     st.title("📅 Événements")
 
+    def _safe_rerun():
+        """Compat rerun pour toutes versions de Streamlit."""
+        import streamlit as _st
+        if hasattr(_st, "rerun"):
+            _st.rerun()
+        elif hasattr(_st, "experimental_rerun"):
+            _st.experimental_rerun()
+            
     # --- Session state helpers ---
     if "selected_event_id" not in st.session_state:
         st.session_state["selected_event_id"] = ""
@@ -722,7 +730,7 @@ if page == "Événements":
     if new_col.button("➕ Nouveau", key="evt_new_btn"):
         st.session_state["selected_event_id"] = ""
         st.session_state["event_form_mode"] = "create"
-        st.experimental_rerun()
+        _safe_rerun()
 
     st.markdown("---")
 
@@ -794,7 +802,7 @@ if page == "Événements":
                 # se repositionner en édition sur le nouvel ID
                 st.session_state["selected_event_id"] = new_id
                 st.session_state["event_form_mode"] = "edit"
-                st.experimental_rerun()
+                _safe_rerun()
 
             if btn_save:
                 if not sel_eid:
@@ -836,7 +844,7 @@ if page == "Événements":
             st.success(f"Événement dupliqué sous l'ID {new_id}.")
             st.session_state["selected_event_id"] = new_id
             st.session_state["event_form_mode"] = "edit"
-            st.experimental_rerun()
+            _safe_rerun()
 
     with col_del:
         st.caption("Confirmation suppression")
@@ -856,12 +864,12 @@ if page == "Événements":
                     # reset sélection
                     st.session_state["selected_event_id"] = ""
                     st.session_state["event_form_mode"] = "create"
-                    st.experimental_rerun()
+                    _safe_rerun()
 
     if col_clear.button("🧹 Vider la sélection", key="evt_clear_btn"):
         st.session_state["selected_event_id"] = ""
         st.session_state["event_form_mode"] = "create"
-        st.experimental_rerun()
+        _safe_rerun()
 
     st.markdown("---")
 
