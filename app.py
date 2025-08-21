@@ -364,8 +364,6 @@ if page == "CRM (Grille centrale)":
     if sel_label:
         st.session_state["selected_contact_id"] = id_map[sel_label]
 
-    st.write("HAS_AGGRID =", HAS_AGGRID)
-
     # Affichage grille avec AgGrid (si installé)
     if HAS_AGGRID and not dfc.empty:
         dfc_show = dfc[table_cols].copy()
