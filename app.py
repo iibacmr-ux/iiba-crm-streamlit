@@ -1021,10 +1021,14 @@ elif page == "Rapports":
         "taux_conv": ("🔄 Taux conversion (période)", f"{taux_conv:.1f}%")
     }
     enabled = [x.strip() for x in PARAMS.get("kpi_enabled","").split(",") if x.strip() in kpis] or list(kpis.keys())
-    cols = st.columns(max(1, len(enabled)))
-    for i, k in enumerate(enabled):
-        cols[i].metric(kpis[k][0], kpis[k][1])
+    # Affichage KPIs sur 2 lignes (4 colonnes max par ligne)
+    ncols = 4
+    rows = [enabled[i:i+ncols] for i in range(0, len(enabled), ncols)]
 
+    for row in rows:
+        cols = st.columns(len(row))
+        for col, k in zip(cols, row):
+            col.metric(kpis[k][0], kpis[k][1])
     # --- Finance événementielle (période) ---
     ev_fin = event_financials(dfe2, dfpay2)
 
