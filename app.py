@@ -1310,6 +1310,48 @@ elif page == "Admin":
             save_params(PARAMS)
             st.success("Paramètres enregistrés dans parametres.csv — les nouvelles listes seront prises en compte au prochain rafraîchissement.")
 
+    # PARAMETRES Rapports Avancés
+
+            objectif_croissance_ca = st.number_input(
+                "Objectif croissance CA (%/an)", 
+                min_value=0, max_value=100,
+                value=int(PARAMS.get("objectif_croissance_ca", "20"))
+            )
+            objectif_marge = st.number_input(
+                "Objectif marge bénéfice (%)", 
+                min_value=0, max_value=100,
+                value=int(PARAMS.get("objectif_marge", "25"))
+            )
+        
+        with col_bsc2:
+            objectif_retention = st.number_input(
+                "Objectif taux rétention (%)", 
+                min_value=0, max_value=100,
+                value=int(PARAMS.get("objectif_retention", "80"))
+            )
+            objectif_nps = st.number_input(
+                "Objectif NPS", 
+                min_value=0, max_value=100,
+                value=int(PARAMS.get("objectif_nps", "70"))
+            )
+        
+        if st.form_submit_button("💾 Enregistrer Paramètres Avancés"):
+            PARAMS.update({
+                "seuil_ba_expert": str(seuil_ba_expert),
+                "seuil_formation_continue": str(seuil_formation_continue),
+                "objectif_certification": str(objectif_certification),
+                "salaire_banque": str(salaire_banque),
+                "salaire_telecom": str(salaire_telecom),
+                "multiplicateur_certif": str(multiplicateur_certif),
+                "objectif_croissance_ca": str(objectif_croissance_ca),
+                "objectif_marge": str(objectif_marge),
+                "objectif_retention": str(objectif_retention),
+                "objectif_nps": str(objectif_nps)
+            })
+            save_params(PARAMS)
+            st.success("✅ Paramètres avancés enregistrés!")    
+
+    # PARAMETRES Migration — Import/Export
     st.markdown("---")
     st.header("📦 Migration — Import/Export Global & Multi-onglets")
 
