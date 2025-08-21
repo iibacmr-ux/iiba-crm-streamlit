@@ -1083,26 +1083,51 @@ elif page == "Rapports":
     st.header("📊 Rapports Avancés & Analyse Stratégique (période)")
 
     # === Données enrichies (période) ===
-    ag_period = aggregates_for_contacts_period(dfc2, df_inter[df_inter["ID"].isin(dfc2["ID"])],
-                                               df_parts[df_parts["ID"].isin(dfc2["ID"])],
-                                               df_pay[df_pay["ID"].isin(dfc2["ID"])],
-                                               df_cert[df_cert["ID"].isin(dfc2["ID"])])
-    
-    # Normalisation des types de clé
-    dfc2 = dfc2.copy()
-    if "ID" in dfc2.columns:
-        dfc2["ID"] = dfc2["ID"].astype(str).str.strip()
+    # Construire aggrégats sur la période uniquement pour les IDs présents dans dfc2
+    ids_period = pd.Index([])
+    if not dfc2.empty and "ID" in dfc2.columns:
+        ids_period = dfc2["ID"].astype(str).str.strip()
 
-    ag_period = ag_period.copy()
-    if not ag_period.empty and "ID" in ag_period.columns:
-        ag_period["ID"] = ag_period["ID"].astype(str).str.strip()
-    else:
-        # garantir un DF avec colonne ID pour éviter ValueError si vide
-        ag_period = pd.DataFrame({"ID": []})    
-    
-    dfc_enriched = dfc2.merge(ag_period, on="ID", how="left")
+    sub_inter = df_inter[df_inter.get("ID", "").astype(str).isin(ids_period)] if not df_inter.empty else df_inter
+    sub_parts = df_parts[df_parts.get("ID", "").astype(str).isin(ids_period)] if not df_parts.empty else df_parts
+    sub_pay  = df_pay [df_pay .get("ID", "").astype(str).isin(ids_period)] if not df_pay.empty  else df_pay
+    sub_cert = df_cert[df_cert.get("ID","").astype(str).isin(ids_period)]   if not df_cert.empty else df_cert
+
+    ag_period = aggregates_for_contacts_period(
+        dfc2.copy(),  # contacts (période)
+        sub_inter.copy(),
+        sub_parts.copy(),
+        sub_pay.copy(),
+        sub_cert.copy()
+    )
+
+    # --- Normalisation des clés de jointure "ID" ---
+    def _normalize_id_col(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        if "ID" not in df.columns:
+            df["ID"] = ""
+        # .astype(str) avant .fillna, puis strip
+        df["ID"] = df["ID"].astype(str).str.strip()
+        # Quelques "nan" littéraux peuvent rester après astype(str)
+        df["ID"] = df["ID"].replace({"nan": "", "None": "", "NaT": ""})
+        return df
+
+    dfc2 = _normalize_id_col(dfc2)
+    ag_period = _normalize_id_col(ag_period)
+
+    # S’assurer qu’on n’a qu’une ligne par ID côté aggrégats
+    if not ag_period.empty:
+        ag_period = ag_period.drop_duplicates(subset=["ID"])
+
+    # Si ag_period est vide, garantir au moins la colonne "ID" pour éviter le ValueError
+    if ag_period.empty and "ID" not in ag_period.columns:
+        ag_period = pd.DataFrame({"ID": []})
+
+    # --- Jointure sûre ---
+    dfc_enriched = dfc2.merge(ag_period, on="ID", how="left", validate="one_to_one")
+    # Normaliser le type au besoin
     if "Score_Engagement" in dfc_enriched.columns:
-        dfc_enriched['Score_Engagement'] = pd.to_numeric(dfc_enriched['Score_Engagement'], errors='coerce').fillna(0)
+        dfc_enriched["Score_Engagement"] = pd.to_numeric(dfc_enriched["Score_Engagement"], errors="coerce").fillna(0)
 
     total_ba = len(dfc_enriched)
     certifies = len(dfc_enriched[dfc_enriched.get("A_certification", False) == True])
