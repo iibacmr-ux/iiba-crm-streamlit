@@ -994,8 +994,9 @@ elif page == "Rapports":
     dfe2, dfp2, dfpay2, dfcert2 = filtered_tables_for_period(annee, mois)
     dfc2 = filtered_contacts_for_period(annee, mois, df_events, df_inter, df_parts, df_pay)
 
-    # === KPI de base (sur période) ===
+    # === KPI de base (sur période) === 
     total_contacts = len(dfc2)
+
     prospects_actifs = len(dfc2[(dfc2.get("Type","")=="Prospect") & (dfc2.get("Statut","")=="Actif")])
     membres = len(dfc2[dfc2.get("Type","")=="Membre"])
     events_count = len(dfe2)
@@ -1006,29 +1007,63 @@ elif page == "Rapports":
         dfpay2["Montant"] = pd.to_numeric(dfpay2["Montant"], errors='coerce').fillna(0)
         ca_regle = float(dfpay2[dfpay2["Statut"]=="Réglé"]["Montant"].sum())
         impayes = float(dfpay2[dfpay2["Statut"]!="Réglé"]["Montant"].sum())
+
     denom_prospects = max(1, len(dfc2[dfc2.get("Type","")=="Prospect"]))
     taux_conv = (membres / denom_prospects) * 100
 
-    # Affichage KPIs (activables via PARAMS["kpi_enabled"])
+    # --- Interactions filtrées pour la période (pour KPI Engagement) ---
+    if not df_inter.empty:
+        di = _safe_parse_series(df_inter["Date"])
+        mask_i = _build_mask_from_dates(di, annee, mois)
+        dfi2 = df_inter[mask_i].copy()
+    else:
+        dfi2 = df_inter.copy()
+
+    # --- KPI Engagement (au moins 1 interaction OU 1 participation dans la période) ---
+    ids_contacts_periode = set(dfc2.get("ID", pd.Series([], dtype=str)).astype(str))
+    ids_inter = set(dfi2.get("ID", pd.Series([], dtype=str)).astype(str)) if not dfi2.empty else set()
+    ids_parts = set(dfp2.get("ID", pd.Series([], dtype=str)).astype(str)) if not dfp2.empty else set()
+    ids_engaged = (ids_inter | ids_parts) & ids_contacts_periode
+    engagement_n = len(ids_engaged)
+    engagement_rate = (engagement_n / max(1, len(ids_contacts_periode))) * 100
+
+    # --- Dictionnaire KPI (inclut alias 'taux_conversion') ---
     kpis = {
-        "contacts_total": ("👥 Contacts (créés / période)", total_contacts),
-        "prospects_actifs": ("🧲 Prospects actifs (période)", prospects_actifs),
-        "membres": ("🏆 Membres (période)", membres),
-        "events_count": ("📅 Événements (période)", events_count),
-        "participations_total": ("🎟 Participations (période)", parts_total),
-        "ca_regle": ("💰 CA réglé (période)", f"{int(ca_regle):,} FCFA".replace(",", " ")),
-        "impayes": ("❌ Impayés (période)", f"{int(impayes):,} FCFA".replace(",", " ")),
-        "taux_conv": ("🔄 Taux conversion (période)", f"{taux_conv:.1f}%")
+        "contacts_total":        ("👥 Contacts (créés / période)", total_contacts),
+        "prospects_actifs":      ("🧲 Prospects actifs (période)", prospects_actifs),
+        "membres":               ("🏆 Membres (période)", membres),
+        "events_count":          ("📅 Événements (période)", events_count),
+        "participations_total":  ("🎟 Participations (période)", parts_total),
+        "ca_regle":              ("💰 CA réglé (période)", f"{int(ca_regle):,} FCFA".replace(",", " ")),
+        "impayes":               ("❌ Impayés (période)", f"{int(impayes):,} FCFA".replace(",", " ")),
+        "taux_conv":             ("🔄 Taux conversion (période)", f"{taux_conv:.1f}%"),
+        # Nouveau KPI Engagement
+        "engagement":            ("🙌 Engagement (période)", f"{engagement_rate:.1f}%"),
     }
-    enabled = [x.strip() for x in PARAMS.get("kpi_enabled","").split(",") if x.strip() in kpis] or list(kpis.keys())
-    # Affichage KPIs sur 2 lignes (4 colonnes max par ligne)
+
+    # Alias pour compatibilité avec Admin ("taux_conversion")
+    aliases = {
+        "taux_conversion": "taux_conv",
+    }
+
+    # Liste des KPI activés (depuis PARAMS), en appliquant les alias
+    enabled_raw = [x.strip() for x in PARAMS.get("kpi_enabled","").split(",") if x.strip()]
+    enabled_keys = []
+    for k in (enabled_raw or list(kpis.keys())):
+        enabled_keys.append(aliases.get(k, k))  # remap si alias, sinon identique
+
+    # Ne garder que ceux réellement disponibles
+    enabled = [k for k in enabled_keys if k in kpis]
+
+    # --- Affichage sur 2 lignes (4 colonnes max par ligne) ---
     ncols = 4
     rows = [enabled[i:i+ncols] for i in range(0, len(enabled), ncols)]
-
     for row in rows:
         cols = st.columns(len(row))
         for col, k in zip(cols, row):
-            col.metric(kpis[k][0], kpis[k][1])
+            label, value = kpis[k]
+            col.metric(label, value)    
+            
     # --- Finance événementielle (période) ---
     ev_fin = event_financials(dfe2, dfpay2)
 
