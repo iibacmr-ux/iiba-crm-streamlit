@@ -687,41 +687,34 @@ elif page == "Rapports":
             p = d.map(lambda x: parse_date(x) if pd.notna(x) else None)
             m = p.notna()
             if year_sel != "Toutes":
-                y = int(year_sel)
-                m = m & p.map(lambda x: x and x.year == y)
+                m &= p.map(lambda x: x and x.year == int(year_sel))
             if month_sel != "Tous":
-                mm = int(month_sel)
-                m = m & p.map(lambda x: x and x.month == mm)
+                m &= p.map(lambda x: x and x.month == int(month_sel))
             return m.fillna(False)
 
-        dfe2 = df_events[in_period(df_events["Date"])].copy() if not df_events.empty else df_events.copy()
+        dfe2 = df_events[in_period(df_events["Date"])] if not df_events.empty else df_events.copy()
         dfp2 = df_parts.copy()
-        if not df_events.empty and not df_parts.empty:
+        if not df_events.empty and not dfp2.empty:
             evd = df_events.set_index("ID_Événement")["Date"].map(parse_date)
             dfp2["_d"] = dfp2["ID_Événement"].map(evd)
             if year_sel != "Toutes":
                 dfp2 = dfp2[dfp2["_d"].map(lambda x: x and x.year == int(year_sel))]
             if month_sel != "Tous":
                 dfp2 = dfp2[dfp2["_d"].map(lambda x: x and x.month == int(month_sel))]
-        dfpay2 = df_pay[in_period(df_pay["Date_Paiement"])].copy() if not df_pay.empty else df_pay.copy()
-        dfcert2 = df_cert[in_period(df_cert["Date_Obtention"]) | in_period(df_cert["Date_Examen"])].copy() if not df_cert.empty else df_cert.copy()
+        dfpay2 = df_pay[in_period(df_pay["Date_Paiement"])] if not df_pay.empty else df_pay.copy()
+        dfcert2 = df_cert[in_period(df_cert["Date_Obtention"]) | in_period(df_cert["Date_Examen"])] if not df_cert.empty else df_cert.copy()
         return dfe2, dfp2, dfpay2, dfcert2
 
-    def event_financials(dfe2: pd.DataFrame, dfpay2: pd.DataFrame) -> pd.DataFrame:
+    def event_financials(dfe2, dfpay2):
         rec_by_evt = pd.Series(dtype=float)
         if not dfpay2.empty:
-            r = dfpay2[dfpay2["Statut"] == "Réglé"].copy()
-            r["Montant"] = pd.to_numeric(r["Montant"], errors="coerce").fillna(0.0)
+            r = dfpay2[dfpay2["Statut"]=="Réglé"].copy()
+            r["Montant"] = pd.to_numeric(r["Montant"], errors='coerce').fillna(0)
             rec_by_evt = r.groupby("ID_Événement")["Montant"].sum()
-
-        ev = df_events.copy() if dfe2.empty else dfe2.copy()
-        for c in ["Cout_Salle", "Cout_Formateur", "Cout_Logistique", "Cout_Pub", "Cout_Autres", "Cout_Total"]:
-            ev[c] = pd.to_numeric(ev[c], errors="coerce").fillna(0.0)
-        ev["Cout_Total"] = np.where(
-            ev["Cout_Total"] > 0,
-            ev["Cout_Total"],
-            ev[["Cout_Salle", "Cout_Formateur", "Cout_Logistique", "Cout_Pub", "Cout_Autres"]].sum(axis=1)
-        )
+        ev = dfe2 if not dfe2.empty else df_events.copy()
+        for c in ["Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total"]:
+            ev[c] = pd.to_numeric(ev[c], errors='coerce').fillna(0)
+        ev["Cout_Total"] = ev["Cout_Total"].where(ev["Cout_Total"]>0, ev[["Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres"]].sum(axis=1))
         ev = ev.set_index("ID_Événement")
         rep = pd.DataFrame({
             "Nom_Événement": ev["Nom_Événement"],
@@ -729,7 +722,7 @@ elif page == "Rapports":
             "Date": ev["Date"],
             "Coût_Total": ev["Cout_Total"]
         })
-        rep["Recette"] = rec_by_evt.fillna(0.0)
+        rep["Recette"] = rec_by_evt.fillna(0)
         rep["Bénéfice"] = rep["Recette"] - rep["Coût_Total"]
         return rep.reset_index()
 
@@ -737,125 +730,84 @@ elif page == "Rapports":
     dfc2 = df_contacts.copy()
 
     total_contacts = len(dfc2)
-    prospects_actifs = len(dfc2[(dfc2["Type"] == "Prospect") & (dfc2["Statut"] == "Actif")])
-    membres = len(dfc2[dfc2["Type"] == "Membre"])
-    events_count = len(dfe2) if not dfe2.empty else 0
-    parts_total = len(dfp2) if not dfp2.empty else 0
+    prospects_actifs = len(dfc2[(dfc2["Type"]=="Prospect") & (dfc2["Statut"]=="Actif")])
+    membres = len(dfc2[dfc2["Type"]=="Membre"])
+    events_count = len(dfe2)
+    parts_total = len(dfp2)
 
-    ca_regle = impayes = 0.0
+    ca_regle, impayes = 0.0, 0.0
     if not dfpay2.empty:
-        dfpay2["Montant"] = pd.to_numeric(dfpay2["Montant"], errors="coerce").fillna(0.0)
-        ca_regle = float(dfpay2[dfpay2["Statut"] == "Réglé"]["Montant"].sum())
-        impayes = float(dfpay2[dfpay2["Statut"] != "Réglé"]["Montant"].sum())
+        dfpay2["Montant"] = pd.to_numeric(dfpay2["Montant"], errors='coerce').fillna(0)
+        ca_regle = float(dfpay2[dfpay2["Statut"]=="Réglé"]["Montant"].sum())
+        impayes = float(dfpay2[dfpay2["Statut"]!="Réglé"]["Montant"].sum())
+    taux_conv = (membres / max(1,len(dfc2[dfc2["Type"]=="Prospect"])))*100
 
-    prospects_total = len(dfc2[dfc2["Type"] == "Prospect"])
-    prospects_convertis = len(dfc2[dfc2["Type"] == "Membre"])
-    taux_conv = (prospects_convertis / prospects_total * 100) if prospects_total else 0.0
-
+    # Affichage KPIs
     kpis = {
-        "contacts_total": ("👥 Contacts", total_contacts),
-        "prospects_actifs": ("🧲 Prospects actifs", prospects_actifs),
+        "contacts_total": ("👥 Total Contacts", total_contacts),
+        "prospects_actifs": ("🧲 Prospects Actifs", prospects_actifs),
         "membres": ("🏆 Membres", membres),
         "events_count": ("📅 Événements", events_count),
-        "participations_total": ("🎟️ Participations", parts_total),
-        "ca_regle": ("💰 CA réglé", f"{int(ca_regle):,} FCFA".replace(",", " ")),
-        "impayes": ("⛔ Impayés", f"{int(impayes):,} FCFA".replace(",", " ")),
-        "taux_conversion": ("🔁 Taux de conversion", f"{taux_conv:.1f}%"),
+        "participations_total": ("🎟 Participations", parts_total),
+        "ca_regle": ("💰 CA payé", f"{int(ca_regle):,} FCFA".replace(",", " ")),
+        "impayes": ("❌ Impayés", f"{int(impayes):,} FCFA".replace(",", " ")),
+        "taux_conv": ("🔄 Taux conversion", f"{taux_conv:.1f}%")
     }
-    enabled = [
-        x.strip() for x in str(PARAMS.get("kpi_enabled", "")).split(",")
-        if x.strip() and x.strip() in kpis
-    ]
-    cols = st.columns(max(1, len(enabled)))
-    for i, k in enumerate(enabled):
+    enabled = [x for x in PARAMS.get("kpi_enabled","").split(",") if x in kpis]
+    cols = st.columns(max(1,len(enabled)))
+    for i,k in enumerate(enabled):
         cols[i].metric(kpis[k][0], kpis[k][1])
 
     ev_fin = event_financials(dfe2, dfpay2)
     if alt and not ev_fin.empty:
-        st.subheader("💹 CA vs Coût par événement (et Bénéfice)")
-        ev_fin_melt = ev_fin.melt(
-            id_vars=["ID_Événement", "Nom_Événement"],
-            value_vars=["Recette", "Coût_Total", "Bénéfice"],
-            var_name="Metric", value_name="Montant"
-        )
-        chart = alt.Chart(ev_fin_melt).mark_bar().encode(
-            x=alt.X("Nom_Événement:N", sort="-y"),
-            y=alt.Y("Montant:Q"),
-            color="Metric:N",
-            tooltip=["Nom_Événement", "Metric", "Montant"]
-        ).properties(height=320).interactive()
-        st.altair_chart(chart, use_container_width=True)
+        chart1 = alt.Chart(ev_fin.melt(id_vars=["Nom_Événement"], value_vars=["Recette","Coût_Total","Bénéfice"])).mark_bar().encode(
+            x=alt.X("Nom_Événement", sort="-y"),
+            y='value:Q',
+            color='variable:N',
+            tooltip=['Nom_Événement', 'variable', 'value']
+        ).properties(height=300,title='CA vs Coût vs Bénéfice par événement')
+        st.altair_chart(chart1,use_container_width=True)
 
     if not dfp2.empty:
-        st.subheader("👥 Participants par mois")
-        dfp2["_d"] = dfp2.get("_d")
-        if "_d" not in dfp2 or dfp2["_d"].isna().all():
-            evd = df_events.set_index("ID_Événement")["Date"].map(parse_date)
-            dfp2["_d"] = dfp2["ID_Événement"].map(evd)
-        dfp2["_mois"] = pd.to_datetime(dfp2["_d"]).dt.to_period("M").astype(str)
-        agg = dfp2.groupby("_mois")["ID_Participation"].count().reset_index(name="Participants")
-        if alt:
-            line = alt.Chart(agg).mark_line(point=True).encode(
-                x="__mois:N", y="Participants:Q"
-            ).transform_calculate(__mois="datum._mois")
-            st.altair_chart(line.properties(height=280), use_container_width=True)
-        else:
-            st.dataframe(agg)
+        dfp2['_mois'] = pd.to_datetime(dfp2["_d"]).dt.to_period("M").astype(str) if "_d" in dfp2 else None
+        agg = dfp2.groupby('_mois')['ID_Participation'].count().reset_index()
+        chart2 = alt.Chart(agg).mark_line(point=True).encode(
+            x=' _mois:N',
+            y='ID_Participation:Q'
+        ).properties(height=250, title="Participants par Mois")
+        st.altair_chart(chart2,use_container_width=True)
 
-    if not df_parts.empty and not df_events.empty:
-        st.subheader("😊 Satisfaction moyenne par type d'événement")
-        dfp = df_parts.copy()
-        dfp["Note"] = pd.to_numeric(dfp["Note"], errors="coerce")
-        types = df_events.set_index("ID_Événement")["Type"]
-        dfp["Type"] = dfp["ID_Événement"].map(types)
-        ag = dfp.groupby("Type")["Note"].mean().reset_index()
-        if alt:
-            bar = alt.Chart(ag).mark_bar().encode(
-                x="Type:N", y="Note:Q", tooltip=["Type", "Note"]
-            )
-            st.altair_chart(bar.properties(height=280), use_container_width=True)
-        else:
-            st.dataframe(ag)
+    if not dfp2.empty and not dfe2.empty:
+        dfp2['Type'] = dfe2.set_index('ID_Événement')['Type']
+        agg = dfp2.groupby('Type')['Note'].mean().reset_index()
+        chart3 = alt.Chart(agg).mark_bar().encode(
+            x='Type:N', y='Note:Q', tooltip=['Type', 'Note']
+        ).properties(height=250, title="Satisfaction Moyenne par Type d'Événement")
+        st.altair_chart(chart3, use_container_width=True)
 
-    st.markdown("---")
-    st.subheader("🎯 Objectifs vs Réel")
+    # Objectifs vs Réel
+    st.header("🎯 Objectifs vs Réel")
+    def get_target(k): 
+        try: return float(PARAMS.get(k,"0"))
+        except: return 0
+    y= datetime.now().year
+    df_targets = pd.DataFrame([
+        (k,get_target(f'kpi_target_{k}_year_{y}'),v) for k,v in 
+        [('contacts_total',total_contacts), ('ca_regle',ca_regle), ('participations_total',parts_total)]
+    ], columns=['KPI','Objectif','Réel'])
+    df_targets['Écart'] = df_targets['Réel'] - df_targets['Objectif']
+    st.dataframe(df_targets, use_container_width=True)
 
-    def get_target(key):
-        try:
-            return float(PARAMS.get(key, "0") or 0)
-        except:
-            return 0
-
-    y = datetime.now().year
-    goals = [
-        ("contacts_total", total_contacts),
-        ("ca_regle", ca_regle),
-        ("participations_total", parts_total),
-    ]
-    rows = []
-    for k, val in goals:
-        tgt = get_target(f"kpi_target_{k}_year_{y}")
-        delta = val - tgt
-        rows.append({"KPI": k, "Objectif": tgt, "Réel": val, "Écart": delta})
-    if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
-
-    # Export rapport Excel complet
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df_contacts.to_excel(writer, index=False, sheet_name="contacts")
-        df_inter.to_excel(writer, index=False, sheet_name="interactions")
-        df_events.to_excel(writer, index=False, sheet_name="evenements")
-        df_parts.to_excel(writer, index=False, sheet_name="participations")
-        df_pay.to_excel(writer, index=False, sheet_name="paiements")
-        df_cert.to_excel(writer, index=False, sheet_name="certifications")
-        ev_fin.to_excel(writer, index=False, sheet_name="finance_events")
-    st.download_button(
-        "⬇️ Exporter le rapport (Excel)",
-        buf.getvalue(),
-        file_name="IIBA_rapport.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        df_contacts.to_excel(writer, sheet_name="Contacts", index=False)
+        df_inter.to_excel(writer, sheet_name="Interactions", index=False)
+        df_events.to_excel(writer, sheet_name="Événements", index=False)
+        df_parts.to_excel(writer, sheet_name="Participations", index=False)
+        df_pay.to_excel(writer, sheet_name="Paiements", index=False)
+        df_cert.to_excel(writer, sheet_name="Certifications", index=False)
+        ev_fin.to_excel(writer, sheet_name="Finance", index=False)
+    st.download_button("⬇ Export Rapport Excel", buf.getvalue(), "rapport_iiba_cameroon.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") 
     
     st.markdown("---")
     st.header("📊 Rapports Avancés & Analyse Stratégique")
