@@ -1577,6 +1577,35 @@ elif page == "Admin":
             except Exception as e:
                 st.error(f"Erreur lors de l'import par table : {e}")
                 log_event("error_import_excel_par_table", {"error": str(e)})
+        # --- Export Excel par Table (même format que l'import multi-onglets) ---
+        st.divider()
+        st.caption("Exporter les données existantes au format multi-onglets (sécurisation/backup).")
+
+        # On reconstruit les DataFrames à partir des CSV sur disque pour être sûrs d'exporter l'état courant
+        df_contacts_exp = ensure_df(PATHS["contacts"], C_COLS)
+        df_inter_exp    = ensure_df(PATHS["inter"],    I_COLS)
+        df_events_exp   = ensure_df(PATHS["events"],   E_COLS)
+        df_parts_exp    = ensure_df(PATHS["parts"],    P_COLS)
+        df_pay_exp      = ensure_df(PATHS["pay"],      PAY_COLS)
+        df_cert_exp     = ensure_df(PATHS["cert"],     CERT_COLS)
+
+        buf_export_multi = io.BytesIO()
+        with pd.ExcelWriter(buf_export_multi, engine="openpyxl") as writer:
+            df_contacts_exp.to_excel(writer, sheet_name="contacts", index=False)
+            df_inter_exp.to_excel(writer,    sheet_name="interactions", index=False)
+            df_events_exp.to_excel(writer,   sheet_name="evenements", index=False)
+            df_parts_exp.to_excel(writer,    sheet_name="participations", index=False)
+            df_pay_exp.to_excel(writer,      sheet_name="paiements", index=False)
+            df_cert_exp.to_excel(writer,     sheet_name="certifications", index=False)
+
+        st.download_button(
+            "⬇️ Exporter Excel par Table (backup)",
+            buf_export_multi.getvalue(),
+            file_name=f"IIBA_export_multisheets_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_export_multisheets"
+        )
+
 
     elif mode_mig == "Import Excel multi-onglets (.xlsx)":
         up = st.file_uploader("Classeur Excel (6 feuilles : contacts, interactions, evenements, participations, paiements, certifications)",
