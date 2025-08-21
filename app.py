@@ -974,7 +974,7 @@ elif page == "Rapports":
         if not dfi_all.empty and "Date" in dfi_all.columns and "ID" in dfi_all.columns:
             dfi = dfi_all.copy()
             dfi["ID"] = dfi["ID"].astype(str).str.strip()
-            dfi["_di"] = _safe_parse_series(dfi["Date"])
+            dfi["_di"] = pd.to_datetime(_safe_parse_series(dfi["Date"]), errors="coerce") 
             first_inter = dfi.groupby("ID")["_di"].min()
         else:
             first_inter = pd.Series(dtype=object)
@@ -983,21 +983,24 @@ elif page == "Rapports":
         if (not dfp_all.empty and "ID" in dfp_all.columns and "ID_Événement" in dfp_all.columns
             and not dfe_all.empty and "ID_Événement" in dfe_all.columns and "Date" in dfe_all.columns):
             dfp = dfp_all.copy()
+            dfp = dfp[dfp["ID_Événement"].notna()]  # évite les NaN dans le mapping
             dfp["ID"] = dfp["ID"].astype(str).str.strip()
-            # map des dates d'événements
-            ev_map = dfe_all.set_index("ID_Événement")["Date"].map(
-                lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None
-            )
+
+            ev_dates = dfe_all.copy()
+            ev_dates["_de"] = _safe_parse_series(ev_dates["Date"])           # objets date/None
+            ev_map = ev_dates.set_index("ID_Événement")["_de"]
+
             dfp["_de"] = dfp["ID_Événement"].map(ev_map)
+            dfp["_de"] = pd.to_datetime(dfp["_de"], errors="coerce")         # -> datetime64[ns]
             first_part = dfp.groupby("ID")["_de"].min()
         else:
-            first_part = pd.Series(dtype=object)
+            first_part = pd.Series(dtype="datetime64[ns]")
 
         # 3) 1er Paiement
         if not dfpay_all.empty and "Date_Paiement" in dfpay_all.columns and "ID" in dfpay_all.columns:
             dfpay = dfpay_all.copy()
             dfpay["ID"] = dfpay["ID"].astype(str).str.strip()
-            dfpay["_dp"] = _safe_parse_series(dfpay["Date_Paiement"])
+            dfpay["_dp"] = pd.to_datetime(_safe_parse_series(dfpay["Date_Paiement"]), errors="coerce")
             first_pay = dfpay.groupby("ID")["_dp"].min()
         else:
             first_pay = pd.Series(dtype=object)
@@ -1006,8 +1009,12 @@ elif page == "Rapports":
         def _first_valid_date(dc, fi, fp, fpay):
             cands = []
             for v in (dc, fi, fp, fpay):
-                if isinstance(v, (datetime, date)):
-                    cands.append(v if isinstance(v, date) else v.date())
+                if isinstance(v, pd.Timestamp):
+                    v = v.to_pydatetime()
+                if isinstance(v, datetime):
+                    cands.append(v.date())
+                elif isinstance(v, date):
+                    cands.append(v)
             return min(cands) if cands else None
 
         # Construire un dict ID -> date de référence
