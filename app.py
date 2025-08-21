@@ -1360,7 +1360,7 @@ elif page == "Admin":
     st.markdown("---")
     st.header("📦 Migration — Import/Export Global & Multi-onglets")
 
-    mode_mig = st.radio("Mode de migration", ["Import Excel global (.xlsx)", "Import Excel multi-onglets (.xlsx)", "Import CSV global", "Par table (CSV)"], horizontal=True)
+    mode_mig = st.radio("Mode de migration", ["Import Excel par Table (.xlsx)", "Import Excel global (.xlsx)", "Import Excel multi-onglets (.xlsx)", "Import CSV global"], horizontal=True)
 
     if mode_mig == "Import Excel global (.xlsx)":
         up = st.file_uploader("Fichier Excel global (.xlsx)", type=["xlsx"], key="xlsx_up")
@@ -1506,6 +1506,77 @@ elif page == "Admin":
             pd.DataFrame(columns=gcols).to_excel(w, index=False, sheet_name="Global")
         st.download_button("⬇️ Modèle Global (xlsx)", buf.getvalue(), file_name="IIBA_global_template.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    # Dans la section Admin — Migration & Import/Export, ajoutez après le mode "Import Excel multi-onglets" :
+    elif mode_mig == "Import Excel par Table (.xlsx)":
+        st.subheader("Import Excel par table (1 onglet par table)")
+        fichier_multi = st.file_uploader(
+            "Classeur Excel (.xlsx) avec un onglet par table : contacts, interactions, evenements, participations, paiements, certifications",
+            type=["xlsx"], key="xlsx_par_table"
+        )
+        if st.button("Importer Excel par table") and fichier_multi is not None:
+            log = {"ts": datetime.now().isoformat(), "type": "excel_par_table", "counts": {}, "errors": []}
+            try:
+                xls = pd.ExcelFile(fichier_multi)
+                # mapping des noms d’onglets attendus
+                expected = {
+                    "contacts": C_COLS,
+                    "interactions": I_COLS,
+                    "evenements": E_COLS,
+                    "participations": P_COLS,
+                    "paiements": PAY_COLS,
+                    "certifications": CERT_COLS
+                }
+                for sheet_name, cols in expected.items():
+                    if sheet_name in xls.sheet_names:
+                        df_in = pd.read_excel(xls, sheet_name=sheet_name, dtype=str).fillna("")
+                        # garantir toutes les colonnes
+                        for c in cols:
+                            if c not in df_in.columns:
+                                df_in[c] = ""
+                        df_in = df_in[cols]
+                        path = PATHS[sheet_name if sheet_name!="evenements" else "events"]
+                        df_base = ensure_df(path, cols)
+                        # déduplication / attribution d’ID
+                        prefix = {"contacts":"CNT","interactions":"INT",
+                                  "evenements":"EVT","participations":"PAR",
+                                  "paiements":"PAY","certifications":"CER"}[sheet_name]
+                        # séparer existants et nouveaux
+                        exist_ids = set(df_base[cols[0]].astype(str))
+                        new_rows = []
+                        next_num = None
+                        patt = re.compile(rf"^{prefix}_(\d+)$")
+                        # calculer prochain numéro si nécessaire
+                        if cols[0] in df_base.columns:
+                            maxn = 0
+                            for vid in exist_ids:
+                                m = patt.match(vid)
+                                if m:
+                                    maxn = max(maxn, int(m.group(1)))
+                            next_num = maxn + 1
+                        for _, row in df_in.iterrows():
+                            rid = str(row[cols[0]]).strip()
+                            if not rid or rid.lower()=="nan" or rid in exist_ids:
+                                rid = f"{prefix}_{str(next_num).zfill(3)}"
+                                next_num += 1
+                            row_data = row.to_dict()
+                            row_data[cols[0]] = rid
+                            new_rows.append(row_data)
+                        if new_rows:
+                            df_out = pd.concat([df_base, pd.DataFrame(new_rows, columns=cols)], ignore_index=True)
+                            save_df(df_out, path)
+                            globals()[f"df_{sheet_name if sheet_name!='evenements' else 'events'}"] = df_out
+                            log["counts"][sheet_name] = len(new_rows)
+                        else:
+                            log["counts"][sheet_name] = 0
+                    else:
+                        log["errors"].append(f"Feuille manquante : {sheet_name}")
+                st.success("Import par table terminé.")
+                st.json(log)
+                log_event("import_excel_par_table", log)
+            except Exception as e:
+                st.error(f"Erreur lors de l'import par table : {e}")
+                log_event("error_import_excel_par_table", {"error": str(e)})
 
     elif mode_mig == "Import Excel multi-onglets (.xlsx)":
         up = st.file_uploader("Classeur Excel (6 feuilles : contacts, interactions, evenements, participations, paiements, certifications)",
@@ -1705,8 +1776,6 @@ elif page == "Admin":
                 st.success("Import CSV global terminé.")
             except Exception as e:
                 st.error(f"Erreur d'import CSV global : {e}")
-
-
 
     # ... code existant load_and_compute_kpis() ...
 
@@ -1915,7 +1984,4 @@ elif page == "Admin":
                     log_event("error_purge_id", {"purge_id": purge_id, "error": str(e)})
             else:
                 st.error("❌ Veuillez saisir un ID à purger.")
-
-    # ... reste du code existant (load_and_compute_kpis etc.) ...
-    
-    
+ 
