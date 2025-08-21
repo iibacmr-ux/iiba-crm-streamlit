@@ -1507,77 +1507,292 @@ elif page == "Admin":
         st.download_button("⬇️ Modèle Global (xlsx)", buf.getvalue(), file_name="IIBA_global_template.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    # Dans la section Admin — Migration & Import/Export, ajoutez après le mode "Import Excel multi-onglets" :
     elif mode_mig == "Import Excel par Table (.xlsx)":
         st.subheader("Import Excel par table (1 onglet par table)")
         fichier_multi = st.file_uploader(
             "Classeur Excel (.xlsx) avec un onglet par table : contacts, interactions, evenements, participations, paiements, certifications",
             type=["xlsx"], key="xlsx_par_table"
         )
-        if st.button("Importer Excel par table") and fichier_multi is not None:
-            log = {"ts": datetime.now().isoformat(), "type": "excel_par_table", "counts": {}, "errors": []}
-            try:
-                xls = pd.ExcelFile(fichier_multi)
-                # mapping des noms d’onglets attendus
-                expected = {
-                    "contacts": C_COLS,
-                    "interactions": I_COLS,
-                    "evenements": E_COLS,
-                    "participations": P_COLS,
-                    "paiements": PAY_COLS,
-                    "certifications": CERT_COLS
-                }
-                for sheet_name, cols in expected.items():
-                    if sheet_name in xls.sheet_names:
-                        df_in = pd.read_excel(xls, sheet_name=sheet_name, dtype=str).fillna("")
-                        # garantir toutes les colonnes
+
+        # ----------------------------------------------------------------------
+        # 1) VALIDATEUR — Aperçu des onglets + colonnes + 5 premières lignes
+        #     + Compteur global de lignes par onglet
+        # ----------------------------------------------------------------------
+        st.markdown("### 🔎 Valider le classeur (avant import)")
+        st.caption("Le validateur détecte les onglets avec tolérance (accents/casse/alias), liste les colonnes attendues/détectées/manquantes, montre un aperçu (5 lignes) et calcule les compteurs globaux par table.")
+
+        if st.button("🔎 Lancer la validation", disabled=(fichier_multi is None)):
+            if fichier_multi is None:
+                st.warning("Veuillez d’abord sélectionner un fichier Excel (.xlsx).")
+            else:
+                try:
+                    import unicodedata, re
+                    xls = pd.ExcelFile(fichier_multi)
+
+                    # Normalisation robuste des noms
+                    def _norm(s: str) -> str:
+                        s = unicodedata.normalize("NFD", str(s))
+                        s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")  # supprime accents
+                        return s.strip().lower()
+
+                    # Map nom_normalisé -> nom_réel
+                    sheet_map = {_norm(n): n for n in xls.sheet_names}
+
+                    # Alias acceptés
+                    aliases = {
+                        "contacts":        ["contacts", "contact"],
+                        "interactions":    ["interactions", "interaction"],
+                        "evenements":      ["evenements", "evenement", "événements", "événement", "events", "event"],
+                        "participations":  ["participations", "participation"],
+                        "paiements":       ["paiements", "paiement", "payments", "payment"],
+                        "certifications":  ["certifications", "certification"],
+                    }
+
+                    expected_cols = {
+                        "contacts": C_COLS,
+                        "interactions": I_COLS,
+                        "evenements": E_COLS,
+                        "participations": P_COLS,
+                        "paiements": PAY_COLS,
+                        "certifications": CERT_COLS
+                    }
+
+                    # Résout l’onglet réel d’une table (alias + normalisation)
+                    def resolve_sheet_name(table_key: str):
+                        for alias in aliases[table_key]:
+                            k = _norm(alias)
+                            if k in sheet_map:
+                                return sheet_map[k]
+                        return None
+
+                    # Compteurs globaux pour le récapitulatif
+                    recap_rows = []   # chaque item: dict(table, feuille, nb_lignes, nb_missing, nb_extra)
+                    overall_ok = True
+
+                    for t in ["contacts","interactions","evenements","participations","paiements","certifications"]:
+                        real = resolve_sheet_name(t)
+                        with st.expander(f"📄 Table **{t}** — " + (f"✅ Feuille trouvée : *{real}*" if real else "❌ Feuille non trouvée"), expanded=False):
+                            if not real:
+                                st.error(f"Onglet manquant pour **{t}**. Alias acceptés : {', '.join(aliases[t])}")
+                                overall_ok = False
+                                # Alimente le récap même si manquant
+                                recap_rows.append({
+                                    "Table": t, "Feuille": "—",
+                                    "Lignes détectées": 0,
+                                    "Colonnes manquantes": len(expected_cols[t]),
+                                    "Colonnes supplémentaires": 0
+                                })
+                                continue
+
+                            # Lit l’onglet, calcule manquantes/extra, montre un head()
+                            df_in = pd.read_excel(xls, sheet_name=real, dtype=str).fillna("")
+                            cols_expected = expected_cols[t]
+                            cols_detected = list(df_in.columns)
+                            missing = [c for c in cols_expected if c not in cols_detected]
+                            extra   = [c for c in cols_detected if c not in cols_expected]
+
+                            st.write("**Colonnes attendues** :", ", ".join(cols_expected))
+                            st.write("**Colonnes détectées** :", ", ".join(cols_detected) if cols_detected else "_(aucune)_")
+
+                            if missing:
+                                st.warning(f"Colonnes **manquantes** ({len(missing)}) : {', '.join(missing)}")
+                                overall_ok = False
+                            else:
+                                st.success("Aucune colonne manquante.")
+
+                            if extra:
+                                st.info(f"Colonnes supplémentaires (ignorées à l’import) : {', '.join(extra)}")
+
+                            # Aperçu
+                            st.write("**Aperçu des 5 premières lignes**")
+                            st.dataframe(df_in.head(5), use_container_width=True)
+
+                            # Alimente le récapitulatif global
+                            recap_rows.append({
+                                "Table": t,
+                                "Feuille": real,
+                                "Lignes détectées": int(len(df_in)),
+                                "Colonnes manquantes": int(len(missing)),
+                                "Colonnes supplémentaires": int(len(extra)),
+                            })
+
+                    # Résumé global + compteur agrégé
+                    st.markdown("---")
+                    st.subheader("📊 Récapitulatif global de la validation")
+                    if recap_rows:
+                        df_recap = pd.DataFrame(recap_rows)
+                        # Totaux
+                        tot_lignes = int(df_recap["Lignes détectées"].sum())
+                        st.dataframe(df_recap, use_container_width=True)
+                        st.info(f"**Total lignes détectées (tous onglets)** : {tot_lignes:,}".replace(",", " "))
+                    else:
+                        st.info("Aucune donnée lue.")
+
+                    if overall_ok:
+                        st.success("Validation terminée ✅ — Tous les onglets requis sont présents et possèdent leurs colonnes clés.")
+                    else:
+                        st.error("Validation terminée ⚠️ — Corrigez les erreurs ci-dessus avant d’importer (onglets/colonnes manquants).")
+
+                except Exception as e:
+                    st.error(f"Erreur de validation : {e}")
+
+        # ----------------------------------------------------------------------
+        # 2) IMPORT — robuste (alias/normalisation + ID auto + append)
+        # ----------------------------------------------------------------------
+        st.markdown("### ⬇️ Importer maintenant")
+        if st.button("📥 Importer Excel par table", disabled=(fichier_multi is None)):
+            if fichier_multi is None:
+                st.warning("Veuillez d’abord sélectionner un fichier Excel (.xlsx).")
+            else:
+                log = {"ts": datetime.now().isoformat(), "type": "excel_par_table", "counts": {}, "errors": [], "matched_sheets": {}}
+                try:
+                    import unicodedata, re
+                    xls = pd.ExcelFile(fichier_multi)
+
+                    def _norm(s: str) -> str:
+                        s = unicodedata.normalize("NFD", str(s))
+                        s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+                        return s.strip().lower()
+
+                    sheet_map = {_norm(n): n for n in xls.sheet_names}
+
+                    aliases = {
+                        "contacts":        ["contacts", "contact"],
+                        "interactions":    ["interactions", "interaction"],
+                        "evenements":      ["evenements", "evenement", "événements", "événement", "events", "event"],
+                        "participations":  ["participations", "participation"],
+                        "paiements":       ["paiements", "paiement", "payments", "payment"],
+                        "certifications":  ["certifications", "certification"],
+                    }
+
+                    expected_cols = {
+                        "contacts": C_COLS,
+                        "interactions": I_COLS,
+                        "evenements": E_COLS,
+                        "participations": P_COLS,
+                        "paiements": PAY_COLS,
+                        "certifications": CERT_COLS
+                    }
+
+                    def resolve_sheet_name(table_key: str):
+                        for alias in aliases[table_key]:
+                            k = _norm(alias)
+                            if k in sheet_map:
+                                return sheet_map[k]
+                        return None
+
+                    def import_sheet(table_key: str):
+                        real = resolve_sheet_name(table_key)
+                        if not real:
+                            log["errors"].append(f"Feuille manquante pour '{table_key}' (alias: {aliases[table_key]})")
+                            return
+
+                        cols = expected_cols[table_key]
+                        df_in = pd.read_excel(xls, sheet_name=real, dtype=str).fillna("")
+                        # Assure toutes les colonnes
                         for c in cols:
                             if c not in df_in.columns:
                                 df_in[c] = ""
                         df_in = df_in[cols]
-                        path = PATHS[sheet_name if sheet_name!="evenements" else "events"]
+
+                        # Chemins / préfix
+                        path_key = (
+                            "events" if table_key == "evenements" else
+                            "inter"  if table_key == "interactions" else
+                            "parts"  if table_key == "participations" else
+                            "pay"    if table_key == "paiements" else
+                            "cert"   if table_key == "certifications" else
+                            "contacts"
+                        )
+                        prefix = {"contacts":"CNT","interactions":"INT","evenements":"EVT",
+                                  "participations":"PAR","paiements":"PAY","certifications":"CER"}[table_key]
+
+                        path = PATHS[path_key]
                         df_base = ensure_df(path, cols)
-                        # déduplication / attribution d’ID
-                        prefix = {"contacts":"CNT","interactions":"INT",
-                                  "evenements":"EVT","participations":"PAR",
-                                  "paiements":"PAY","certifications":"CER"}[sheet_name]
-                        # séparer existants et nouveaux
-                        exist_ids = set(df_base[cols[0]].astype(str))
-                        new_rows = []
-                        next_num = None
+
+                        # Dédup par ID + attribution ID auto en collision/absence
+                        id_col = cols[0]
+                        exist_ids = set(df_base[id_col].astype(str).tolist())
                         patt = re.compile(rf"^{prefix}_(\d+)$")
-                        # calculer prochain numéro si nécessaire
-                        if cols[0] in df_base.columns:
-                            maxn = 0
-                            for vid in exist_ids:
-                                m = patt.match(vid)
-                                if m:
+                        maxn = 0
+                        for vid in exist_ids:
+                            m = patt.match(str(vid))
+                            if m:
+                                try:
                                     maxn = max(maxn, int(m.group(1)))
-                            next_num = maxn + 1
+                                except:
+                                    pass
+                        next_num = maxn + 1
+
+                        new_rows = []
                         for _, row in df_in.iterrows():
-                            rid = str(row[cols[0]]).strip()
-                            if not rid or rid.lower()=="nan" or rid in exist_ids:
+                            rid = str(row[id_col]).strip()
+                            if (not rid) or rid.lower() == "nan" or rid in exist_ids:
                                 rid = f"{prefix}_{str(next_num).zfill(3)}"
                                 next_num += 1
-                            row_data = row.to_dict()
-                            row_data[cols[0]] = rid
-                            new_rows.append(row_data)
+                            r = row.to_dict()
+                            r[id_col] = rid
+                            new_rows.append(r)
+
                         if new_rows:
                             df_out = pd.concat([df_base, pd.DataFrame(new_rows, columns=cols)], ignore_index=True)
                             save_df(df_out, path)
-                            globals()[f"df_{sheet_name if sheet_name!='evenements' else 'events'}"] = df_out
-                            log["counts"][sheet_name] = len(new_rows)
+                            mem_key = (
+                                "events" if table_key == "evenements" else
+                                "inter"  if table_key == "interactions" else
+                                "parts"  if table_key == "participations" else
+                                "pay"    if table_key == "paiements" else
+                                "cert"   if table_key == "certifications" else
+                                "contacts"
+                            )
+                            globals()[f"df_{mem_key}"] = df_out
+                            log["counts"][table_key] = len(new_rows)
+                            log["matched_sheets"][table_key] = real
                         else:
-                            log["counts"][sheet_name] = 0
-                    else:
-                        log["errors"].append(f"Feuille manquante : {sheet_name}")
-                st.success("Import par table terminé.")
-                st.json(log)
-                log_event("import_excel_par_table", log)
-            except Exception as e:
-                st.error(f"Erreur lors de l'import par table : {e}")
-                log_event("error_import_excel_par_table", {"error": str(e)})
-        
+                            log["counts"][table_key] = 0
+                            log["matched_sheets"][table_key] = real
+
+                    for t in ["contacts","interactions","evenements","participations","paiements","certifications"]:
+                        import_sheet(t)
+
+                    st.success("Import par table terminé.")
+                    st.json(log)
+                    log_event("import_excel_par_table", log)
+
+                except Exception as e:
+                    st.error(f"Erreur lors de l'import par table : {e}")
+                    log_event("error_import_excel_par_table", {"error": str(e)})
+
+        # ----------------------------------------------------------------------
+        # 3) Export Excel par Table (backup)
+        # ----------------------------------------------------------------------
+        st.divider()
+        st.caption("Exporter les données existantes au format multi-onglets (sécurisation/backup).")
+
+        df_contacts_exp = ensure_df(PATHS["contacts"], C_COLS)
+        df_inter_exp    = ensure_df(PATHS["inter"],    I_COLS)
+        df_events_exp   = ensure_df(PATHS["events"],   E_COLS)
+        df_parts_exp    = ensure_df(PATHS["parts"],    P_COLS)
+        df_pay_exp      = ensure_df(PATHS["pay"],      PAY_COLS)
+        df_cert_exp     = ensure_df(PATHS["cert"],     CERT_COLS)
+
+        buf_export_multi = io.BytesIO()
+        with pd.ExcelWriter(buf_export_multi, engine="openpyxl") as writer:
+            df_contacts_exp.to_excel(writer, sheet_name="contacts", index=False)
+            df_inter_exp.to_excel(writer,    sheet_name="interactions", index=False)
+            df_events_exp.to_excel(writer,   sheet_name="evenements", index=False)
+            df_parts_exp.to_excel(writer,    sheet_name="participations", index=False)
+            df_pay_exp.to_excel(writer,      sheet_name="paiements", index=False)
+            df_cert_exp.to_excel(writer,     sheet_name="certifications", index=False)
+
+        st.download_button(
+            "⬇️ Exporter Excel par Table (backup)",
+            buf_export_multi.getvalue(),
+            file_name=f"IIBA_export_multisheets_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_export_multisheets"
+        )
+
 
     elif mode_mig == "Import Excel multi-onglets (.xlsx)":
         up = st.file_uploader("Classeur Excel (6 feuilles : contacts, interactions, evenements, participations, paiements, certifications)",
