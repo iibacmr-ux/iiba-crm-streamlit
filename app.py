@@ -815,6 +815,12 @@ elif page == "Rapports":
         rows.append({"KPI": k, "Objectif": tgt, "Réel": val, "Écart": delta})
     if rows:
         st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        
+    # Affichage des KPI calculés
+    prospects = load_and_compute_kpis()
+    st.markdown("---")
+    st.subheader("🎯 Table KPI détaillés")
+    st.dataframe(prospects, use_container_width=True)
 
     # Export rapport Excel complet
     buf = io.BytesIO()
@@ -832,438 +838,132 @@ elif page == "Rapports":
 
 # ---------------------- PAGE ADMIN ----------------------
 
+# ---------------------- PAGE ADMIN — Migration & Import/Export ----------------------
 elif page == "Admin":
-    st.title("⚙️ Admin — Paramètres, Migration & Maintenance (centralisés dans parametres.csv)")
+    st.title("⚙️ Admin — Import & Calcul Automatique des KPI")
 
-    # PARAMETRES LISTES DEROULANTES
-    st.markdown("### Listes déroulantes (stockées dans parametres.csv)")
-    with st.form("lists_form"):
-        def show_line(name, label):
-            raw = PARAMS.get(f"list_{name}", DEFAULT_LISTS.get(name, ""))
-            return st.text_input(label, raw)
-        genres = show_line("genres","Genres (séparés par |)")
-        types_contact = show_line("types_contact","Types de contact (|)")
-        statuts_engagement = show_line("statuts_engagement","Statuts d'engagement (|)")
-        secteurs = show_line("secteurs","Secteurs (|)")
-        pays = show_line("pays","Pays (|)")
-        villes = show_line("villes","Villes (|)")
-        sources = show_line("sources","Sources (|)")
-        canaux = show_line("canaux","Canaux (|)")
-        resultats_inter = show_line("resultats_inter","Résultats d'interaction (|)")
-        types_evenements = show_line("types_evenements","Types d'événements (|)")
-        lieux = show_line("lieux","Lieux (|)")
-        statuts_paiement = show_line("statuts_paiement","Statuts paiement (|)")
-        moyens_paiement = show_line("moyens_paiement","Moyens paiement (|)")
-        types_certif = show_line("types_certif","Types certification (|)")
-        entreprises_cibles = show_line("entreprises_cibles","Entreprises cibles (Top-20) (|)")
-        ok1 = st.form_submit_button("💾 Enregistrer les listes")
-        if ok1:
-            PARAMS.update({
-                "list_genres": genres, "list_types_contact": types_contact, "list_statuts_engagement": statuts_engagement,
-                "list_secteurs": secteurs, "list_pays": pays, "list_villes": villes, "list_sources": sources,
-                "list_canaux": canaux, "list_resultats_inter": resultats_inter, "list_types_evenements": types_evenements,
-                "list_lieux": lieux, "list_statuts_paiement": statuts_paiement, "list_moyens_paiement": moyens_paiement,
-                "list_types_certif": types_certif, "list_entreprises_cibles": entreprises_cibles,
-            })
-            save_params(PARAMS)
-            st.success("Listes enregistrées dans parametres.csv — rechargez la page si nécessaire.")
+    # Nouvelle routine d’import et calcul KPI
+    @st.cache_data
+    def load_and_compute_kpis(path: str = "Stagiaire-Maeva.xlsx") -> pd.DataFrame:
+        # Chargement de tous les onglets
+        all_sheets = pd.read_excel(path, sheet_name=None)
+        # Concaténation
+        prospects = pd.concat([
+            all_sheets.get("ListeProspects", pd.DataFrame()).dropna(subset=["Id"]),
+            all_sheets.get("New", pd.DataFrame()).loc[:, ["Id", "Nom", "Prénom", "Email", "Phone", "Approval Status", "Paiements effectués"]],
+            all_sheets.get("RelanceProspect", pd.DataFrame()).loc[:, ["ID", "STATUT", "DATE RELANCE 1":"DATE RELANCE 5"]],
+            all_sheets.get("Afterwork Online", pd.DataFrame()).loc[:, ["First Name", "Last Name", "Email", "Approval Status", "Heure d’inscription", "Heure de participation", "Temps de présence en séance (minutes)"]],
+            all_sheets.get("Webinaires Gratuits", pd.DataFrame()).loc[:, ["Nom d’utilisateur (nom original)", "Approval Status", "Temps de présence en séance (minutes)"]],
+            all_sheets.get("Groupe d’étude", pd.DataFrame()).loc[:, ["First Name", "Approval Status", "Heure d’inscription", "Heure de participation", "Temps de présence en séance (minutes)"]],
+            all_sheets.get("Cartographie", pd.DataFrame()).loc[:, ["First Name", "Approval Status", "Heure d’inscription", "Heure de participation", "Temps de présence en séance (minutes)"]]
+        ], ignore_index=True, sort=False)
 
-    # PARAMETRES SCORING ET AFFICHAGE
-    st.markdown("### Règles de scoring & d'affichage (parametres.csv)")
-    with st.form("rules_form"):
-        c1,c2,c3,c4 = st.columns(4)
-        vip_thr = c1.number_input("Seuil VIP (FCFA)", min_value=0.0, step=50000.0, value=float(PARAMS.get("vip_threshold","500000")))
-        w_int = c2.number_input("Poids Interaction", min_value=0.0, step=0.5, value=float(PARAMS.get("score_w_interaction","1")))
-        w_part = c3.number_input("Poids Participation", min_value=0.0, step=0.5, value=float(PARAMS.get("score_w_participation","1")))
-        w_pay = c4.number_input("Poids Paiement réglé", min_value=0.0, step=0.5, value=float(PARAMS.get("score_w_payment_regle","2")))
-        c5,c6,c7 = st.columns(3)
-        lookback = c5.number_input("Fenêtre interactions récentes (jours)", min_value=1, step=1, value=int(PARAMS.get("interactions_lookback_days","90")))
-        hot_int_min = c6.number_input("Interactions récentes min (chaud)", min_value=0, step=1, value=int(PARAMS.get("rule_hot_interactions_recent_min","3")))
-        hot_part_min = c7.number_input("Participations min (chaud)", min_value=0, step=1, value=int(PARAMS.get("rule_hot_participations_min","1")))
-        hot_partiel = st.checkbox("Paiement partiel = prospect chaud", value=PARAMS.get("rule_hot_payment_partial_counts_as_hot","1") in ("1","true","True"))
+        # Standardisation des colonnes
+        prospects.rename(columns={
+            "ID": "Id", "STATUT": "StatutMessages", "Approval Status": "EtatApprobation",
+            "Paiements effectués": "MontantsPayes", "Temps de présence en séance (minutes)": "DureePresence"
+        }, inplace=True)
 
-        st.write("**Colonnes de la grille CRM (ordre, séparées par des virgules)**")
-        grid_crm = st.text_input("CRM → Colonnes", PARAMS.get("grid_crm_columns",""))
-        st.caption("Colonnes disponibles : " + ", ".join(sorted(list(set(C_COLS + I_COLS + E_COLS + P_COLS + PAY_COLS + CERT_COLS + ['Interactions','Participations','CA_réglé','Impayé','Resp_principal','A_animé_ou_invité','Score_composite','Proba_conversion','Tags','Dernier_contact','Interactions_recent'])))))
+        # Calculs temporels
+        today = datetime.now()
+        prospects["DateDerniereInteraction"] = prospects[[
+            "DATE RELANCE 5", "DATE RELANCE 4", "DATE RELANCE 3",
+            "DATE RELANCE2", "DATE RELANCE 1", "Heure d’inscription"
+        ]].bfill(axis=1).iloc[:, 0]
+        prospects["JoursDepuisInteraction"] = (
+            today - pd.to_datetime(prospects["DateDerniereInteraction"], errors="coerce")
+        ).dt.days
 
-        st.write("**KPI visibles (séparés par des virgules)**")
-        st.caption("Clés supportées : contacts_total, prospects_actifs, membres, events_count, participations_total, ca_regle, impayes, taux_conversion")
-        kpi_enabled = st.text_input("KPI activés", PARAMS.get("kpi_enabled",""))
+        # KPI 1. Statuts et segmentation
+        prospects["Actif30j"] = prospects["JoursDepuisInteraction"] <= 30
+        prospects["Membre"] = prospects["EtatApprobation"].str.lower() == "approved"
+        prospects["Injoignable"] = prospects["StatutMessages"].str.contains(
+            "indisponible|ne répond jamais", case=False, na=False
+        )
+        prospects["A_Ne_Pas_Contacter"] = prospects["StatutMessages"].str.contains(
+            "rouge|ne pas contacter", case=False, na=False
+        )
 
-        st.write("**Objectifs annuels/mensuels (format clé=valeur)**")
-        st.caption("Ex. kpi_target_contacts_total_year_2025=1000 ; kpi_target_participations_total_month_202506=120")
-        targets_text = st.text_area("Cibles (une par ligne)", "\n".join([f"{k}={v}" for k,v in PARAMS.items() if k.startswith("kpi_target_")]))
+        # KPI 2. Événements et participations
+        events = ["Afterwork Online", "Webinaires Gratuits", "Groupe d’étude", "Cartographie"]
+        for ev in events:
+            col_part = f"{ev}_Participations"
+            mask = prospects["Heure d’inscription"].notna() & prospects["Heure de participation"].notna()
+            prospects[col_part] = prospects[mask].groupby("Id")["Id"].transform("count")
+        prospects["TauxParticipation"] = (
+            prospects[[f"{ev}_Participations" for ev in events]].sum(axis=1) /
+            prospects["Actif30j"].astype(int).replace(0, pd.NA)
+        )
 
-        ok2 = st.form_submit_button("💾 Enregistrer (parametres.csv)")
-        if ok2:
-            PARAMS.update({
-                "vip_threshold": str(vip_thr),
-                "score_w_interaction": str(w_int),
-                "score_w_participation": str(w_part),
-                "score_w_payment_regle": str(w_pay),
-                "interactions_lookback_days": str(int(lookback)),
-                "rule_hot_interactions_recent_min": str(int(hot_int_min)),
-                "rule_hot_participations_min": str(int(hot_part_min)),
-                "rule_hot_payment_partial_counts_as_hot": "1" if hot_partiel else "0",
-                "grid_crm_columns": grid_crm,
-                "kpi_enabled": kpi_enabled,
-            })
-            for line in targets_text.splitlines():
-                if "=" in line:
-                    key, val = line.split("=",1)
-                    key = key.strip()
-                    val = val.strip()
-                    if key:
-                        PARAMS[key] = val
-            save_params(PARAMS)
-            st.success("Paramètres enregistrés dans parametres.csv — les nouvelles listes seront prises en compte au prochain rafraîchissement.")
+        # KPI 3. Chiffre d’affaires et impayés
+        prospects["MontantsPayes"] = pd.to_numeric(
+            prospects["MontantsPayes"].str.replace(r"[^\d\.]", "", regex=True),
+            errors="coerce"
+        ).fillna(0)
+        prospects["MontantPrevu"] = 200000
+        prospects["MontantImpayé"] = prospects["MontantPrevu"] - prospects["MontantsPayes"]
+        prospects["PaiementPartiel"] = prospects["MontantsPayes"].between(1, prospects["MontantPrevu"] - 1)
 
-    st.markdown("---")
-    st.header("📦 Migration — Import/Export Global & Multi-onglets")
+        # KPI 4. Taux de conversion
+        total_contacts = len(prospects)
+        total_inscrits = prospects["Membre"].sum()
+        prospects["Conv_Prospect_Inscrit"] = total_inscrits / total_contacts
+        prospects["Conv_Inscrit_Participant"] = (
+            prospects["Membre"] &
+            (prospects[[f"{ev}_Participations" for ev in events]].sum(axis=1) > 0)
+        )
 
-    mode_mig = st.radio("Mode de migration", ["Import Excel global (.xlsx)", "Import Excel multi-onglets (.xlsx)", "Import CSV global", "Par table (CSV)"], horizontal=True)
+        # KPI 5. Engagement et score d’engagement
+        prospects["NbRelances"] = prospects[[
+            "DATE RELANCE 1", "DATE RELANCE2", "DATE RELANCE 3", "DATE RELANCE4", "DATE RELANCE 5"
+        ]].notna().sum(axis=1)
+        prospects["ScoreEngagement"] = (
+            prospects["NbRelances"] +
+            prospects["DureePresence"].gt(0).astype(int) * 3 +
+            (prospects["MontantsPayes"] > 0).astype(int) * 5
+        )
 
-    if mode_mig == "Import Excel global (.xlsx)":
-        up = st.file_uploader("Fichier Excel global (.xlsx)", type=["xlsx"], key="xlsx_up")
-        st.caption("Feuille **Global** (ou 1ère) avec colonne **__TABLE__**.")
-        if st.button("Importer l'Excel global") and up is not None:
-            log = {"timestamp": datetime.now().isoformat(), "import_type": "excel_global", "counts": {}, "errors": [], "collisions": {}}
-            try:
-                xls = pd.ExcelFile(up)
-                sheet = "Global" if "Global" in xls.sheet_names else xls.sheet_names[0]
-                gdf = pd.read_excel(xls, sheet_name=sheet, dtype=str)
-                if "__TABLE__" not in gdf.columns:
-                    raise ValueError("Colonne '__TABLE__' manquante.")
-                cols_global = ["__TABLE__"] + sorted(set(sum(ALL_SCHEMAS.values(), [])))
-                for c in cols_global:
-                    if c not in gdf.columns:
-                        gdf[c] = ""
-                # Contacts
-                sub_c = gdf[gdf["__TABLE__"] == "contacts"].copy().fillna("")
-                sub_c["Top20"] = sub_c["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
+        # KPI 6. Score global et segmentation
+        max_eng = prospects["ScoreEngagement"].max()
+        max_part = prospects[[f"{ev}_Participations" for ev in events]].sum(axis=1).max()
+        max_pay = prospects["MontantsPayes"].max()
+        max_conv = prospects["Conv_Prospect_Inscrit"].max()
+        prospects["ScoreGlobal"] = (
+            0.30 * (prospects["ScoreEngagement"] / max_eng) +
+            0.30 * (prospects[[f"{ev}_Participations" for ev in events]].sum(axis=1) / max_part) +
+            0.20 * (prospects["MontantsPayes"] / max_pay) +
+            0.20 * (prospects["Conv_Prospect_Inscrit"] / max_conv)
+        ) * 100
 
-                def dedupe_contacts(df):
-                    df = df.copy()
-                    rejects = []
-                    seen = set()
-                    keep = []
-                    def norm(s):
-                        return str(s).strip().lower()
-                    def email_ok2(s):
-                        if not s or str(s).strip() == "" or str(s).lower() == "nan":
-                            return True
-                        return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(s).strip()))
-                    for _, r in df.iterrows():
-                        if not email_ok2(r.get("Email", "")):
-                            rr = r.to_dict()
-                            rr["_Raison"] = "Email invalide"
-                            rejects.append(rr)
-                            continue
-                        if r.get("Email", ""):
-                            key = ("email", norm(r["Email"]))
-                        elif r.get("Téléphone", ""):
-                            key = ("tel", norm(r["Téléphone"]))
-                        else:
-                            key = ("nps", (norm(r.get("Nom", "")), norm(r.get("Prénom", "")), norm(r.get("Société", ""))))
-                        if key in seen:
-                            rr = r.to_dict()
-                            rr["_Raison"] = "Doublon (fichier)"
-                            rejects.append(rr)
-                            continue
-                        seen.add(key)
-                        keep.append(r)
-                    return pd.DataFrame(keep, columns=C_COLS), pd.DataFrame(rejects)
+        def classer(score):
+            if score >= 70: return "Chaud"
+            if score >= 40: return "Tiède"
+            return "Froid"
 
-                valid_c, rejects_c = dedupe_contacts(sub_c)
-                base = df_contacts.copy()
-                collisions = []
-                if "ID" in valid_c.columns and not valid_c.empty:
-                    incoming = set(x for x in valid_c["ID"].astype(str) if x and x.lower() != "nan")
-                    existing = set(base["ID"].astype(str))
-                    collisions = sorted(list(incoming & existing))
-                    if collisions:
-                        base = base[~base["ID"].isin(collisions)]
-                patt = re.compile(r"^CNT_(\d+)$")
-                base_max = 0
-                for x in base["ID"].dropna().astype(str):
-                    m = patt.match(x.strip())
-                    if m:
-                        try:
-                            base_max = max(base_max, int(m.group(1)))
-                        except:
-                            pass
-                next_id = base_max + 1
-                new_rows=[]
-                for _, r in valid_c.iterrows():
-                    rid = r["ID"]
-                    if not isinstance(rid, str) or rid.strip() == "" or rid.strip().lower() == "nan":
-                        rid = f"CNT_{str(next_id).zfill(3)}"
-                        next_id += 1
-                    rr = r.to_dict()
-                    rr["ID"] = rid
-                    new_rows.append(rr)
-                base = pd.concat([base, pd.DataFrame(new_rows, columns=C_COLS)], ignore_index=True)
-                save_df(base, PATHS["contacts"])
-                globals()["df_contacts"] = base
-                log["counts"]["contacts"] = len(new_rows)
-                log["collisions"]["contacts"] = collisions
-                if not rejects_c.empty:
-                    st.warning(f"Lignes contacts rejetées : {len(rejects_c)}")
-                    st.dataframe(rejects_c, use_container_width=True)
+        prospects["SegmentGlobal"] = prospects["ScoreGlobal"].apply(classer)
 
-                # Fonction pour enregistrer subsets
-                def save_subset(tbl, cols, path, prefix):
-                    sub = gdf[gdf["__TABLE__"] == tbl].copy()
-                    sub = sub[cols].fillna("")
-                    id_col = cols[0]
-                    base_df = ensure_df(path, cols)
-                    incoming = set(x for x in sub[id_col].astype(str) if x and x.lower() != "nan")
-                    existing = set(base_df[id_col].astype(str))
-                    coll = sorted(list(incoming & existing))
-                    if coll:
-                        base_df = base_df[~base_df[id_col].isin(coll)]
-                    patt = re.compile(rf"^{prefix}_(\d+)$")
-                    base_max = 0
-                    for x in base_df[id_col].dropna().astype(str):
-                        m = patt.match(x.strip())
-                        if m:
-                            try:
-                                base_max = max(base_max, int(m.group(1)))
-                            except:
-                                pass
-                    gen = base_max + 1
-                    new_rows = []
-                    for _, r in sub.iterrows():
-                        cur = r[id_col]
-                        if not isinstance(cur, str) or cur.strip() == "" or cur.strip().lower() == "nan":
-                            cur = f"{prefix}_{str(gen).zfill(3)}"
-                            gen += 1
-                        rr = r.to_dict()
-                        rr[id_col] = cur
-                        new_rows.append(rr)
-                    out = pd.concat([base_df, pd.DataFrame(new_rows, columns=cols)], ignore_index=True)
-                    save_df(out, path)
-                    globals()["df_" + ("inter" if tbl == "interactions" else "events" if tbl == "evenements" else "parts" if tbl == "participations" else "pay" if tbl == "paiements" else "cert")] = out
-                    log["counts"][tbl] = len(new_rows)
-                    log["collisions"][tbl] = coll
+        return prospects
 
-                for spec in [("interactions", I_COLS, PATHS["inter"], "INT"),
-                             ("evenements", E_COLS, PATHS["events"], "EVT"),
-                             ("participations", P_COLS, PATHS["parts"], "PAR"),
-                             ("paiements", PAY_COLS, PATHS["pay"], "PAY"),
-                             ("certifications", CERT_COLS, PATHS["cert"], "CER")]:
-                    cnt, coll = save_subset(*spec)
+    prospects = load_and_compute_kpis()
 
-                st.success("Import Excel global terminé.")
-                st.json(log)
-                log_event("import_excel_global", log)
-            except Exception as e:
-                st.error(f"Erreur d'import Excel global : {e}")
-                log_event("error_import_excel_global", {"error": str(e)})
+    st.subheader("📈 KPI Globaux et Segmentation")
+    st.dataframe(
+        prospects[[
+            "Id", "Nom", "Prénom", "Actif30j", "Membre", "Injoignable",
+            "TauxParticipation", "MontgantImpayé", "Conv_Prospect_Inscrit",
+            "Conv_Inscrit_Participant", "ScoreEngagement",
+            "ScoreGlobal", "SegmentGlobal"
+        ]],
+        use_container_width=True
+    )
 
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as w:
-            gcols = ["__TABLE__"] + sorted(set(sum(ALL_SCHEMAS.values(), [])))
-            pd.DataFrame(columns=gcols).to_excel(w, index=False, sheet_name="Global")
-        st.download_button("⬇️ Modèle Global (xlsx)", buf.getvalue(), file_name="IIBA_global_template.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    elif mode_mig == "Import Excel multi-onglets (.xlsx)":
-        up = st.file_uploader("Classeur Excel (6 feuilles : contacts, interactions, evenements, participations, paiements, certifications)",
-                             type=["xlsx"], key="xlsx_multi")
-        if st.button("Importer l'Excel multi-onglets") and up is not None:
-            log = {"timestamp": datetime.now().isoformat(), "import_type": "excel_multisheets", "counts": {}, "errors": [], "collisions": {}}
-            try:
-                xls = pd.ExcelFile(up)
-
-                def norm(s):
-                    return ''.join(c for c in unicodedata.normalize('NFD', str(s)) if unicodedata.category(c) != 'Mn').lower().strip()
-
-                sheets = {norm(n): n for n in xls.sheet_names}
-                aliases = {
-                    "contacts": ["contacts", "contact"],
-                    "interactions": ["interactions", "interaction"],
-                    "evenements": ["evenements", "événements", "events"],
-                    "participations": ["participations", "participation"],
-                    "paiements": ["paiements", "paiement", "payments"],
-                    "certifications": ["certifications", "certification"]
-                }
-                found = {}
-                for tbl, names in aliases.items():
-                    for n in names:
-                        k = norm(n)
-                        if k in sheets:
-                            found[tbl] = sheets[k]
-                            break
-
-                if "contacts" in found:
-                    gdf = pd.read_excel(xls, sheet_name=found["contacts"], dtype=str).fillna("")
-                    for c in C_COLS:
-                        if c not in gdf.columns:
-                            gdf[c] = ""
-                    sub_c = gdf[C_COLS].fillna("")
-                    sub_c["Top20"] = sub_c["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
-
-                    seen = set()
-                    keep = []
-                    for _, r in sub_c.iterrows():
-                        key = r.get("Email", "") or r.get("Téléphone", "") or (r.get("Nom", ""), r.get("Prénom", ""), r.get("Société", ""))
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        keep.append(r)
-                    valid_c = pd.DataFrame(keep, columns=C_COLS)
-                    base = df_contacts.copy()
-                    collisions = []
-                    if "ID" in valid_c.columns and not valid_c.empty:
-                        incoming = set(x for x in valid_c["ID"].astype(str) if x and x.lower() != "nan")
-                        existing = set(base["ID"].astype(str))
-                        collisions = sorted(list(incoming & existing))
-                        if collisions:
-                            base = base[~base["ID"].isin(collisions)]
-                    patt = re.compile(r"^CNT_(\d+)$")
-                    base_max = 0
-                    for x in base["ID"].dropna().astype(str):
-                        m = patt.match(x.strip())
-                        if m:
-                            try:
-                                base_max = max(base_max, int(m.group(1)))
-                            except:
-                                pass
-                    next_id = base_max + 1
-                    new_rows = []
-                    for _, r in valid_c.iterrows():
-                        rid = r["ID"]
-                        if not isinstance(rid, str) or rid.strip() == "" or rid.strip().lower() == "nan":
-                            rid = f"CNT_{str(next_id).zfill(3)}"
-                            next_id += 1
-                        rr = r.to_dict()
-                        rr["ID"] = rid
-                        new_rows.append(rr)
-                    out = pd.concat([base, pd.DataFrame(new_rows, columns=C_COLS)], ignore_index=True)
-                    save_df(out, PATHS["contacts"])
-                    globals()["df_contacts"] = out
-                    log["counts"]["contacts"] = len(new_rows)
-                    log["collisions"]["contacts"] = collisions
-
-                def save_sheet(tbl, cols, path, prefix):
-                    if tbl not in found:
-                        return 0, []
-                    sdf = pd.read_excel(xls, sheet_name=found[tbl], dtype=str).fillna("")
-                    for c in cols:
-                        if c not in sdf.columns:
-                            sdf[c] = ""
-                    sdf = sdf[cols]
-                    id_col = cols[0]
-                    base_df = ensure_df(path, cols)
-                    incoming = set(x for x in sdf[id_col].astype(str) if x and x.lower() != "nan")
-                    existing = set(base_df[id_col].astype(str))
-                    coll = sorted(list(incoming & existing))
-                    if coll:
-                        base_df = base_df[~base_df[id_col].isin(coll)]
-                    patt = re.compile(rf"^{prefix}_(\d+)$")
-                    base_max = 0
-                    for x in base_df[id_col].dropna().astype(str):
-                        m = patt.match(x.strip())
-                        if m:
-                            try:
-                                base_max = max(base_max, int(m.group(1)))
-                            except:
-                                pass
-                    gen = base_max + 1
-                    new_rows = []
-                    for _, r in sdf.iterrows():
-                        cur = r[id_col]
-                        if not isinstance(cur, str) or cur.strip() == "" or cur.strip().lower() == "nan":
-                            cur = f"{prefix}_{str(gen).zfill(3)}"
-                            gen += 1
-                        rr = r.to_dict()
-                        rr[id_col] = cur
-                        new_rows.append(rr)
-                    out = pd.concat([base_df, pd.DataFrame(new_rows, columns=cols)], ignore_index=True)
-                    save_df(out, path)
-                    globals()["df_" + ("inter" if tbl == "interactions" else 
-                                      "events" if tbl == "evenements" else 
-                                      "parts" if tbl == "participations" else 
-                                      "pay" if tbl == "paiements" else "cert")] = out
-                    return len(new_rows), coll
-
-                for spec in [("interactions", I_COLS, PATHS["inter"], "INT"),
-                             ("evenements", E_COLS, PATHS["events"], "EVT"),
-                             ("participations", P_COLS, PATHS["parts"], "PAR"),
-                             ("paiements", PAY_COLS, PATHS["pay"], "PAY"),
-                             ("certifications", CERT_COLS, PATHS["cert"], "CER")]:
-                    cnt, coll = save_sheet(*spec)
-                    log["counts"][spec[0]] = cnt
-                    log["collisions"][spec] = coll
-
-                st.success("Import Excel multi-onglets terminé.")
-                st.json(log)
-                log_event("import_excel_multisheets", log)
-            except Exception as e:
-                st.error(f"Erreur d'import multi-onglets: {e}")
-                log_event("error_import_excel_multisheets", {"error": str(e)})
-
-        bufm = io.BytesIO()
-        with pd.ExcelWriter(bufm, engine="openpyxl") as w:
-            pd.DataFrame(columns=C_COLS).to_excel(w, index=False, sheet_name="contacts")
-            pd.DataFrame(columns=I_COLS).to_excel(w, index=False, sheet_name="interactions")
-            pd.DataFrame(columns=E_COLS).to_excel(w, index=False, sheet_name="evenements")
-            pd.DataFrame(columns=P_COLS).to_excel(w, index=False, sheet_name="participations")
-            pd.DataFrame(columns=PAY_COLS).to_excel(w, index=False, sheet_name="paiements")
-            pd.DataFrame(columns=CERT_COLS).to_excel(w, index=False, sheet_name="certifications")
-        st.download_button("⬇️ Modèle Multi-onglets (xlsx)", bufm.getvalue(), file_name="IIBA_multisheets_template.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    elif mode_mig == "Import CSV global":
-        up = st.file_uploader("CSV global (colonne __TABLE__)", type=["csv"], key="g_up")
-        if st.button("Importer le CSV global") and up is not None:
-            try:
-                gdf = pd.read_csv(up, dtype=str, encoding="utf-8")
-                if "__TABLE__" not in gdf.columns:
-                    raise ValueError("Colonne __TABLE__ manquante.")
-                def save_subset(tbl, cols, path, prefix):
-                    sub = gdf[gdf["__TABLE__"] == tbl].copy()
-                    for c in cols:
-                        if c not in sub.columns:
-                            sub[c] = ""
-                    sub = sub[cols].fillna("")
-                    id_col = cols[0]
-                    base_df = ensure_df(path, cols)
-                    incoming = set(x for x in sub[id_col].astype(str) if x and x.lower() != "nan")
-                    existing = set(base_df[id_col].astype(str))
-                    coll = sorted(list(incoming & existing))
-                    if coll:
-                        base_df = base_df[~base_df[id_col].isin(coll)]
-                    patt = re.compile(rf"^{prefix}_(\d+)$")
-                    base_max = 0
-                    for x in base_df[id_col].dropna().astype(str):
-                        m = patt.match(x.strip())
-                        if m:
-                            try:
-                                base_max = max(base_max, int(m.group(1)))
-                            except:
-                                pass
-                    gen = base_max + 1
-                    ids = []
-                    for _, r in sub.iterrows():
-                        rid = r[id_col]
-                        if not isinstance(rid, str) or rid.strip() == "" or rid.strip().lower() == "nan":
-                            ids.append(f"{prefix}_{str(gen).zfill(3)}")
-                            gen += 1
-                        else:
-                            ids.append(rid.strip())
-                    sub[id_col] = ids
-                    out = pd.concat([base_df, sub], ignore_index=True)
-                    save_df(out, path)
-                    globals()["df_" + ("contacts" if tbl == "contacts" else "inter" if tbl == "interactions" else "events" if tbl == "evenements" else "parts" if tbl == "participations" else "pay" if tbl == "paiements" else "cert")] = out
-                save_subset("contacts", C_COLS, PATHS["contacts"], "CNT")
-                save_subset("interactions", I_COLS, PATHS["inter"], "INT")
-                save_subset("evenements", E_COLS, PATHS["events"], "EVT")
-                save_subset("participations", P_COLS, PATHS["parts"], "PAR")
-                save_subset("paiements", PAY_COLS, PATHS["pay"], "PAY")
-                save_subset("certifications", CERT_COLS, PATHS["cert"], "CER")
-                st.success("Import CSV global terminé.")
-            except Exception as e:
-                st.error(f"Erreur d'import CSV global : {e}")
-
+    # Export du fichier Excel prêt à l’import
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        prospects.to_excel(writer, sheet_name="Prospects_KPI", index=False)
+    st.download_button(
+        "⬇️ Export prospects_KPI_prepared.xlsx",
+        buf.getvalue(),
+        file_name="prospects_KPI_prepared.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
