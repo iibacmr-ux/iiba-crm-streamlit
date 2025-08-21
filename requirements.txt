@@ -1,17 +1,2 @@
-# Core
-streamlit>=1.32.0
-pandas>=2.2.0
-numpy>=1.26.0
-
-# AgGrid for editable grids
-st-aggrid>=0.3.4.post3
-
-# Excel I/O
-openpyxl>=3.1.2
-xlsxwriter>=3.1.2
-
-# Plotting & KPI
-plotly>=5.20.0
-
-# Utils
-python-dateutil>=2.9.0
+streamlit-aggrid
+openpyxl
