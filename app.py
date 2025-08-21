@@ -413,6 +413,26 @@ if page == "CRM (Grille centrale)":
             c = df_contacts[df_contacts["ID"] == sel_id]
             if not c.empty:
                 d = c.iloc[0].to_dict()
+                
+                # --- Barre d'actions contact ---
+                a1, a2 = st.columns(2)
+                if a1.button("➕ Nouveau contact"):
+                    st.session_state["selected_contact_id"] = None  # on nettoie la sélection pour ouvrir le form "nouveau"
+                if a2.button("🧬 Dupliquer ce contact", disabled=not bool(sel_id)):
+                    if sel_id:
+                        src = df_contacts[df_contacts["ID"] == sel_id]
+                        if not src.empty:
+                            clone = src.iloc[0].to_dict()
+                            new_id = generate_id("CNT", df_contacts, "ID")
+                            clone["ID"] = new_id
+                            # Optionnel: effacer quelques champs sensibles
+                            # clone["Email"] = ""
+                            # clone["Téléphone"] = ""
+                            globals()["df_contacts"] = pd.concat([df_contacts, pd.DataFrame([clone])], ignore_index=True)
+                            save_df(df_contacts, PATHS["contacts"])
+                            st.session_state["selected_contact_id"] = new_id
+                            st.success(f"Contact dupliqué sous l'ID {new_id}.")
+                            
                 with st.form("edit_contact"):
                     st.text_input("ID", value=d["ID"], disabled=True)
                     n1, n2 = st.columns(2)
@@ -441,6 +461,11 @@ if page == "CRM (Grille centrale)":
                     top20 = st.checkbox("Top-20 entreprise", value=bool(str(d.get("Top20")).lower() in ["true","1","yes"]))
                     ok = st.form_submit_button("💾 Enregistrer le contact")
                     if ok:
+                        # --- Validation : Nom obligatoire ---
+                        if not str(nom).strip():
+                            st.error("❌ Le nom du contact est obligatoire. Enregistrement annulé.")
+                            st.stop()
+        
                         if not email_ok(email):
                             st.error("Email invalide.")
                             st.stop()
@@ -482,6 +507,76 @@ if page == "CRM (Grille centrale)":
                 st.warning("ID introuvable (rafraîchissez la page).")
         else:
             st.info("Sélectionnez un contact via la grille ou le sélecteur maître.")
+            
+            # --- Création d'un nouveau contact (si aucun sélectionné) ---
+            if not st.session_state.get("selected_contact_id"):
+                with st.expander("➕ Créer un nouveau contact"):
+                    with st.form("create_contact"):
+                        n1, n2 = st.columns(2)
+                        nom_new = n1.text_input("Nom *", "")
+                        prenom_new = n2.text_input("Prénom", "")
+                        g1,g2 = st.columns(2)
+                        genre_new = g1.selectbox("Genre", SET["genres"], index=0)
+                        titre_new = g2.text_input("Titre / Position", "")
+                        s1,s2 = st.columns(2)
+                        societe_new = s1.text_input("Société", "")
+                        secteur_new = s2.selectbox("Secteur", SET["secteurs"], index=len(SET["secteurs"])-1)
+                        e1,e2,e3 = st.columns(3)
+                        email_new = e1.text_input("Email", "")
+                        tel_new = e2.text_input("Téléphone", "")
+                        linkedin_new = e3.text_input("LinkedIn", "")
+                        l1,l2,l3 = st.columns(3)
+                        ville_new = l1.selectbox("Ville", SET["villes"], index=len(SET["villes"])-1)
+                        pays_new = l2.selectbox("Pays", SET["pays"], index=0)
+                        typec_new = l3.selectbox("Type", SET["types_contact"], index=0)
+                        s3,s4,s5 = st.columns(3)
+                        source_new = s3.selectbox("Source", SET["sources"], index=0)
+                        statut_new = s4.selectbox("Statut", SET["statuts_engagement"], index=0)
+                        score_new = s5.number_input("Score IIBA", value=0.0, step=1.0)
+                        dc_new = st.date_input("Date de création", value=date.today())
+                        notes_new = st.text_area("Notes", "")
+                        top20_new = st.checkbox("Top-20 entreprise", value=False)
+                        ok_new = st.form_submit_button("💾 Créer le contact")
+
+                        if ok_new:
+                            # --- Validation : Nom obligatoire ---
+                            if not str(nom_new).strip():
+                                st.error("❌ Le nom du contact est obligatoire. Création annulée.")
+                                st.stop()
+                            if not email_ok(email_new):
+                                st.error("Email invalide.")
+                                st.stop()
+                            if not phone_ok(tel_new):
+                                st.error("Téléphone invalide.")
+                                st.stop()
+
+                            new_id = generate_id("CNT", df_contacts, "ID")
+                            new_row = {
+                                "ID": new_id,
+                                "Nom": nom_new,
+                                "Prénom": prenom_new,
+                                "Genre": genre_new,
+                                "Titre": titre_new,
+                                "Société": societe_new,
+                                "Secteur": secteur_new,
+                                "Email": email_new,
+                                "Téléphone": tel_new,
+                                "LinkedIn": linkedin_new,
+                                "Ville": ville_new,
+                                "Pays": pays_new,
+                                "Type": typec_new,
+                                "Source": source_new,
+                                "Statut": statut_new,
+                                "Score_Engagement": int(score_new),
+                                "Date_Creation": dc_new.isoformat(),
+                                "Notes": notes_new,
+                                "Top20": top20_new
+                            }
+                            globals()["df_contacts"] = pd.concat([df_contacts, pd.DataFrame([new_row])], ignore_index=True)
+                            save_df(df_contacts, PATHS["contacts"])
+                            st.session_state["selected_contact_id"] = new_id
+                            st.success(f"Contact créé ({new_id}).")
+            
     with cR:
         st.subheader("Actions liées au contact sélectionné")
         sel_id = st.session_state.get("selected_contact_id")
