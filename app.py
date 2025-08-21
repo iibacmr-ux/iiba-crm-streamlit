@@ -911,10 +911,14 @@ elif page == "Rapports":
         ag["Interactions_recent"] = ag.index.map(recent_inter).fillna(0).astype(int)
 
         # Dernier contact en date → date pure
-        lc = ag.index.map(last_contact)
-        lc = pd.to_datetime(lc, errors="coerce")
-        ag["Dernier_contact"] = lc.dt.date
-
+        lc = ag.index.map(last_contact)                 # map par ID
+        lc = pd.to_datetime(lc, errors="coerce")        # force en datetime64[ns]
+        if pd.api.types.is_datetime64_any_dtype(lc):
+            ag["Dernier_contact"] = lc.dt.date
+        else:
+            # fallback propre si tout est NaT / objet
+            ag["Dernier_contact"] = pd.Series([None] * len(ag), index=ag.index, dtype="object")
+            
         ag["Resp_principal"] = ag.index.map(resp_max).fillna("")
         ag["Participations"] = ag.index.map(parts_count).fillna(0).astype(int)
         ag["A_animé_ou_invité"] = ag.index.map(has_anim).fillna(False)
