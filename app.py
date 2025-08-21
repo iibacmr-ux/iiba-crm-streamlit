@@ -1311,6 +1311,95 @@ elif page == "Admin":
             st.success("Paramètres enregistrés dans parametres.csv — les nouvelles listes seront prises en compte au prochain rafraîchissement.")
 
     # PARAMETRES Rapports Avancés
+    # Dans la section des paramètres Admin, ajouter:
+    st.markdown("---")
+    st.header("📊 Paramètres Rapports Avancés")
+    
+    with st.form("advanced_reports_params"):
+        st.subheader("🎯 Seuils et Objectifs")
+        
+        col_p1, col_p2 = st.columns(2)
+        
+        with col_p1:
+            # Seuils de segmentation
+            seuil_ba_expert = st.number_input(
+                "Score BA Expert (seuil)", 
+                min_value=0, max_value=100, 
+                value=int(PARAMS.get("seuil_ba_expert", "70"))
+            )
+            seuil_formation_continue = st.number_input(
+                "Participations min. formation continue", 
+                min_value=0, 
+                value=int(PARAMS.get("seuil_formation_continue", "2"))
+            )
+            objectif_certification = st.number_input(
+                "Objectif taux certification (%)", 
+                min_value=0, max_value=100, 
+                value=int(PARAMS.get("objectif_certification", "30"))
+            )
+        
+        with col_p2:
+            # Estimations salariales par secteur
+            salaire_banque = st.number_input(
+                "Salaire moyen Banque (FCFA)", 
+                min_value=0, step=50000,
+                value=int(PARAMS.get("salaire_banque", "800000"))
+            )
+            salaire_telecom = st.number_input(
+                "Salaire moyen Télécom (FCFA)", 
+                min_value=0, step=50000,
+                value=int(PARAMS.get("salaire_telecom", "750000"))
+            )
+            multiplicateur_certif = st.number_input(
+                "Multiplicateur salaire certifié", 
+                min_value=1.0, max_value=2.0, step=0.1,
+                value=float(PARAMS.get("multiplicateur_certif", "1.3"))
+            )
+        
+        # Objectifs BSC
+        st.subheader("📈 Objectifs Balanced Scorecard")
+        col_bsc1, col_bsc2 = st.columns(2)
+        
+        with col_bsc1:
+            objectif_croissance_ca = st.number_input(
+                "Objectif croissance CA (%/an)", 
+                min_value=0, max_value=100,
+                value=int(PARAMS.get("objectif_croissance_ca", "20"))
+            )
+            objectif_marge = st.number_input(
+                "Objectif marge bénéfice (%)", 
+                min_value=0, max_value=100,
+                value=int(PARAMS.get("objectif_marge", "25"))
+            )
+        
+        with col_bsc2:
+            objectif_retention = st.number_input(
+                "Objectif taux rétention (%)", 
+                min_value=0, max_value=100,
+                value=int(PARAMS.get("objectif_retention", "80"))
+            )
+            objectif_nps = st.number_input(
+                "Objectif NPS", 
+                min_value=0, max_value=100,
+                value=int(PARAMS.get("objectif_nps", "70"))
+            )
+        
+        if st.form_submit_button("💾 Enregistrer Paramètres Avancés"):
+            PARAMS.update({
+                "seuil_ba_expert": str(seuil_ba_expert),
+                "seuil_formation_continue": str(seuil_formation_continue),
+                "objectif_certification": str(objectif_certification),
+                "salaire_banque": str(salaire_banque),
+                "salaire_telecom": str(salaire_telecom),
+                "multiplicateur_certif": str(multiplicateur_certif),
+                "objectif_croissance_ca": str(objectif_croissance_ca),
+                "objectif_marge": str(objectif_marge),
+                "objectif_retention": str(objectif_retention),
+                "objectif_nps": str(objectif_nps)
+            })
+            save_params(PARAMS)
+            st.success("✅ Paramètres avancés enregistrés!")
+    
 
     # PARAMETRES Migration — Import/Export
     st.markdown("---")
