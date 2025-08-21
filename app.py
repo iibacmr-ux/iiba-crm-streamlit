@@ -682,8 +682,8 @@ if page == "Événements":
 elif page == "Rapports":
     st.title("📑 Rapports & KPI — IIBA Cameroun")
 
-    def filtered_tables_for_period(year_sel:str, month_sel:str):
-        def in_period(d:pd.Series) -> pd.Series:
+    def filtered_tables_for_period(year_sel: str, month_sel: str):
+        def in_period(d: pd.Series) -> pd.Series:
             p = d.map(lambda x: parse_date(x) if pd.notna(x) else None)
             m = p.notna()
             if year_sel != "Toutes":
@@ -693,6 +693,7 @@ elif page == "Rapports":
                 mm = int(month_sel)
                 m = m & p.map(lambda x: x and x.month == mm)
             return m.fillna(False)
+
         dfe2 = df_events[in_period(df_events["Date"])].copy() if not df_events.empty else df_events.copy()
         dfp2 = df_parts.copy()
         if not df_events.empty and not df_parts.empty:
@@ -706,20 +707,29 @@ elif page == "Rapports":
         dfcert2 = df_cert[in_period(df_cert["Date_Obtention"]) | in_period(df_cert["Date_Examen"])].copy() if not df_cert.empty else df_cert.copy()
         return dfe2, dfp2, dfpay2, dfcert2
 
-    def event_financials(dfe2:pd.DataFrame, dfpay2:pd.DataFrame) -> pd.DataFrame:
+    def event_financials(dfe2: pd.DataFrame, dfpay2: pd.DataFrame) -> pd.DataFrame:
         rec_by_evt = pd.Series(dtype=float)
         if not dfpay2.empty:
-            r = dfpay2[dfpay2["Statut"]=="Réglé"].copy()
+            r = dfpay2[dfpay2["Statut"] == "Réglé"].copy()
             r["Montant"] = pd.to_numeric(r["Montant"], errors="coerce").fillna(0.0)
             rec_by_evt = r.groupby("ID_Événement")["Montant"].sum()
+
         ev = df_events.copy() if dfe2.empty else dfe2.copy()
-        for c in ["Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total"]:
+        for c in ["Cout_Salle", "Cout_Formateur", "Cout_Logistique", "Cout_Pub", "Cout_Autres", "Cout_Total"]:
             ev[c] = pd.to_numeric(ev[c], errors="coerce").fillna(0.0)
-        ev["Cout_Total"] = np.where(ev["Cout_Total"]>0, ev["Cout_Total"], ev[["Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres"]].sum(axis=1))
+        ev["Cout_Total"] = np.where(
+            ev["Cout_Total"] > 0,
+            ev["Cout_Total"],
+            ev[["Cout_Salle", "Cout_Formateur", "Cout_Logistique", "Cout_Pub", "Cout_Autres"]].sum(axis=1)
+        )
         ev = ev.set_index("ID_Événement")
-        rep = pd.DataFrame({"Nom_Événement": ev["Nom_Événement"], "Type": ev["Type"], "Date": ev["Date"], "Coût_Total": ev["Cout_Total"]})
-        rep["Recette"] = rec_by_evt
-        rep["Recette"] = rep["Recette"].fillna(0.0)
+        rep = pd.DataFrame({
+            "Nom_Événement": ev["Nom_Événement"],
+            "Type": ev["Type"],
+            "Date": ev["Date"],
+            "Coût_Total": ev["Cout_Total"]
+        })
+        rep["Recette"] = rec_by_evt.fillna(0.0)
         rep["Bénéfice"] = rep["Recette"] - rep["Coût_Total"]
         return rep.reset_index()
 
@@ -731,11 +741,13 @@ elif page == "Rapports":
     membres = len(dfc2[dfc2["Type"] == "Membre"])
     events_count = len(dfe2) if not dfe2.empty else 0
     parts_total = len(dfp2) if not dfp2.empty else 0
+
     ca_regle = impayes = 0.0
     if not dfpay2.empty:
         dfpay2["Montant"] = pd.to_numeric(dfpay2["Montant"], errors="coerce").fillna(0.0)
         ca_regle = float(dfpay2[dfpay2["Statut"] == "Réglé"]["Montant"].sum())
         impayes = float(dfpay2[dfpay2["Statut"] != "Réglé"]["Montant"].sum())
+
     prospects_total = len(dfc2[dfc2["Type"] == "Prospect"])
     prospects_convertis = len(dfc2[dfc2["Type"] == "Membre"])
     taux_conv = (prospects_convertis / prospects_total * 100) if prospects_total else 0.0
@@ -746,11 +758,14 @@ elif page == "Rapports":
         "membres": ("🏆 Membres", membres),
         "events_count": ("📅 Événements", events_count),
         "participations_total": ("🎟️ Participations", parts_total),
-        "ca_regle": ("💰 CA réglé", f"{int(ca_regle):,} FCFA".replace(","," ")),
-        "impayes": ("⛔ Impayés", f"{int(impayes):,} FCFA".replace(","," ")),
+        "ca_regle": ("💰 CA réglé", f"{int(ca_regle):,} FCFA".replace(",", " ")),
+        "impayes": ("⛔ Impayés", f"{int(impayes):,} FCFA".replace(",", " ")),
         "taux_conversion": ("🔁 Taux de conversion", f"{taux_conv:.1f}%"),
     }
-    enabled = [x.strip() for x in str(PARAMS.get("kpi_enabled", "")).split(",") if x.strip() and x.strip() in kpis]
+    enabled = [
+        x.strip() for x in str(PARAMS.get("kpi_enabled", "")).split(",")
+        if x.strip() and x.strip() in kpis
+    ]
     cols = st.columns(max(1, len(enabled)))
     for i, k in enumerate(enabled):
         cols[i].metric(kpis[k][0], kpis[k][1])
@@ -759,14 +774,19 @@ elif page == "Rapports":
     ev_fin = event_financials(dfe2, dfpay2)
     if alt and not ev_fin.empty:
         st.subheader("💹 CA vs Coût par événement (et Bénéfice)")
-        ev_fin_melt = ev_fin.melt(id_vars=["ID_Événement", "Nom_Événement"], value_vars=["Recette", "Coût_Total", "Bénéfice"], var_name="Metric", value_name="Montant")
+        ev_fin_melt = ev_fin.melt(
+            id_vars=["ID_Événement", "Nom_Événement"],
+            value_vars=["Recette", "Coût_Total", "Bénéfice"],
+            var_name="Metric", value_name="Montant"
+        )
         chart = alt.Chart(ev_fin_melt).mark_bar().encode(
-            x=alt.X("Nom_Événement:N", sort='-y'),
+            x=alt.X("Nom_Événement:N", sort="-y"),
             y=alt.Y("Montant:Q"),
             color="Metric:N",
             tooltip=["Nom_Événement", "Metric", "Montant"]
         ).properties(height=320).interactive()
         st.altair_chart(chart, use_container_width=True)
+
     if not dfp2.empty:
         st.subheader("👥 Participants par mois")
         dfp2["_d"] = dfp2.get("_d")
@@ -776,10 +796,13 @@ elif page == "Rapports":
         dfp2["_mois"] = pd.to_datetime(dfp2["_d"]).dt.to_period("M").astype(str)
         agg = dfp2.groupby("_mois")["ID_Participation"].count().reset_index(name="Participants")
         if alt:
-            line = alt.Chart(agg).mark_line(point=True).encode(x="__mois:N", y="Participants:Q").transform_calculate(__mois="datum._mois")
+            line = alt.Chart(agg).mark_line(point=True).encode(
+                x="__mois:N", y="Participants:Q"
+            ).transform_calculate(__mois="datum._mois")
             st.altair_chart(line.properties(height=280), use_container_width=True)
         else:
             st.dataframe(agg)
+
     if not df_parts.empty and not df_events.empty:
         st.subheader("😊 Satisfaction moyenne par type d'événement")
         dfp = df_parts.copy()
@@ -788,7 +811,9 @@ elif page == "Rapports":
         dfp["Type"] = dfp["ID_Événement"].map(types)
         ag = dfp.groupby("Type")["Note"].mean().reset_index()
         if alt:
-            bar = alt.Chart(ag).mark_bar().encode(x="Type:N", y="Note:Q", tooltip=["Type", "Note"])
+            bar = alt.Chart(ag).mark_bar().encode(
+                x="Type:N", y="Note:Q", tooltip=["Type", "Note"]
+            )
             st.altair_chart(bar.properties(height=280), use_container_width=True)
         else:
             st.dataframe(ag)
@@ -815,12 +840,6 @@ elif page == "Rapports":
         rows.append({"KPI": k, "Objectif": tgt, "Réel": val, "Écart": delta})
     if rows:
         st.dataframe(pd.DataFrame(rows), use_container_width=True)
-        
-    # Affichage des KPI calculés
-    prospects = load_and_compute_kpis()
-    st.markdown("---")
-    st.subheader("🎯 Table KPI détaillés")
-    st.dataframe(prospects, use_container_width=True)
 
     # Export rapport Excel complet
     buf = io.BytesIO()
@@ -832,8 +851,12 @@ elif page == "Rapports":
         df_pay.to_excel(writer, index=False, sheet_name="paiements")
         df_cert.to_excel(writer, index=False, sheet_name="certifications")
         ev_fin.to_excel(writer, index=False, sheet_name="finance_events")
-    st.download_button("⬇️ Exporter le rapport (Excel)", buf.getvalue(), file_name="IIBA_rapport.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button(
+        "⬇️ Exporter le rapport (Excel)",
+        buf.getvalue(),
+        file_name="IIBA_rapport.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 
 # ---------------------- PAGE ADMIN ----------------------
