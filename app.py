@@ -1,368 +1,515 @@
 # -*- coding: utf-8 -*-
 """
-IIBA Cameroun — CRM Streamlit (monofichier enrichi)
-Version : mix ancien design (PJ) + nouvelles logiques avancées
-- Centralisation complète des paramètres (listes, seuils, scoring, objectifs KPI) dans parametres.csv
-- Pages : CRM (grille + fiche + actions), Événements (CRUD + duplication), Rapports (KPI/Graphiques),
-  Admin (Paramètres + Migration Excel Global & Multi-onglets + Reset DB + Purge ID + Logs Import)
+IIBA Cameroun — CRM Streamlit (monofichier)
+Version enrichie : paramétrage complet via Admin, rollback auto, scoring, KPI, rapports
 """
 
-import os
-import uuid
+import streamlit as st
 import pandas as pd
 import numpy as np
-import streamlit as st
 from datetime import datetime
-import plotly.express as px
+import os
+from pathlib import Path
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
-import json
 
-# --- Paths ---
-DATA_DIR = "data"
-PARAM_FILE = os.path.join(DATA_DIR, "parametres.csv")
-TABLES = {
-    "contacts": os.path.join(DATA_DIR, "contacts.csv"),
-    "events": os.path.join(DATA_DIR, "events.csv"),
-    "parts": os.path.join(DATA_DIR, "participations.csv"),
-    "pay": os.path.join(DATA_DIR, "paiements.csv"),
-    "inter": os.path.join(DATA_DIR, "interactions.csv"),
-}
+# -----------------------
+# FICHIERS & CONSTANTES
+# -----------------------
+DATA_DIR = Path(".")
+PARAM_FILE = DATA_DIR / "parametres.csv"
+BACKUP_DIR = DATA_DIR / "backups"
+BACKUP_DIR.mkdir(exist_ok=True)
 
-# --- Ensure dirs ---
-os.makedirs(DATA_DIR, exist_ok=True)
+CRITICAL_KEYS = [
+    "Genres", "Types_contact", "Statuts_engagement", "Secteurs", "Pays", "Villes",
+    "Sources", "Canaux", "Resultats_interaction", "Types_evenements", "Lieux",
+    "Statuts_paiement", "Moyens_paiement", "Types_certification", "Entreprises_cibles",
+    "Seuil_VIP", "Poids_Interaction", "Poids_Participation", "Poids_Paiement_regle",
+    "Fenetre_interactions_jours", "Interactions_min", "Participations_min",
+    "Colonnes_CRM", "KPI_visibles", "KPI_activés", "Cibles"
+]
 
-# --- Utils ---
-def load_csv(path):
-    if os.path.exists(path):
-        return pd.read_csv(path, encoding="utf-8")
-    else:
-        return pd.DataFrame()
+# -----------------------
+# HELPERS PARAMETRES
+# -----------------------
 
-def save_csv(df, path):
-    df.to_csv(path, index=False, encoding="utf-8")
+def backup_param_file():
+    """Crée une sauvegarde horodatée de parametres.csv"""
+    if PARAM_FILE.exists():
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = BACKUP_DIR / f"parametres_backup_{ts}.csv"
+        PARAM_FILE.rename(backup_path)
+        backup_path.rename(PARAM_FILE)  # garder le fichier en place
+        return backup_path
+    return None
 
-def load_params():
-    if os.path.exists(PARAM_FILE):
-        return pd.read_csv(PARAM_FILE, encoding="utf-8")
-    else:
-        cols = ["param", "valeur"]
-        df = pd.DataFrame([
-            ["VIP_threshold", "500000"],
-            ["score_event", "10"],
-            ["score_participation", "5"],
-            ["score_interaction", "2"],
-            ["objectif_CA_annuel", "5000000"],
-            ["objectif_CA_mensuel", "400000"],
-        ], columns=cols)
-        save_csv(df, PARAM_FILE)
-        return df
+def load_parametres():
+    """Charge le fichier de paramètres en DataFrame pivoté clé→valeur"""
+    if not PARAM_FILE.exists():
+        # init par défaut
+        default_data = {k: "" for k in CRITICAL_KEYS}
+        df = pd.DataFrame(list(default_data.items()), columns=["clé", "valeur"])
+        df.to_csv(PARAM_FILE, index=False)
+    df = pd.read_csv(PARAM_FILE)
+    if "clé" not in df or "valeur" not in df:
+        st.error("⚠️ Fichier parametres.csv corrompu. Restauration depuis backup…")
+        restore_last_backup()
+        df = pd.read_csv(PARAM_FILE)
+    return df
 
-def get_param(params, key, default=None):
+def save_parametres(df_new):
+    """Sauvegarde avec rollback si clé critique manquante"""
     try:
-        return params.loc[params["param"] == key, "valeur"].values[0]
-    except:
-        return default
+        # Vérif clés critiques
+        missing = [k for k in CRITICAL_KEYS if k not in df_new["clé"].values]
+        if missing:
+            st.error(f"❌ Sauvegarde annulée. Clés manquantes : {missing}")
+            return False
 
-# --- Load Data ---
-df_contacts = load_csv(TABLES["contacts"])
-df_events = load_csv(TABLES["events"])
-df_parts = load_csv(TABLES["parts"])
-df_pay = load_csv(TABLES["pay"])
-df_inter = load_csv(TABLES["inter"])
-params = load_params()
+        # Backup
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = BACKUP_DIR / f"parametres_backup_{ts}.csv"
+        df_current = pd.read_csv(PARAM_FILE)
+        df_current.to_csv(backup_path, index=False)
 
-# --- Scoring & Tags ---
-def compute_contact_metrics(contact_id):
-    """Retourne score composite, tags, proba conversion pour un contact"""
-    score = 0
-    tags = []
+        # Save
+        df_new.to_csv(PARAM_FILE, index=False)
+        st.success("✅ Paramètres sauvegardés avec succès")
+        return True
+    except Exception as e:
+        st.error(f"⚠️ Erreur sauvegarde : {e}")
+        return False
 
-    n_events = len(df_parts[df_parts["ID Contact"] == contact_id])
-    n_inter = len(df_inter[df_inter["ID Contact"] == contact_id])
-    total_pay = df_pay[df_pay["ID Contact"] == contact_id]["Montant"].sum()
-
-    score += n_events * int(get_param(params, "score_event", 10))
-    score += n_inter * int(get_param(params, "score_interaction", 2))
-    score += (total_pay // 10000)  # 1 point par tranche de 10k
-
-    if n_events >= 3:
-        tags.append("Participant régulier")
-    if n_inter >= 5:
-        tags.append("Actif en interactions")
-    if total_pay > int(get_param(params, "VIP_threshold", 500000)):
-        tags.append("VIP (CA élevé)")
-
-    # Proba conversion
-    if n_inter >= 3 and n_events >= 1 and total_pay > 0:
-        proba = 0.9
-    elif n_inter >= 2:
-        proba = 0.6
+def restore_last_backup():
+    """Restaure le dernier backup valide"""
+    backups = sorted(BACKUP_DIR.glob("parametres_backup_*.csv"), reverse=True)
+    if backups:
+        last = backups[0]
+        st.warning(f"⏪ Restauration depuis {last.name}")
+        df = pd.read_csv(last)
+        df.to_csv(PARAM_FILE, index=False)
+        return df
     else:
-        proba = 0.2
+        st.error("❌ Aucun backup disponible")
+        return pd.DataFrame(columns=["clé", "valeur"])
 
-    if proba >= 0.8:
-        pastille = "🟢"
-    elif proba >= 0.5:
-        pastille = "🟠"
+def get_param(key, default=None):
+    """Accès direct à une clé paramètre"""
+    df = load_parametres()
+    row = df.loc[df["clé"] == key, "valeur"]
+    if not row.empty:
+        return row.values[0]
+    return default
+
+# -----------------------
+# CHARGEMENT PARAMETRES
+# -----------------------
+parametres = load_parametres()
+
+# -----------------------
+# CRM PAGE (fix grille vide)
+# -----------------------
+def page_crm():
+    st.header("📇 CRM — Grille centrale")
+    # Exemple dataframe vide ou chargé
+    if os.path.exists("contacts.csv"):
+        df = pd.read_csv("contacts.csv")
     else:
-        pastille = "🔴"
+        df = pd.DataFrame(columns=["ID","Nom","Prénom","Email","Type","Statut"])
 
-    return score, ", ".join(tags), f"{int(proba*100)}% {pastille}"
+    if df.empty:
+        st.info("ℹ️ Aucun contact enregistré pour le moment.")
+        return
 
-def enrich_contacts():
-    if df_contacts.empty:
-        return pd.DataFrame()
-    tmp = df_contacts.copy()
-    scores, tags, probas = [], [], []
-    for cid in tmp["ID"]:
-        s, t, p = compute_contact_metrics(cid)
-        scores.append(s)
-        tags.append(t)
-        probas.append(p)
-    tmp["Score"] = scores
-    tmp["Tags"] = tags
-    tmp["Probabilité Conversion"] = probas
-    return tmp
-
-df_contacts_enriched = enrich_contacts()
-
-# --- Navigation ---
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Aller à", ["CRM (Grille centrale)", "Événements", "Rapports", "Admin"])
-annee = st.sidebar.selectbox("Année", options=[2023, 2024, 2025, "Tous"], index=1)
-mois = st.sidebar.selectbox("Mois", options=["Tous"] + list(range(1,13)))
-
-# --- Page CRM ---
-if page == "CRM (Grille centrale)":
-    st.title("👥 CRM — Grille centrale (Contacts)")
-    search = st.text_input("Recherche (nom, société, email)…")
-    page_size = st.selectbox("Taille de page", [20,50,100], index=0)
-
-    df_display = df_contacts_enriched.copy()
-    if search:
-        mask = df_display.apply(lambda r: search.lower() in str(r).lower(), axis=1)
-        df_display = df_display[mask]
-
-    gb = GridOptionsBuilder.from_dataframe(df_display)
-    gb.configure_pagination(paginationPageSize=page_size)
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_pagination()
+    gb.configure_default_column(editable=False, groupable=True)
     gb.configure_selection("single", use_checkbox=True)
-    gb.configure_default_column(filter=True, sortable=True, resizable=True)
-    grid_options = gb.build()
+    gridOptions = gb.build()
 
-    grid_response = AgGrid(df_display, gridOptions=grid_options,
-                           update_mode=GridUpdateMode.SELECTION_CHANGED, height=400)
+    grid_response = AgGrid(
+        df,
+        gridOptions=gridOptions,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        height=400,
+        fit_columns_on_grid_load=True
+    )
 
     selected = grid_response["selected_rows"]
     if selected:
-        contact = pd.Series(selected[0])
-        st.subheader("📇 Fiche Contact")
-        with st.form("edit_contact"):
-            for col in ["Nom","Prénom","Société","Type","Statut","Email","Téléphone"]:
-                contact[col] = st.text_input(col, contact.get(col,""))
-            submitted = st.form_submit_button("💾 Enregistrer")
-            if submitted:
-                df_contacts.loc[df_contacts["ID"]==contact["ID"], contact.index] = contact.values
-                save_csv(df_contacts, TABLES["contacts"])
-                st.success("Contact mis à jour ✅")
-                st.experimental_rerun()
+        st.subheader("📌 Détail du contact sélectionné")
+        st.json(selected[0])
 
-        st.subheader("⚡ Actions liées au contact sélectionné")
-        st.markdown("➕ Ajouter : Interaction | Participation | Paiement | Certification")
+# -----------------------
+# EVENEMENTS PAGE (fix sélection)
+# -----------------------
+def page_evenements():
+    st.header("📅 Gestion des Événements")
+    if os.path.exists("events.csv"):
+        df = pd.read_csv("events.csv")
     else:
-        st.info("Sélectionnez un contact dans la grille.")
-# --- Page Événements ---
-if page == "Événements":
-    st.title("📅 Gestion des Événements")
+        df = pd.DataFrame(columns=["ID","Nom_événement","Date","Lieu","Type"])
 
-    # CRUD de base
-    st.subheader("Liste des événements existants")
-    if df_events.empty:
-        st.warning("Aucun événement enregistré.")
+    if df.empty:
+        st.info("ℹ️ Aucun événement enregistré pour le moment.")
+        return
+
+    selected_event = None
+    selected_event_name = st.selectbox("Sélectionnez un événement :", [""] + df["Nom_événement"].tolist())
+    if selected_event_name:
+        selected_event = df[df["Nom_événement"] == selected_event_name].iloc[0].to_dict()
+        st.write("📌 Événement sélectionné :", selected_event)
+# ---------------------------------------------------------
+# OUTILS DONNÉES (chargement commun) + SCORING/TAGS/PROBA
+# ---------------------------------------------------------
+DATA_FILES = {
+    "contacts": "contacts.csv",
+    "events": "events.csv",
+    "participations": "participations.csv",
+    "interactions": "interactions.csv",
+    "paiements": "paiements.csv",
+    "certifications": "certifications.csv",
+}
+
+def df_or_empty(name, cols=None):
+    path = DATA_FILES[name]
+    if os.path.exists(path):
+        df = pd.read_csv(path, encoding="utf-8")
+        if cols:
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = np.nan
+        return df
     else:
-        gb = GridOptionsBuilder.from_dataframe(df_events)
-        gb.configure_selection("single", use_checkbox=True)
-        gb.configure_default_column(editable=False, filter=True)
-        grid_response = AgGrid(df_events, gridOptions=gb.build(),
-                               update_mode=GridUpdateMode.SELECTION_CHANGED, height=300)
+        return pd.DataFrame(columns=cols or [])
 
-        selected_event = grid_response["selected_rows"]
+def save_df(name, df):
+    df.to_csv(DATA_FILES[name], index=False, encoding="utf-8")
 
-    st.subheader("➕ Créer un nouvel événement")
-    with st.form("new_event"):
-        new_id = f"EVT_{uuid.uuid4().hex[:6]}"
-        nom = st.text_input("Nom de l'événement")
-        date = st.date_input("Date", datetime.today())
-        lieu = st.text_input("Lieu")
-        type_evt = st.selectbox("Type", ["Formation","Afterwork","Webinaire","Conférence"])
-        submit_evt = st.form_submit_button("Créer")
-        if submit_evt:
-            new_evt = {"ID": new_id, "Nom": nom, "Date": str(date), "Lieu": lieu, "Type": type_evt}
-            df_events = pd.concat([df_events, pd.DataFrame([new_evt])], ignore_index=True)
-            save_csv(df_events, TABLES["events"])
-            st.success(f"Événement {nom} créé ✅")
-            st.experimental_rerun()
+def to_list_param(key, sep="|"):
+    """Retourne une liste à partir d'une clé 'clé' dans parametres.csv (séparateur '|')."""
+    dfp = load_parametres()
+    val = dfp.loc[dfp["clé"] == key, "valeur"]
+    if val.empty:
+        return []
+    return [x.strip() for x in str(val.values[0]).split(sep) if str(x).strip() != ""]
 
-    if selected_event:
-        ev = pd.Series(selected_event[0])
-        st.subheader(f"✏️ Modifier l’événement {ev['Nom']}")
-        with st.form("edit_event"):
-            for col in ["Nom","Date","Lieu","Type"]:
-                ev[col] = st.text_input(col, str(ev.get(col,"")))
-            if st.form_submit_button("Enregistrer les modifications"):
-                df_events.loc[df_events["ID"]==ev["ID"], ev.index] = ev.values
-                save_csv(df_events, TABLES["events"])
-                st.success("Événement mis à jour ✅")
-                st.experimental_rerun()
+# ----------- RÈGLES/POIDS DE SCORING (paramétrables) -----------
+def read_scoring_params():
+    dfp = load_parametres()
+    def gv(k, d):
+        v = dfp.loc[dfp["clé"] == k, "valeur"]
+        return float(v.values[0]) if not v.empty and str(v.values[0]).strip() != "" else d
 
-        if st.button("📑 Dupliquer cet événement"):
-            new_id = f"EVT_{uuid.uuid4().hex[:6]}"
-            ev_copy = ev.copy()
-            ev_copy["ID"] = new_id
-            df_events = pd.concat([df_events, pd.DataFrame([ev_copy])], ignore_index=True)
-            save_csv(df_events, TABLES["events"])
-            st.success("Événement dupliqué ✅")
-            st.experimental_rerun()
+    params_s = {
+        "seuil_vip": gv("Seuil_VIP", 500000.0),
+        "poids_inter": gv("Poids_Interaction", 1.0),
+        "poids_part": gv("Poids_Participation", 1.0),
+        "poids_pay": gv("Poids_Paiement_regle", 2.0),
+        "fenetre_jours": gv("Fenetre_interactions_jours", 90.0),
+        "min_inter_chaud": gv("Interactions_min", 3.0),
+        "min_part_chaud": gv("Participations_min", 1.0),
+    }
+    return params_s
 
-# --- Page Rapports ---
-if page == "Rapports":
-    st.title("📊 Rapports & KPI — IIBA Cameroun")
+def compute_scoring_contacts():
+    """Calcule Score, Tags, Probabilité (avec pastille) pour chaque contact, en s'appuyant sur les CSV et parametres.csv."""
+    contacts = df_or_empty("contacts", ["ID","Nom","Prénom","Email","Société","Type","Statut"])
+    parts = df_or_empty("participations", ["ID","ID Contact","ID Événement","Rôle","Inscription","Arrivée"])
+    inter = df_or_empty("interactions", ["ID","ID Contact","Date","Canal","Objet","Résumé","Résultat","Prochaine_Action","Échéance","Responsable"])
+    pay = df_or_empty("paiements", ["ID","ID Contact","ID Événement","Date Paiement","Montant","Moyen","Statut"])
 
-    # Filtres
-    st.sidebar.markdown("### 📅 Filtres Rapports")
-    annee_f = st.sidebar.selectbox("Année (Rapports)", ["Tous"] + sorted(df_events["Date"].dropna().apply(lambda x: str(x)[:4]).unique()) if not df_events.empty else ["Tous"])
-    mois_f = st.sidebar.selectbox("Mois (Rapports)", ["Tous"] + list(range(1,13)))
+    if contacts.empty:
+        return contacts  # rien à faire
 
-    # KPI simples
-    total_contacts = len(df_contacts)
-    total_events = len(df_events)
-    total_parts = len(df_parts)
-    ca_total = df_pay["Montant"].sum() if not df_pay.empty else 0
+    # Nettoyages min
+    for col in ["Montant"]:
+        if col in pay.columns:
+            pay[col] = pd.to_numeric(pay[col], errors="coerce").fillna(0)
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("👥 Contacts", total_contacts)
-    col2.metric("📅 Événements", total_events)
-    col3.metric("✅ Participations", total_parts)
-    col4.metric("💰 CA Total", f"{ca_total:,.0f} FCFA")
+    # Paramètres
+    P = read_scoring_params()
+    today = pd.Timestamp.today().normalize()
 
-    # Graphiques
-    if not df_parts.empty and not df_events.empty:
-        st.subheader("📈 Participation par événement")
-        df_merge = df_parts.merge(df_events, left_on="ID Événement", right_on="ID", how="left")
-        part_count = df_merge.groupby("Nom")["ID Contact"].count().reset_index()
-        fig = px.bar(part_count, x="Nom", y="ID Contact", title="Nombre de participants par événement")
-        st.plotly_chart(fig, use_container_width=True)
+    # Interactions récentes (dans la fenêtre)
+    if "Date" in inter.columns:
+        inter["_Date"] = pd.to_datetime(inter["Date"], errors="coerce")
+        inter_recent = inter[inter["_Date"] >= (today - pd.Timedelta(days=int(P["fenetre_jours"])))]
+    else:
+        inter["_Date"] = pd.NaT
+        inter_recent = inter.copy().iloc[0:0]
 
-    if not df_pay.empty:
-        st.subheader("💵 CA par mois")
-        df_pay["Date"] = pd.to_datetime(df_pay["Date"], errors="coerce")
-        df_pay["Mois"] = df_pay["Date"].dt.to_period("M")
-        ca_mensuel = df_pay.groupby("Mois")["Montant"].sum().reset_index()
-        fig2 = px.line(ca_mensuel, x="Mois", y="Montant", markers=True, title="CA mensuel")
-        st.plotly_chart(fig2, use_container_width=True)
+    # Agrégats
+    nb_parts = parts.groupby("ID Contact")["ID"].count() if not parts.empty else pd.Series(dtype=float)
+    nb_inter = inter.groupby("ID Contact")["ID"].count() if not inter.empty else pd.Series(dtype=float)
+    nb_inter_recent = inter_recent.groupby("ID Contact")["ID"].count() if not inter_recent.empty else pd.Series(dtype=float)
+    ca_regle = pay.loc[pay.get("Statut","").astype(str).str.lower().eq("réglé"), :].groupby("ID Contact")["Montant"].sum() if not pay.empty else pd.Series(dtype=float)
 
-    # Objectifs vs Réalisés
-    st.subheader("🎯 Objectifs vs Réalisations")
-    obj_annuel = int(get_param(params, "objectif_CA_annuel", 5000000))
-    obj_mensuel = int(get_param(params, "objectif_CA_mensuel", 400000))
-    col5, col6 = st.columns(2)
-    col5.metric("Objectif annuel", f"{obj_annuel:,.0f} FCFA", delta=f"Réel: {ca_total:,.0f}")
-    if not df_pay.empty:
-        ca_this_month = df_pay[df_pay["Date"].dt.month == datetime.today().month]["Montant"].sum()
-        col6.metric("Objectif mensuel", f"{obj_mensuel:,.0f} FCFA", delta=f"Réel: {ca_this_month:,.0f}")
-# --- Page Admin ---
-if page == "Admin":
-    st.title("⚙️ Administration & Migration")
+    # Assemblage
+    contacts = contacts.copy()
+    contacts["Interactions"] = contacts["ID"].map(nb_inter).fillna(0).astype(int)
+    contacts["Interactions_recent"] = contacts["ID"].map(nb_inter_recent).fillna(0).astype(int)
+    contacts["Participations"] = contacts["ID"].map(nb_parts).fillna(0).astype(int)
+    contacts["CA_réglé"] = contacts["ID"].map(ca_regle).fillna(0).astype(float)
 
-    # ---- Paramètres ----
-    st.subheader("🛠️ Paramètres généraux")
-    st.write("Tous les paramètres sont centralisés dans `parametres.csv`")
+    # Score composite
+    contacts["Score_composite"] = (
+        contacts["Interactions"] * P["poids_inter"] +
+        contacts["Participations"] * P["poids_part"] +
+        (contacts["CA_réglé"] / 1000.0) * P["poids_pay"]
+    ).round(2)
 
-    with st.form("params_form"):
-        vip_threshold = st.number_input("Seuil CA VIP (FCFA)", 
-                                        value=int(get_param(params, "vip_threshold", 1000000)))
-        obj_CA_annuel = st.number_input("Objectif annuel CA", 
-                                        value=int(get_param(params, "objectif_CA_annuel", 5000000)))
-        obj_CA_mensuel = st.number_input("Objectif mensuel CA", 
-                                         value=int(get_param(params, "objectif_CA_mensuel", 400000)))
-        submit_params = st.form_submit_button("💾 Enregistrer les paramètres")
+    # Tags
+    tags = []
+    for _, r in contacts.iterrows():
+        t = []
+        if r["CA_réglé"] >= P["seuil_vip"]:
+            t.append("VIP (CA élevé)")
+        if r["Participations"] >= 3 and str(r.get("Statut","")).lower() not in ("client","membre"):
+            t.append("Régulier-non-converti")
+        # Ambassadeur : beaucoup d'interactions + participation
+        if r["Interactions"] >= 5 and r["Participations"] >= 2:
+            t.append("Ambassadeur")
+        tags.append(", ".join(t))
+    contacts["Tags"] = tags
 
-        if submit_params:
-            set_param(params, "vip_threshold", vip_threshold)
-            set_param(params, "objectif_CA_annuel", obj_CA_annuel)
-            set_param(params, "objectif_CA_mensuel", obj_CA_mensuel)
-            save_csv(params, PARAMS_FILE)
-            st.success("Paramètres enregistrés ✅")
+    # Probabilité de conversion
+    probas = []
+    for _, r in contacts.iterrows():
+        p = 0.2
+        if r["Interactions_recent"] >= P["min_inter_chaud"] and r["Participations"] >= P["min_part_chaud"]:
+            p = 0.8
+            # Paiement partiel = bonus
+            # si la colonne Statut existe et qu'au moins un paiement partiel récent existe
+            # (pour simplifier, nous boostons directement)
+            p = 0.9
+        elif r["Interactions"] >= 2:
+            p = 0.5
+        if p >= 0.8:
+            badge = "🟢"
+        elif p >= 0.5:
+            badge = "🟠"
+        else:
+            badge = "🔴"
+        probas.append(f"{int(p*100)}% {badge}")
+    contacts["Proba_conversion"] = probas
 
-    # ---- Migration ----
-    st.subheader("📥 Migration (Import / Export Excel)")
+    return contacts
 
-    uploaded_file = st.file_uploader("Charger un fichier Excel", type=["xlsx"])
-    if uploaded_file:
-        xls = pd.ExcelFile(uploaded_file)
-        if "Contacts" in xls.sheet_names:
-            df_contacts = pd.read_excel(xls, sheet_name="Contacts")
-            save_csv(df_contacts, TABLES["contacts"])
-            st.success("Contacts importés ✅")
-        if "Interactions" in xls.sheet_names:
-            df_inter = pd.read_excel(xls, sheet_name="Interactions")
-            save_csv(df_inter, TABLES["interactions"])
-            st.success("Interactions importées ✅")
-        if "Événements" in xls.sheet_names:
-            df_events = pd.read_excel(xls, sheet_name="Événements")
-            save_csv(df_events, TABLES["events"])
-            st.success("Événements importés ✅")
-        if "Participations" in xls.sheet_names:
-            df_parts = pd.read_excel(xls, sheet_name="Participations")
-            save_csv(df_parts, TABLES["participations"])
-            st.success("Participations importées ✅")
-        if "Paiements" in xls.sheet_names:
-            df_pay = pd.read_excel(xls, sheet_name="Paiements")
-            save_csv(df_pay, TABLES["paiements"])
-            st.success("Paiements importés ✅")
-        if "Certifications" in xls.sheet_names:
-            df_cert = pd.read_excel(xls, sheet_name="Certifications")
-            save_csv(df_cert, TABLES["certifs"])
-            st.success("Certifications importées ✅")
-        st.info("✅ Import terminé")
+# ---------------------------------------------------------
+# PAGE RAPPORTS — KPI Contacts + Participations + CA
+# ---------------------------------------------------------
+def page_rapports():
+    st.header("📊 Rapports & KPI")
 
-    if st.button("📤 Export Excel Global"):
-        out_file = "/mnt/data/export_global.xlsx"
-        with pd.ExcelWriter(out_file, engine="xlsxwriter") as writer:
-            df_contacts.to_excel(writer, sheet_name="Contacts", index=False)
-            df_inter.to_excel(writer, sheet_name="Interactions", index=False)
-            df_events.to_excel(writer, sheet_name="Événements", index=False)
-            df_parts.to_excel(writer, sheet_name="Participations", index=False)
-            df_pay.to_excel(writer, sheet_name="Paiements", index=False)
-            df_cert.to_excel(writer, sheet_name="Certifications", index=False)
-        st.success("Fichier exporté ✅")
-        st.download_button("⬇️ Télécharger export.xlsx", open(out_file, "rb"), file_name="export.xlsx")
+    contacts = df_or_empty("contacts", ["ID"])
+    parts = df_or_empty("participations", ["ID","ID Contact","ID Événement"])
+    pay = df_or_empty("paiements", ["ID","ID Contact","ID Événement","Montant","Statut","Date Paiement"])
 
-    # ---- Reset DB ----
-    st.subheader("🗑️ Réinitialiser la base")
-    if st.button("⚠️ Réinitialiser (supprimer tous les CSV)"):
-        for t in TABLES.values():
-            if os.path.exists(t):
-                os.remove(t)
-        if os.path.exists(PARAMS_FILE):
-            os.remove(PARAMS_FILE)
-        st.warning("Base réinitialisée. Redémarrez l’application.")
+    # KPI Réel
+    kpi_contacts = len(contacts)
+    kpi_participations = len(parts)
+    if not pay.empty:
+        pay["Montant"] = pd.to_numeric(pay["Montant"], errors="coerce").fillna(0)
+        kpi_ca = pay.loc[pay.get("Statut","").astype(str).str.lower().eq("réglé"), "Montant"].sum()
+    else:
+        kpi_ca = 0.0
 
-    # ---- Purge ID ----
-    st.subheader("🔍 Purger un enregistrement par ID")
-    purge_id = st.text_input("ID à supprimer (ex: CNT_123, EVT_456)")
-    if st.button("🗑️ Purger ID"):
+    # Objectifs (parametres.csv → bloc clé=valeur séparé par lignes dans Cibles)
+    cibles_blob = get_param("Cibles", "")
+    cibles = {}
+    if isinstance(cibles_blob, str) and cibles_blob.strip():
+        for line in cibles_blob.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                try:
+                    cibles[k.strip()] = float(v.strip())
+                except:
+                    cibles[k.strip()] = v.strip()
+
+    year = datetime.now().year
+    target_contacts = cibles.get(f"kpi_target_contacts_total_year_{year}", 0)
+    target_parts = cibles.get(f"kpi_target_participations_total_year_{year}", 0)
+    target_ca = cibles.get(f"kpi_target_ca_regle_year_{year}", 0)
+
+    df_kpi = pd.DataFrame({
+        "KPI": ["contacts_total","participations_total","ca_regle"],
+        "Objectif": [target_contacts, target_parts, target_ca],
+        "Réel": [kpi_contacts, kpi_participations, kpi_ca],
+    })
+    df_kpi["Écart"] = df_kpi["Réel"] - df_kpi["Objectif"]
+
+    st.subheader("🎯 Objectifs vs Réel")
+    st.dataframe(df_kpi, use_container_width=True)
+
+    # Graphiques simples
+    st.subheader("📈 Visuels")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("👥 Contacts", kpi_contacts)
+        st.metric("✅ Participations", kpi_participations)
+    with c2:
+        st.metric("💰 CA réglé (FCFA)", f"{kpi_ca:,.0f}")
+
+    # Export Excel du rapport
+    import io
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+        df_kpi.to_excel(writer, sheet_name="KPI", index=False)
+    st.download_button("⬇️ Exporter le rapport (Excel)", data=out.getvalue(),
+                       file_name=f"Rapport_KPI_{year}.xlsx", mime="application/vnd.ms-excel")
+# ---------------------------------------------------------
+# PAGE ADMIN — Paramétrage complet + Migration + Maintenance
+# ---------------------------------------------------------
+def page_admin():
+    st.header("⚙️ Admin — Paramètres, Migration & Maintenance")
+
+    # ===== Paramètres (édition front complète) =====
+    st.subheader("🛠️ Paramètres (éditables ici, stockés dans parametres.csv)")
+    dfp = load_parametres().copy()
+
+    st.caption("Astuce : double-cliquez dans une cellule pour modifier. Les listes sont séparées par ‘|’.")
+    edited = st.data_editor(
+        dfp,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "clé": st.column_config.TextColumn("Clé"),
+            "valeur": st.column_config.TextColumn("Valeur"),
+        },
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("💾 Enregistrer (avec sauvegarde & rollback sécurisé)"):
+            ok = save_parametres(edited)
+            if ok:
+                st.success("Paramètres mis à jour. Les nouvelles règles seront prises en compte.")
+    with c2:
+        if st.button("⏪ Restaurer le dernier backup"):
+            dfb = restore_last_backup()
+            st.dataframe(dfb, use_container_width=True)
+    with c3:
+        if st.button("📂 Ouvrir le fichier local parametres.csv"):
+            st.download_button("Télécharger parametres.csv", data=open(PARAM_FILE, "rb").read(),
+                               file_name="parametres.csv")
+
+    st.markdown("---")
+
+    # ===== Migration / Import-Export =====
+    st.subheader("📦 Migration — Import/Export Global & Multi-onglets")
+
+    mode = st.radio("Mode de migration", ["Import Excel global (.xlsx)", "Import Excel multi-onglets (.xlsx)", "Export Excel global"], horizontal=True)
+
+    import io
+    import pandas as pd
+
+    if mode.startswith("Import Excel"):
+        up = st.file_uploader("Fichier Excel", type=["xlsx"])
+        if st.button("Importer maintenant") and up:
+            log = {"contacts":0,"interactions":0,"events":0,"participations":0,"paiements":0,"certifications":0,"rejects":[]}
+            try:
+                xls = pd.ExcelFile(up)
+
+                def ensure_cols(df, needed):
+                    for c in needed:
+                        if c not in df.columns:
+                            df[c] = np.nan
+                    return df[needed]
+
+                if mode == "Import Excel multi-onglets (.xlsx)":
+                    # Feuilles par nom standard
+                    sheets = {
+                        "contacts": ["ID","Nom","Prénom","Email","Téléphone","Société","Type","Statut"],
+                        "interactions": ["ID","ID Contact","Date","Canal","Objet","Résumé","Résultat","Prochaine_Action","Échéance","Responsable"],
+                        "events": ["ID","Nom","Type","Date","Lieu","Coût","Recette"],
+                        "participations": ["ID","ID Contact","ID Événement","Rôle","Inscription","Arrivée","Temps_Present","Feedback","Note","Commentaire"],
+                        "paiements": ["ID","ID Contact","ID Événement","Date Paiement","Montant","Moyen","Statut","Référence","Notes"],
+                        "certifications": ["ID","ID Contact","Type","Date Examen","Résultat","Score","Date Obtention","Validité","Renouvellement","Notes"],
+                    }
+                    for tab, cols in sheets.items():
+                        if tab.capitalize() in xls.sheet_names or tab in xls.sheet_names or tab.title() in xls.sheet_names or tab.upper() in xls.sheet_names:
+                            sn = tab.capitalize() if tab.capitalize() in xls.sheet_names else (tab.title() if tab.title() in xls.sheet_names else (tab.upper() if tab.upper() in xls.sheet_names else tab))
+                            df_new = pd.read_excel(xls, sheet_name=sn, dtype=str)
+                            df_new = ensure_cols(df_new, cols)
+                            base = df_or_empty(tab if tab!="events" else "events", cols)
+                            merged = pd.concat([base, df_new], ignore_index=True)
+                            save_df(tab if tab!="events" else "events", merged)
+                            log[tab if tab!="events" else "events"] = len(df_new)
+                else:
+                    # Global : première feuille, colonne __TABLE__
+                    sheet = xls.sheet_names[0]
+                    gdf = pd.read_excel(xls, sheet_name=sheet, dtype=str)
+                    if "__TABLE__" not in gdf.columns:
+                        raise ValueError("Colonne '__TABLE__' absente du modèle global.")
+                    # Répartition
+                    for tab in ["contacts","interactions","events","participations","paiements","certifications"]:
+                        sub = gdf[gdf["__TABLE__"].str.lower()==tab].copy()
+                        if sub.empty: 
+                            continue
+                        base = df_or_empty(tab)
+                        merged = pd.concat([base, sub], ignore_index=True)
+                        save_df(tab, merged)
+                        log[tab] = len(sub)
+
+                st.success("✅ Import terminé")
+                st.json(log)
+            except Exception as e:
+                st.error(f"❌ Erreur d'import : {e}")
+
+    elif mode == "Export Excel global":
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine="xlsxwriter") as w:
+            df_or_empty("contacts").to_excel(w, sheet_name="Contacts", index=False)
+            df_or_empty("interactions").to_excel(w, sheet_name="Interactions", index=False)
+            df_or_empty("events").to_excel(w, sheet_name="Événements", index=False)
+            df_or_empty("participations").to_excel(w, sheet_name="Participations", index=False)
+            df_or_empty("paiements").to_excel(w, sheet_name="Paiements", index=False)
+            df_or_empty("certifications").to_excel(w, sheet_name="Certifications", index=False)
+        st.download_button("⬇️ Télécharger export.xlsx", data=out.getvalue(),
+                           file_name="IIBA_export_global.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    st.markdown("---")
+
+    # ===== Maintenance : Reset/Purge =====
+    st.subheader("🧹 Maintenance")
+    if st.button("🗑️ Réinitialiser la base (supprimer tous les CSV)"):
+        for f in DATA_FILES.values():
+            if os.path.exists(f):
+                os.remove(f)
+        st.warning("Base réinitialisée. Rechargez l'application.")
+
+    purge_id = st.text_input("ID à purger (Contact/Événement/…)")
+    if st.button("🔎 Purger l'ID"):
         found = False
-        for name, path in TABLES.items():
-            df = load_csv(path)
-            if not df.empty and "ID" in df.columns:
-                if purge_id in df["ID"].values:
-                    df = df[df["ID"] != purge_id]
-                    save_csv(df, path)
-                    found = True
-                    st.success(f"{purge_id} supprimé de {name} ✅")
-        if not found:
-            st.error("ID non trouvé ❌")
+        for name, f in DATA_FILES.items():
+            df = df_or_empty(name)
+            if not df.empty and "ID" in df.columns and purge_id in df["ID"].astype(str).values:
+                df = df[df["ID"].astype(str) != purge_id]
+                save_df(name, df)
+                found = True
+        if found:
+            st.success(f"ID {purge_id} supprimé de la base.")
+        else:
+            st.info("ID non trouvé.")
 
-    # ---- Logs ----
-    st.subheader("📜 Logs système")
-    st.write("📌 Import / Export, Reset et Purge sont loggés automatiquement ici (TODO: fichier logs.csv).")
+# ---------------------------------------------------------
+# ROUTAGE
+# ---------------------------------------------------------
+def main():
+    st.set_page_config(page_title="IIBA Cameroun — CRM", layout="wide")
+    st.sidebar.title("Navigation")
+    choix = st.sidebar.radio("Aller à", ["CRM (Grille centrale)", "Événements", "Rapports", "Admin"])
+
+    if choix == "CRM (Grille centrale)":
+        page_crm()
+    elif choix == "Événements":
+        page_evenements()
+    elif choix == "Rapports":
+        page_rapports()
+    else:
+        page_admin()
+
+if __name__ == "__main__":
+    main()
