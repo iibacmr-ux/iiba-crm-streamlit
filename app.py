@@ -935,92 +935,104 @@ elif page == "Rapports":
     def filtered_contacts_for_period(
         year_sel: str,
         month_sel: str,
-        dfe_all: pd.DataFrame,   # df_events (toutes lignes)
-        dfi_all: pd.DataFrame,   # df_inter (toutes lignes)
-        dfp_all: pd.DataFrame,   # df_parts (toutes lignes)
-        dfpay_all: pd.DataFrame  # df_pay (toutes lignes)
+        dfe_all: pd.DataFrame,   # events (toutes lignes, pas filtrées)
+        dfi_all: pd.DataFrame,   # interactions (toutes)
+        dfp_all: pd.DataFrame,   # participations (toutes)
+        dfpay_all: pd.DataFrame  # paiements (toutes)
     ) -> pd.DataFrame:
         """
-        Filtre les contacts par période.
-        - Si contacts_period_fallback = ON (1) : utilise Date_Creation, sinon 1re interaction/participation/paiement.
-        - Si OFF (0) : n'utilise QUE Date_Creation ; sans Date_Creation => contact exclu du filtrage période.
-        """        
-         # --- Base des contacts ---
+        Filtre les CONTACTS par période.
+        Logique configurable via PARAMS["contacts_period_fallback"]:
+          - OFF/0: ne filtre que sur Date_Creation (contact inclus si Date_Creation ∈ période)
+          - ON/1 (par défaut): utilise Date_Creation, sinon retombe sur la 1re activité détectée
+            (1re interaction, 1re participation via date d'événement, 1er paiement).
+        """
+
         base = df_contacts.copy()
-        if base.empty:
-            return base
+        if base.empty or "ID" not in base.columns:
+            return base  # rien à filtrer
 
-        # --- Flag de fallback depuis PARAMS (Admin) ---
-        use_fallback = str(PARAMS.get("contacts_period_fallback", "1")).lower() in ("1", "true", "on", "yes")
+        # Normalisation ID en str (évite les merges/map sur types hétérogènes)
+        base["ID"] = base["ID"].astype(str).str.strip()
 
-        # Date de création (peut être vide)
-        base["_dc"] = base.get("Date_Creation", pd.Series(index=base.index, dtype=object))
-        base["_dc"] = base["_dc"].map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
+        # Parse Date_Creation -> série de dates (ou None)
+        if "Date_Creation" in base.columns:
+            base["_dc"] = _safe_parse_series(base["Date_Creation"])
+        else:
+            base["_dc"] = pd.Series([None] * len(base), index=base.index)
 
-        # Mode strict : pas de fallback → on ne filtre que par Date_Creation
+        # Paramètre fallback (Admin -> Paramètres)
+        use_fallback = str(PARAMS.get("contacts_period_fallback", "on")).lower() in ("on", "1", "true", "vrai", "yes")
+
+        # ========== MODE STRICT (fallback OFF) ==========
         if not use_fallback:
             mask = _build_mask_from_dates(base["_dc"], year_sel, month_sel)
             return base[mask].drop(columns=["_dc"], errors="ignore")
 
-        # --- Fallback activé : calculer la 1re date connue (interaction/participation/paiement) ---
-        # 1) 1re interaction
-        if not dfi_all.empty:
-            dfi_all = dfi_all.copy()
-            dfi_all["_di"] = dfi_all["Date"].map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
-            dfi_all["_di_dt"] = pd.to_datetime(dfi_all["_di"], errors="coerce")
-            first_inter = dfi_all.groupby("ID")["_di_dt"].min()
+        # ========== MODE FALLBACK (ON) ==========
+        # 1) 1re Interaction
+        if not dfi_all.empty and "Date" in dfi_all.columns and "ID" in dfi_all.columns:
+            dfi = dfi_all.copy()
+            dfi["ID"] = dfi["ID"].astype(str).str.strip()
+            dfi["_di"] = _safe_parse_series(dfi["Date"])
+            first_inter = dfi.groupby("ID")["_di"].min()
         else:
-            first_inter = pd.Series(dtype="datetime64[ns]")
+            first_inter = pd.Series(dtype=object)
 
-        # 2) 1re participation (via la date de l'événement)
-        if not dfp_all.empty and not df_events.empty:
-            ev_date_map = df_events.set_index("ID_Événement")["Date"].map(parse_date)
-            dfp_all = dfp_all.copy()
-            dfp_all["_de"] = dfp_all["ID_Événement"].map(ev_date_map)
-
-            # 🔧 Sécuriser le dtype pour l'agrégat min()
-            dfp_all["_de_dt"] = pd.to_datetime(dfp_all["_de"], errors="coerce")
-            # ⚠️ Si tu agrèges sur _de (python date), Pandas peut planter — on agrège sur _de_dt
-            first_part = dfp_all.groupby("ID")["_de_dt"].min()
+        # 2) 1re Participation (via date d'événement)
+        if (not dfp_all.empty and "ID" in dfp_all.columns and "ID_Événement" in dfp_all.columns
+            and not dfe_all.empty and "ID_Événement" in dfe_all.columns and "Date" in dfe_all.columns):
+            dfp = dfp_all.copy()
+            dfp["ID"] = dfp["ID"].astype(str).str.strip()
+            # map des dates d'événements
+            ev_map = dfe_all.set_index("ID_Événement")["Date"].map(
+                lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None
+            )
+            dfp["_de"] = dfp["ID_Événement"].map(ev_map)
+            first_part = dfp.groupby("ID")["_de"].min()
         else:
-            first_part = pd.Series(dtype="datetime64[ns]")
+            first_part = pd.Series(dtype=object)
 
-        # 3) 1er paiement
-        if not dfpay_all.empty:
-            dfpay_all = dfpay_all.copy()
-            dfpay_all["_dp"] = dfpay_all["Date_Paiement"].map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
-            dfpay_all["_dp_dt"] = pd.to_datetime(dfpay_all["_dp"], errors="coerce")
-            first_pay = dfpay_all.groupby("ID")["_dp_dt"].min()
+        # 3) 1er Paiement
+        if not dfpay_all.empty and "Date_Paiement" in dfpay_all.columns and "ID" in dfpay_all.columns:
+            dfpay = dfpay_all.copy()
+            dfpay["ID"] = dfpay["ID"].astype(str).str.strip()
+            dfpay["_dp"] = _safe_parse_series(dfpay["Date_Paiement"])
+            first_pay = dfpay.groupby("ID")["_dp"].min()
         else:
-            first_pay = pd.Series(dtype="datetime64[ns]")
+            first_pay = pd.Series(dtype=object)
 
-        # Choisir la plus ancienne des dates disponibles
+        # Choisir la 1re date valide parmi: Date_Creation, 1re interaction, 1re participation, 1er paiement
         def _first_valid_date(dc, fi, fp, fpay):
             cands = []
-            for d in (dc, fi, fp, fpay):
-                if isinstance(d, (datetime, date)):
-                    cands.append(d)
+            for v in (dc, fi, fp, fpay):
+                if isinstance(v, (datetime, date)):
+                    cands.append(v if isinstance(v, date) else v.date())
             return min(cands) if cands else None
 
-        # Construire la date de référence par contact
-        id_list = base["ID"].astype(str)
-        inter_map = first_inter if isinstance(first_inter, pd.Series) else pd.Series(dtype=object)
-        part_map  = first_part  if isinstance(first_part,  pd.Series) else pd.Series(dtype=object)
-        pay_map   = first_pay   if isinstance(first_pay,   pd.Series) else pd.Series(dtype=object)
+        # Construire un dict ID -> date de référence
+        ref_dates = {}
+        ids = base["ID"].tolist()
+        # set pour lecture rapide
+        set_ids = set(ids)
 
-        # Accélérer : passer en dict (lookup O(1))
-        inter_d = inter_map.to_dict()
-        part_d  = part_map.to_dict()
-        pay_d   = pay_map.to_dict()
-        dc_d    = base.set_index("ID")["_dc"].to_dict()
+        # accès direct aux séries pour perf
+        s_dc = base.set_index("ID")["_dc"] if "ID" in base.columns else pd.Series(dtype=object)
 
-        ref_dates = {cid: _first_valid_date(dc_d.get(cid), inter_d.get(cid), part_d.get(cid), pay_d.get(cid)) for cid in id_list}
+        for cid in ids:
+            dc   = s_dc.get(cid, None) if not s_dc.empty else None
+            fi   = first_inter.get(cid, None) if not first_inter.empty else None
+            fp   = first_part.get(cid, None)  if not first_part.empty else None
+            fpay = first_pay.get(cid, None)   if not first_pay.empty else None
+            ref_dates[cid] = _first_valid_date(dc, fi, fp, fpay)
 
-        base["_ref"] = base["ID"].astype(str).map(ref_dates)
+        base["_ref"] = base["ID"].map(ref_dates)
 
-        # Filtrer selon la date de référence
+        # Filtrage final par période
         mask = _build_mask_from_dates(base["_ref"], year_sel, month_sel)
         return base[mask].drop(columns=["_dc", "_ref"], errors="ignore")
+
+
 
     # ---------- Agrégats période (version locale, basée sur les tables filtrées) ----------
     def aggregates_for_contacts_period(contacts: pd.DataFrame,
