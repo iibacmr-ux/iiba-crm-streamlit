@@ -686,75 +686,143 @@ if page == "CRM (Grille centrale)":
 if page == "Événements":
     st.title("📅 Événements")
     
-# --- Sélecteur d'événement (pour pré-remplir les champs) ---
-    st.subheader("Sélectionner un événement (pour préremplir)")
+# --- Sélecteur d'événement (pré-remplissage / édition) ---
+    st.subheader("Événement sélectionné")
+    sel_evt_id = None
     if not df_events.empty:
         def _label_evt(r):
-            return f"{r['ID_Événement']} — {r['Nom_Événement']} ({r['Date'] or ''})"
+            d = parse_date(r.get("Date","")) or ""
+            dtxt = d.isoformat() if d else ""
+            return f"{r['ID_Événement']} — {r['Nom_Événement']} {('(' + dtxt + ')') if dtxt else ''}"
         ev_options = df_events.apply(_label_evt, axis=1).tolist()
         ev_map = dict(zip(ev_options, df_events["ID_Événement"]))
-        sel_ev_label = st.selectbox("Événement", [""] + ev_options, index=0, key="select_event_label")
-        st.session_state["selected_event_id"] = ev_map.get(sel_ev_label, None) if sel_ev_label else None
+        sel_label = st.selectbox("Choisir un événement pour l’éditer / dupliquer / supprimer", [""] + ev_options, index=0, key="select_event_label")
+        if sel_label:
+            sel_evt_id = ev_map.get(sel_label)
+            st.session_state["selected_event_id"] = sel_evt_id
+        else:
+            st.session_state.pop("selected_event_id", None)
     else:
-        st.info("Aucun événement existant pour préremplir.")
+        st.info("Aucun événement existant.")
 
-    with st.expander("➕ Créer un nouvel événement (pré-rempli si un événement est sélectionné)", expanded=False):
-        # Pré-remplir à partir de l'événement sélectionné
-        pref = {}
-        sel_evt_id = st.session_state.get("selected_event_id")
-        if sel_evt_id:
-            row = df_events[df_events["ID_Événement"] == sel_evt_id]
-            if not row.empty:
-                pref = row.iloc[0].to_dict()
+    # --- Pré-remplissage si sélectionné ---
+    pref = {}
+    if sel_evt_id:
+        r = df_events[df_events["ID_Événement"] == sel_evt_id]
+        if not r.empty:
+            pref = r.iloc[0].to_dict()
 
-        with st.form("new_event"):
+    # --- Formulaire unifié: crée OU met à jour ---
+    with st.expander("📝 Créer / Mettre à jour un événement", expanded=False):
+        with st.form("event_upsert"):
             c1, c2, c3 = st.columns(3)
-            nom = c1.text_input("Nom de l'événement", value=pref.get("Nom_Événement",""))
-            typ = c2.selectbox("Type", SET["types_evenements"], index=SET["types_evenements"].index(pref.get("Type","Formation")) if pref.get("Type","Formation") in SET["types_evenements"] else 0)
+            nom = c1.text_input("Nom de l'événement *", value=pref.get("Nom_Événement",""))
+            type_val = pref.get("Type","Formation")
+            typ = c2.selectbox("Type", SET["types_evenements"],
+                               index=SET["types_evenements"].index(type_val) if type_val in SET["types_evenements"] else 0)
             dat_default = parse_date(pref.get("Date")) or date.today()
             dat = c3.date_input("Date", value=dat_default)
 
             c4, c5, c6 = st.columns(3)
-            lieu = c4.selectbox("Lieu", SET["lieux"], index=SET["lieux"].index(pref.get("Lieu","Présentiel")) if pref.get("Lieu","Présentiel") in SET["lieux"] else 0)
-            duree_val = 2.0
-            try:
-                duree_val = float(pref.get("Durée_h", 2.0))
-            except:
-                pass
-            duree = c5.number_input("Durée (h)", min_value=0.0, step=0.5, value=duree_val)
+            lieu_val = pref.get("Lieu","Présentiel")
+            lieu = c4.selectbox("Lieu", SET["lieux"],
+                                index=SET["lieux"].index(lieu_val) if lieu_val in SET["lieux"] else 0)
+            def _num(v): 
+                try: return float(v)
+                except: return 0.0
+            duree = c5.number_input("Durée (h)", min_value=0.0, step=0.5, value=_num(pref.get("Durée_h", 2.0)))
             formateur = c6.text_input("Formateur(s)", value=pref.get("Formateur",""))
 
             obj = st.text_area("Objectif", value=pref.get("Objectif",""))
 
             couts = st.columns(5)
-            def _num(v): 
-                try: return float(v)
-                except: return 0.0
-            c_salle = couts[0].number_input("Coût salle", min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Salle",0)))
-            c_form  = couts[1].number_input("Coût formateur", min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Formateur",0)))
-            c_log   = couts[2].number_input("Coût logistique", min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Logistique",0)))
-            c_pub   = couts[3].number_input("Coût pub", min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Pub",0)))
-            c_aut   = couts[4].number_input("Autres coûts", min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Autres",0)))
+            c_salle = couts[0].number_input("Coût salle",       min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Salle",0)))
+            c_form  = couts[1].number_input("Coût formateur",   min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Formateur",0)))
+            c_log   = couts[2].number_input("Coût logistique",  min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Logistique",0)))
+            c_pub   = couts[3].number_input("Coût pub",         min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Pub",0)))
+            c_aut   = couts[4].number_input("Autres coûts",     min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Autres",0)))
 
             notes = st.text_area("Notes", value=pref.get("Notes",""))
-            ok = st.form_submit_button("💾 Créer l'événement")
+
+            # Libellé dynamique du bouton principal
+            label_submit = "💾 Enregistrer les modifications" if sel_evt_id else "💾 Créer l'événement"
+            ok = st.form_submit_button(label_submit)
 
             if ok:
-                # --- Validation : nom obligatoire ---
+                # Validation minimaliste
                 if not str(nom).strip():
-                    st.error("❌ Le nom de l'événement est obligatoire. Création annulée.")
+                    st.error("❌ Le nom de l'événement est obligatoire.")
                     st.stop()
 
-                new_id = generate_id("EVT", df_events, "ID_Événement")
                 row = {
-                    "ID_Événement": new_id, "Nom_Événement": nom, "Type": typ, "Date": dat.isoformat(),
-                    "Durée_h": str(duree), "Lieu": lieu, "Formateur": formateur, "Objectif": obj, "Periode": "",
-                    "Cout_Salle": c_salle, "Cout_Formateur": c_form, "Cout_Logistique": c_log, "Cout_Pub": c_pub,
-                    "Cout_Autres": c_aut, "Cout_Total": 0, "Notes": notes
+                    "Nom_Événement": nom,
+                    "Type": typ,
+                    "Date": dat.isoformat(),
+                    "Durée_h": str(duree),
+                    "Lieu": lieu,
+                    "Formateur": formateur,
+                    "Objectif": obj,
+                    "Periode": "",
+                    "Cout_Salle": c_salle,
+                    "Cout_Formateur": c_form,
+                    "Cout_Logistique": c_log,
+                    "Cout_Pub": c_pub,
+                    "Cout_Autres": c_aut,
+                    "Cout_Total": 0,
+                    "Notes": notes
                 }
-                globals()["df_events"] = pd.concat([df_events, pd.DataFrame([row])], ignore_index=True)
-                save_df(df_events, PATHS["events"])
-                st.success(f"Événement créé ({new_id}).")
+
+                if sel_evt_id:
+                    # --- Mise à jour ---
+                    idx = df_events.index[df_events["ID_Événement"] == sel_evt_id]
+                    if len(idx) == 0:
+                        st.error("Événement introuvable pour mise à jour.")
+                        st.stop()
+                    i = idx[0]
+                    for k, v in row.items():
+                        df_events.loc[i, k] = v
+                    save_df(df_events, PATHS["events"])
+                    st.success(f"✅ Événement mis à jour ({sel_evt_id}).")
+                else:
+                    # --- Création ---
+                    new_id = generate_id("EVT", df_events, "ID_Événement")
+                    row_full = {"ID_Événement": new_id, **row}
+                    globals()["df_events"] = pd.concat([df_events, pd.DataFrame([row_full])], ignore_index=True)
+                    save_df(df_events, PATHS["events"])
+                    st.session_state["selected_event_id"] = new_id
+                    st.success(f"✅ Événement créé ({new_id}).")
+
+        # Actions secondaires si un événement est sélectionné
+        if sel_evt_id:
+            ac1, ac2 = st.columns([1,1])
+
+            # --- Dupliquer ---
+            if ac1.button("🧬 Dupliquer l'événement sélectionné"):
+                src = df_events[df_events["ID_Événement"] == sel_evt_id]
+                if src.empty:
+                    st.error("Événement introuvable pour duplication.")
+                else:
+                    clone = src.iloc[0].to_dict()
+                    new_id = generate_id("EVT", df_events, "ID_Événement")
+                    clone["ID_Événement"] = new_id
+                    globals()["df_events"] = pd.concat([df_events, pd.DataFrame([clone])], ignore_index=True)
+                    save_df(df_events, PATHS["events"])
+                    st.session_state["selected_event_id"] = new_id
+                    st.success(f"🧬 Événement dupliqué sous l'ID {new_id}.")
+
+            # --- Supprimer (avec confirmation simple) ---
+            with ac2:
+                col_del1, col_del2 = st.columns([2,1])
+                confirm_txt = col_del1.text_input("Écrire SUPPRIMER pour confirmer", key="evt_del_confirm")
+                do_del = col_del2.button("🗑️ Supprimer", type="secondary")
+                if do_del:
+                    if confirm_txt != "SUPPRIMER":
+                        st.error("Veuillez écrire exactement **SUPPRIMER** pour confirmer.")
+                    else:
+                        globals()["df_events"] = df_events[df_events["ID_Événement"] != sel_evt_id]
+                        save_df(df_events, PATHS["events"])
+                        st.session_state["selected_event_id"] = None
+                        st.success(f"🗑️ Événement supprimé ({sel_evt_id}).")
 
     # Édition, Duplication, Suppression avec filtre
     filt = st.text_input("Filtre rapide (nom, type, lieu, notes…)", "")
