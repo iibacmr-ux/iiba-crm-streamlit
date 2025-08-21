@@ -847,18 +847,22 @@ elif page == "Rapports":
         hot_partiel = PARAMS.get("rule_hot_payment_partial_counts_as_hot", "1") in ("1", "true", "True")
 
         today = date.today()
+        recent_cut_ts = pd.Timestamp(today - timedelta(days=lookback))
 
-        # Interactions
+        # ---------------- Interactions ----------------
         if not dfi.empty:
             dfi = dfi.copy()
-            dfi["_d"] = _safe_parse_series(dfi["Date"])
+            # ⬅️ Convertir proprement en datetime64[ns]
+            dfi["_d"] = pd.to_datetime(dfi["Date"], errors="coerce")
+            # Compteurs
             inter_count = dfi.groupby("ID")["ID_Interaction"].count()
             last_contact = dfi.groupby("ID")["_d"].max()
-            recent_cut = today - timedelta(days=lookback)
-            recent_inter = dfi.loc[dfi["_d"] >= pd.Timestamp(recent_cut)] \
-                              .groupby("ID")["ID_Interaction"].count()
+            recent_inter = (
+                dfi.loc[dfi["_d"] >= recent_cut_ts]
+                   .groupby("ID")["ID_Interaction"].count()
+            )
             # Responsable le plus actif
-            tmp = dfi.groupby(["ID","Responsable"])["ID_Interaction"].count().reset_index()
+            tmp = dfi.groupby(["ID", "Responsable"])["ID_Interaction"].count().reset_index()
             if not tmp.empty:
                 idx = tmp.groupby("ID")["ID_Interaction"].idxmax()
                 resp_max = tmp.loc[idx].set_index("ID")["Responsable"]
@@ -870,40 +874,47 @@ elif page == "Rapports":
             recent_inter = pd.Series(dtype=int)
             resp_max = pd.Series(dtype=str)
 
-        # Participations (+ indicateur animé/invité)
+        # ---------------- Participations ----------------
         if not dfp.empty:
             parts_count = dfp.groupby("ID")["ID_Participation"].count()
-            has_anim = dfp.assign(_anim=dfp["Rôle"].isin(["Animateur","Invité"])) \
-                          .groupby("ID")["_anim"].any()
+            has_anim = (
+                dfp.assign(_anim=dfp["Rôle"].isin(["Animateur", "Invité"]))
+                   .groupby("ID")["_anim"].any()
+            )
         else:
             parts_count = pd.Series(dtype=int)
             has_anim = pd.Series(dtype=bool)
 
-        # Paiements
+        # ---------------- Paiements ----------------
         if not dfpay.empty:
             pay = dfpay.copy()
             pay["Montant"] = pd.to_numeric(pay["Montant"], errors="coerce").fillna(0.0)
             total_pay = pay.groupby("ID")["Montant"].sum()
-            pay_regle = pay[pay["Statut"]=="Réglé"].groupby("ID")["Montant"].sum()
-            pay_impaye = pay[pay["Statut"]!="Réglé"].groupby("ID")["Montant"].sum()
-            pay_reg_count = pay[pay["Statut"]=="Réglé"].groupby("ID")["Montant"].count()
+            pay_regle = pay[pay["Statut"] == "Réglé"].groupby("ID")["Montant"].sum()
+            pay_impaye = pay[pay["Statut"] != "Réglé"].groupby("ID")["Montant"].sum()
+            pay_reg_count = pay[pay["Statut"] == "Réglé"].groupby("ID")["Montant"].count()
         else:
             total_pay = pd.Series(dtype=float)
             pay_regle = pd.Series(dtype=float)
             pay_impaye = pd.Series(dtype=float)
             pay_reg_count = pd.Series(dtype=int)
 
-        # Certifications
+        # ---------------- Certifications ----------------
         if not dfcert.empty:
-            has_cert = dfcert[dfcert["Résultat"]=="Réussi"].groupby("ID")["ID_Certif"].count() > 0
+            has_cert = dfcert[dfcert["Résultat"] == "Réussi"].groupby("ID")["ID_Certif"].count() > 0
         else:
             has_cert = pd.Series(dtype=bool)
 
+        # ---------------- Assemblage ----------------
         ag = pd.DataFrame(index=contacts["ID"])
         ag["Interactions"] = ag.index.map(inter_count).fillna(0).astype(int)
         ag["Interactions_recent"] = ag.index.map(recent_inter).fillna(0).astype(int)
-        ag["Dernier_contact"] = pd.to_datetime(ag.index.map(last_contact), errors="coerce")
-        ag["Dernier_contact"] = ag["Dernier_contact"].dt.date
+
+        # Dernier contact en date → date pure
+        lc = ag.index.map(last_contact)
+        lc = pd.to_datetime(lc, errors="coerce")
+        ag["Dernier_contact"] = lc.dt.date
+
         ag["Resp_principal"] = ag.index.map(resp_max).fillna("")
         ag["Participations"] = ag.index.map(parts_count).fillna(0).astype(int)
         ag["A_animé_ou_invité"] = ag.index.map(has_anim).fillna(False)
@@ -912,15 +923,14 @@ elif page == "Rapports":
         ag["Impayé"] = ag.index.map(pay_impaye).fillna(0.0)
         ag["Paiements_regles_n"] = ag.index.map(pay_reg_count).fillna(0).astype(int)
 
-        # Tag certification (période) et VIP
         ag["A_certification"] = ag.index.map(has_cert).fillna(False)
-        ag["Score_composite"] = (w_int*ag["Interactions"] + w_part*ag["Participations"] + w_pay*ag["Paiements_regles_n"]).round(2)
+        ag["Score_composite"] = (w_int * ag["Interactions"] +
+                                 w_part * ag["Participations"] +
+                                 w_pay * ag["Paiements_regles_n"]).round(2)
 
         def make_tags(row):
             tags = []
-            # Top-20 : on utilise la table contacts (période) pour détecter l'attribut
-            # (si tu veux l'état global Top20, mappe depuis df_contacts global)
-            if row.name in set(contacts.loc[contacts.get("Top20", False)==True, "ID"]):
+            if row.name in set(contacts.loc[contacts.get("Top20", False) == True, "ID"]):
                 tags.append("Prospect Top-20")
             if row["Participations"] >= 3 and row["CA_réglé"] <= 0:
                 tags.append("Régulier-non-converti")
@@ -935,19 +945,21 @@ elif page == "Rapports":
         ag["Tags"] = ag.apply(make_tags, axis=1)
 
         def proba(row):
-            # si déjà membre (ici période : on prend statuts des contacts filtrés)
-            if row.name in set(contacts[contacts.get("Type","")=="Membre"]["ID"]):
+            if row.name in set(contacts[contacts.get("Type", "") == "Membre"]["ID"]):
                 return "Converti"
             chaud = (row["Interactions_recent"] >= hot_int_min and row["Participations"] >= hot_part_min)
             if hot_partiel and row["Impayé"] > 0 and row["CA_réglé"] == 0:
                 chaud = True
             tiede = (row["Interactions_recent"] >= 1 or row["Participations"] >= 1)
-            if chaud: return "Chaud"
-            if tiede: return "Tiède"
+            if chaud:
+                return "Chaud"
+            if tiede:
+                return "Tiède"
             return "Froid"
 
         ag["Proba_conversion"] = ag.apply(proba, axis=1)
         return ag.reset_index(names="ID")
+
 
     # ---------- Finance événements (identique) ----------
     def event_financials(dfe2, dfpay2):
