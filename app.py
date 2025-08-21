@@ -742,58 +742,89 @@ elif page == "Rapports":
     # ---------- Filtrage des CONTACTS par période ----------
     # Logique : on prend Date_Creation si dispo. Sinon, on essaie de déduire une "date de référence"
     # depuis la 1re interaction, 1re participation (date d'événement) ou 1er paiement.
-    def filtered_contacts_for_period(year_sel: str, month_sel: str, dfe2_all: pd.DataFrame, dfi_all: pd.DataFrame, dfp_all: pd.DataFrame, dfpay_all: pd.DataFrame) -> pd.DataFrame:
+    def filtered_contacts_for_period(
+        year_sel: str,
+        month_sel: str,
+        dfe_all: pd.DataFrame,   # df_events (toutes lignes)
+        dfi_all: pd.DataFrame,   # df_inter (toutes lignes)
+        dfp_all: pd.DataFrame,   # df_parts (toutes lignes)
+        dfpay_all: pd.DataFrame  # df_pay (toutes lignes)
+    ) -> pd.DataFrame:
         """
         Filtre les contacts par période.
         - Si contacts_period_fallback = ON (1) : utilise Date_Creation, sinon 1re interaction/participation/paiement.
         - Si OFF (0) : n'utilise QUE Date_Creation ; sans Date_Creation => contact exclu du filtrage période.
         """        
-        if not use_fallback:
-            # Filtrage stricte sur Date_Creation uniquement
-            mask = _build_mask_from_dates(base["_dc"], year_sel, month_sel)
-        return base[mask].drop(columns=["_dc"], errors="ignore")
+         # --- Base des contacts ---
+        base = df_contacts.copy()
+        if base.empty:
+            return base
 
-        # --- Fallback activé : tenter 1re interaction / participation / paiement ---
-        # 1re Interaction
+        # --- Flag de fallback depuis PARAMS (Admin) ---
+        use_fallback = str(PARAMS.get("contacts_period_fallback", "1")).lower() in ("1", "true", "on", "yes")
+
+        # Date de création (peut être vide)
+        base["_dc"] = base.get("Date_Creation", pd.Series(index=base.index, dtype=object))
+        base["_dc"] = base["_dc"].map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
+
+        # Mode strict : pas de fallback → on ne filtre que par Date_Creation
+        if not use_fallback:
+            mask = _build_mask_from_dates(base["_dc"], year_sel, month_sel)
+            return base[mask].drop(columns=["_dc"], errors="ignore")
+
+        # --- Fallback activé : calculer la 1re date connue (interaction/participation/paiement) ---
+        # 1) 1re interaction
         if not dfi_all.empty:
-            dfi_all = dfi_all.copy()
-            dfi_all["_di"] = dfi_all["Date"].map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
-            first_inter = dfi_all.groupby("ID")["_di"].min()
+            dfi = dfi_all.copy()
+            dfi["_di"] = _safe_parse_series(dfi["Date"])
+            first_inter = dfi.groupby("ID")["_di"].min()
         else:
             first_inter = pd.Series(dtype=object)
 
-        # 1re Participation (via date d'événement)
-        if not dfp_all.empty and not df_events.empty:
-            ev_date_map = df_events.set_index("ID_Événement")["Date"].map(parse_date)
-            dfp_all = dfp_all.copy()
-            dfp_all["_de"] = dfp_all["ID_Événement"].map(ev_date_map)
-            first_part = dfp_all.groupby("ID")["_de"].min()
+        # 2) 1re participation (via la date de l'événement)
+        if not dfp_all.empty and not dfe_all.empty:
+            ev_date_map = dfe_all.set_index("ID_Événement")["Date"].map(parse_date)
+            dfp = dfp_all.copy()
+            dfp["_de"] = dfp["ID_Événement"].map(ev_date_map)
+            first_part = dfp.groupby("ID")["_de"].min()
         else:
             first_part = pd.Series(dtype=object)
 
-        # 1er Paiement
+        # 3) 1er paiement
         if not dfpay_all.empty:
-            dfpay_all = dfpay_all.copy()
-            dfpay_all["_dp"] = dfpay_all["Date_Paiement"].map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
-            first_pay = dfpay_all.groupby("ID")["_dp"].min()
+            dfpay = dfpay_all.copy()
+            dfpay["_dp"] = _safe_parse_series(dfpay["Date_Paiement"])
+            first_pay = dfpay.groupby("ID")["_dp"].min()
         else:
             first_pay = pd.Series(dtype=object)
 
+        # Choisir la plus ancienne des dates disponibles
         def _first_valid_date(dc, fi, fp, fpay):
-            cand = [d for d in (dc, fi, fp, fpay) if isinstance(d, (datetime, date))]
-            return min(cand) if cand else None
+            cands = []
+            for d in (dc, fi, fp, fpay):
+                if isinstance(d, (datetime, date)):
+                    cands.append(d)
+            return min(cands) if cands else None
 
-        ref_dates = {}
-        for cid in base["ID"].astype(str):
-            dc = base.loc[base["ID"] == cid, "_dc"].values[0] if cid in set(base["ID"]) else None
-            fi = first_inter.get(cid, None)
-            fp = first_part.get(cid, None)
-            fpay = first_pay.get(cid, None)
-            ref_dates[cid] = _first_valid_date(dc, fi, fp, fpay)
+        # Construire la date de référence par contact
+        id_list = base["ID"].astype(str)
+        inter_map = first_inter if isinstance(first_inter, pd.Series) else pd.Series(dtype=object)
+        part_map  = first_part  if isinstance(first_part,  pd.Series) else pd.Series(dtype=object)
+        pay_map   = first_pay   if isinstance(first_pay,   pd.Series) else pd.Series(dtype=object)
+
+        # Accélérer : passer en dict (lookup O(1))
+        inter_d = inter_map.to_dict()
+        part_d  = part_map.to_dict()
+        pay_d   = pay_map.to_dict()
+        dc_d    = base.set_index("ID")["_dc"].to_dict()
+
+        ref_dates = {cid: _first_valid_date(dc_d.get(cid), inter_d.get(cid), part_d.get(cid), pay_d.get(cid)) for cid in id_list}
 
         base["_ref"] = base["ID"].astype(str).map(ref_dates)
+
+        # Filtrer selon la date de référence
         mask = _build_mask_from_dates(base["_ref"], year_sel, month_sel)
-        return base[mask].drop(columns=["_dc","_ref"], errors="ignore")
+        return base[mask].drop(columns=["_dc", "_ref"], errors="ignore")
 
     # ---------- Agrégats période (version locale, basée sur les tables filtrées) ----------
     def aggregates_for_contacts_period(contacts: pd.DataFrame,
