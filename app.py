@@ -596,27 +596,32 @@ if page == "Événements":
             nom = c1.text_input("Nom de l'événement")
             typ = c2.selectbox("Type", SET["types_evenements"])
             dat = c3.date_input("Date", value=date.today())
+
             c4, c5, c6 = st.columns(3)
             lieu = c4.selectbox("Lieu", SET["lieux"])
             duree = c5.number_input("Durée (h)", min_value=0.0, step=0.5, value=2.0)
             formateur = c6.text_input("Formateur(s)")
+
             obj = st.text_area("Objectif")
-            
+
             couts = st.columns(5)
-            c_salle = couts.number_input("Coût salle", min_value=0.0, step=1000.0)
-            c_form  = couts[1].number_input("Coût formateur", min_value=0.0, step=1000.0)
-            c_log   = couts[asset:1].number_input("Coût logistique", min_value=0.0, step=1000.0)
-            c_pub   = couts[asset:2].number_input("Coût pub", min_value=0.0, step=1000.0)
-            c_aut   = couts.number_input("Autres coûts", min_value=0.0, step=1000.0)
-            
+            c_salle = couts[0].number_input("Coût salle", min_value=0.0, step=1000.0)
+            c_form = couts[1].number_input("Coût formateur", min_value=0.0, step=1000.0)
+            c_log = couts[asset:1].number_input("Coût logistique", min_value=0.0, step=1000.0)
+            c_pub = couts[asset:2].number_input("Coût pub", min_value=0.0, step=1000.0)
+            c_aut = couts.number_input("Autres coûts", min_value=0.0, step=1000.0)
+
             notes = st.text_area("Notes")
             ok = st.form_submit_button("💾 Créer l'événement")
+
             if ok:
                 new_id = generate_id("EVT", df_events, "ID_Événement")
-                row = {"ID_Événement":new_id,"Nom_Événement":nom,"Type":typ,"Date":dat.isoformat(),
-                       "Durée_h":str(duree),"Lieu":lieu,"Formateur":formateur,"Objectif":obj,"Periode":"",
-                       "Cout_Salle":c_salle,"Cout_Formateur":c_form,"Cout_Logistique":c_log,"Cout_Pub":c_pub,
-                       "Cout_Autres":c_aut,"Cout_Total":0,"Notes":notes}
+                row = {
+                    "ID_Événement": new_id, "Nom_Événement": nom, "Type": typ, "Date": dat.isoformat(),
+                    "Durée_h": str(duree), "Lieu": lieu, "Formateur": formateur, "Objectif": obj, "Periode": "",
+                    "Cout_Salle": c_salle, "Cout_Formateur": c_form, "Cout_Logistique": c_log, "Cout_Pub": c_pub,
+                    "Cout_Autres": c_aut, "Cout_Total": 0, "Notes": notes
+                }
                 globals()["df_events"] = pd.concat([df_events, pd.DataFrame([row])], ignore_index=True)
                 save_df(df_events, PATHS["events"])
                 st.success(f"Événement créé ({new_id}).")
@@ -670,6 +675,7 @@ if page == "Événements":
     else:
         st.dataframe(df_show, use_container_width=True)
         st.info("Installez `streamlit-aggrid` pour éditer/dupliquer directement dans la grille.")
+
 
 # ---------------------- PAGE RAPPORTS ----------------------
 
