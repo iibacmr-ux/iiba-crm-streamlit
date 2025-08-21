@@ -842,26 +842,52 @@ elif page == "Rapports":
 elif page == "Admin":
     st.title("⚙️ Admin — Import & Calcul Automatique des KPI")
 
-    # Nouvelle routine d’import et calcul KPI
     @st.cache_data
     def load_and_compute_kpis(path: str = "Stagiaire-Maeva.xlsx") -> pd.DataFrame:
         # Chargement de tous les onglets
         all_sheets = pd.read_excel(path, sheet_name=None)
-        # Concaténation
+
+        # Préparation de la feuille RelanceProspect avec slice de colonnes corrigé
+        df_rel = all_sheets.get("RelanceProspect", pd.DataFrame())
+        df_rel_sel = pd.concat([
+            df_rel[["ID", "STATUT"]],
+            df_rel.loc[:, "DATE RELANCE 1":"DATE RELANCE 5"]
+        ], axis=1)
+
+        # Concaténation de tous les onglets prospects
         prospects = pd.concat([
             all_sheets.get("ListeProspects", pd.DataFrame()).dropna(subset=["Id"]),
-            all_sheets.get("New", pd.DataFrame()).loc[:, ["Id", "Nom", "Prénom", "Email", "Phone", "Approval Status", "Paiements effectués"]],
-            all_sheets.get("RelanceProspect", pd.DataFrame()).loc[:, ["ID", "STATUT", "DATE RELANCE 1":"DATE RELANCE 5"]],
-            all_sheets.get("Afterwork Online", pd.DataFrame()).loc[:, ["First Name", "Last Name", "Email", "Approval Status", "Heure d’inscription", "Heure de participation", "Temps de présence en séance (minutes)"]],
-            all_sheets.get("Webinaires Gratuits", pd.DataFrame()).loc[:, ["Nom d’utilisateur (nom original)", "Approval Status", "Temps de présence en séance (minutes)"]],
-            all_sheets.get("Groupe d’étude", pd.DataFrame()).loc[:, ["First Name", "Approval Status", "Heure d’inscription", "Heure de participation", "Temps de présence en séance (minutes)"]],
-            all_sheets.get("Cartographie", pd.DataFrame()).loc[:, ["First Name", "Approval Status", "Heure d’inscription", "Heure de participation", "Temps de présence en séance (minutes)"]]
+            all_sheets.get("New", pd.DataFrame()).loc[:, [
+                "Id", "Nom", "Prénom", "Email", "Phone",
+                "Approval Status", "Paiements effectués"
+            ]],
+            df_rel_sel,
+            all_sheets.get("Afterwork Online", pd.DataFrame()).loc[:, [
+                "First Name", "Last Name", "Email", "Approval Status",
+                "Heure d’inscription", "Heure de participation",
+                "Temps de présence en séance (minutes)"
+            ]],
+            all_sheets.get("Webinaires Gratuits", pd.DataFrame()).loc[:, [
+                "Nom d’utilisateur (nom original)", "Approval Status",
+                "Temps de présence en séance (minutes)"
+            ]],
+            all_sheets.get("Groupe d’étude", pd.DataFrame()).loc[:, [
+                "First Name", "Approval Status",
+                "Heure d’inscription", "Heure de participation",
+                "Temps de présence en séance (minutes)"
+            ]],
+            all_sheets.get("Cartographie", pd.DataFrame()).loc[:, [
+                "First Name", "Approval Status",
+                "Heure d’inscription", "Heure de participation",
+                "Temps de présence en séance (minutes)"
+            ]]
         ], ignore_index=True, sort=False)
 
         # Standardisation des colonnes
         prospects.rename(columns={
             "ID": "Id", "STATUT": "StatutMessages", "Approval Status": "EtatApprobation",
-            "Paiements effectués": "MontantsPayes", "Temps de présence en séance (minutes)": "DureePresence"
+            "Paiements effectués": "MontantsPayes",
+            "Temps de présence en séance (minutes)": "DureePresence"
         }, inplace=True)
 
         # Calculs temporels
@@ -915,7 +941,8 @@ elif page == "Admin":
 
         # KPI 5. Engagement et score d’engagement
         prospects["NbRelances"] = prospects[[
-            "DATE RELANCE 1", "DATE RELANCE2", "DATE RELANCE 3", "DATE RELANCE4", "DATE RELANCE 5"
+            "DATE RELANCE 1", "DATE RELANCE2",
+            "DATE RELANCE 3", "DATE RELANCE4", "DATE RELANCE 5"
         ]].notna().sum(axis=1)
         prospects["ScoreEngagement"] = (
             prospects["NbRelances"] +
@@ -944,13 +971,14 @@ elif page == "Admin":
 
         return prospects
 
+    # Exécution et affichage
     prospects = load_and_compute_kpis()
 
     st.subheader("📈 KPI Globaux et Segmentation")
     st.dataframe(
         prospects[[
             "Id", "Nom", "Prénom", "Actif30j", "Membre", "Injoignable",
-            "TauxParticipation", "MontgantImpayé", "Conv_Prospect_Inscrit",
+            "TauxParticipation", "MontantImpayé", "Conv_Prospect_Inscrit",
             "Conv_Inscrit_Participant", "ScoreEngagement",
             "ScoreGlobal", "SegmentGlobal"
         ]],
