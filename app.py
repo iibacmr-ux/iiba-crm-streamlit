@@ -1585,7 +1585,7 @@ elif page == "Admin":
         st.caption("Colonnes disponibles : " + ", ".join(sorted(list(set(C_COLS + I_COLS + E_COLS + P_COLS + PAY_COLS + CERT_COLS + ['Interactions','Participations','CA_réglé','Impayé','Resp_principal','A_animé_ou_invité','Score_composite','Proba_conversion','Tags','Dernier_contact','Interactions_recent'])))))
 
         st.write("**KPI visibles (séparés par des virgules)**")
-        st.caption("Clés supportées : contacts_total, prospects_actifs, membres, events_count, participations_total, ca_regle, impayes, taux_conversion")
+        st.caption("Clés supportées : contacts_total, prospects_actifs, membres, events_count, participations_total, ca_regle, impayes, taux_conversion, engagement")
         kpi_enabled = st.text_input("KPI activés", PARAMS.get("kpi_enabled",""))
 
         st.write("**Objectifs annuels/mensuels (format clé=valeur)**")
