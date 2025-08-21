@@ -823,6 +823,9 @@ elif page == "Rapports":
     # Préparation des données enrichies
     dfc_enriched = df_contacts.merge(aggregates_for_contacts(), on="ID", how="left")
     
+    # Ajoutez immédiatement cette ligne pour forcer la conversion en numérique 
+    dfc_enriched['Score_Engagement'] = pd.to_numeric(dfc_enriched['Score_Engagement'], errors='coerce').fillna(0)
+
     with tab_exec:
         st.subheader("📋 Synthèse Exécutive - IIBA Cameroun")
         
