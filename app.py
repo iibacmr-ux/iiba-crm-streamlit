@@ -749,8 +749,8 @@ elif page == "Rapports":
         - Si OFF (0) : n'utilise QUE Date_Creation ; sans Date_Creation => contact exclu du filtrage période.
         """        
         if not use_fallback:
-        # Filtrage stricte sur Date_Creation uniquement
-        mask = _build_mask_from_dates(base["_dc"], year_sel, month_sel)
+            # Filtrage stricte sur Date_Creation uniquement
+            mask = _build_mask_from_dates(base["_dc"], year_sel, month_sel)
         return base[mask].drop(columns=["_dc"], errors="ignore")
 
         # --- Fallback activé : tenter 1re interaction / participation / paiement ---
