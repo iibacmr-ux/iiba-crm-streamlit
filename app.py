@@ -1660,3 +1660,215 @@ elif page == "Admin":
                 st.error(f"Erreur d'import CSV global : {e}")
 
 
+
+    # ... code existant load_and_compute_kpis() ...
+
+    st.markdown("---")
+    st.header("🔧 Maintenance Base de Données")
+    
+    col_reset, col_purge = st.columns(2)
+    
+    with col_reset:
+        st.subheader("🗑️ Réinitialisation Complète")
+        st.warning("⚠️ Cette action supprime TOUTES les données et recrée les fichiers vides.")
+        
+        confirm_reset = st.text_input(
+            "Tapez 'RESET' pour confirmer:",
+            placeholder="RESET"
+        )
+        
+        if st.button("💣 RÉINITIALISER LA BASE", type="secondary"):
+            if confirm_reset == "RESET":
+                try:
+                    # Suppression de tous les fichiers CSV
+                    for path in PATHS.values():
+                        if path.exists():
+                            path.unlink()
+                    
+                    # Recréation des fichiers vides
+                    for table, cols in ALL_SCHEMAS.items():
+                        empty_df = pd.DataFrame(columns=cols)
+                        save_df(empty_df, PATHS[table])
+                    
+                    # Recréation parametres.csv
+                    df_params = pd.DataFrame({
+                        "key": list(ALL_DEFAULTS.keys()), 
+                        "value": list(ALL_DEFAULTS.values())
+                    })
+                    df_params.to_csv(PATHS["params"], index=False, encoding="utf-8")
+                    
+                    # Journalisation
+                    log_event("reset_database", {
+                        "action": "Réinitialisation complète",
+                        "tables_recreated": list(ALL_SCHEMAS.keys()),
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    
+                    st.success("✅ Base de données réinitialisée avec succès!")
+                    st.info("🔄 Rechargez la page pour voir les modifications.")
+                    
+                except Exception as e:
+                    st.error(f"❌ Erreur lors de la réinitialisation: {e}")
+                    log_event("error_reset_database", {"error": str(e)})
+            else:
+                st.error("❌ Veuillez taper 'RESET' pour confirmer.")
+    
+    with col_purge:
+        st.subheader("🎯 Purge d'un Identifiant")
+        st.info("Supprime un contact, événement, interaction, etc. par son ID")
+        
+        purge_id = st.text_input(
+            "ID à supprimer (ex: CNT_001, EVT_005, INT_023):",
+            placeholder="CNT_001"
+        )
+        
+        purge_type = st.selectbox(
+            "Type d'entité:",
+            ["Auto-détection", "Contact", "Événement", "Interaction", "Participation", "Paiement", "Certification"]
+        )
+        
+        if st.button("🗑️ PURGER CET ID", type="secondary"):
+            if purge_id:
+                try:
+                    deleted_count = 0
+                    deleted_from = []
+                    
+                    if purge_type == "Auto-détection":
+                        # Détection automatique basée sur le préfixe
+                        if purge_id.startswith("CNT_"):
+                            purge_type = "Contact"
+                        elif purge_id.startswith("EVT_"):
+                            purge_type = "Événement"
+                        elif purge_id.startswith("INT_"):
+                            purge_type = "Interaction"
+                        elif purge_id.startswith("PAR_"):
+                            purge_type = "Participation"
+                        elif purge_id.startswith("PAY_"):
+                            purge_type = "Paiement"
+                        elif purge_id.startswith("CER_"):
+                            purge_type = "Certification"
+                    
+                    # Suppression selon le type
+                    if purge_type == "Contact":
+                        # Suppression en cascade: contact + toutes ses relations
+                        original_len = len(df_contacts)
+                        globals()["df_contacts"] = df_contacts[df_contacts["ID"] != purge_id]
+                        deleted_count += original_len - len(df_contacts)
+                        if deleted_count > 0:
+                            save_df(df_contacts, PATHS["contacts"])
+                            deleted_from.append("contacts")
+                        
+                        # Suppression interactions liées
+                        original_len = len(df_inter)
+                        globals()["df_inter"] = df_inter[df_inter["ID"] != purge_id]
+                        inter_deleted = original_len - len(df_inter)
+                        if inter_deleted > 0:
+                            save_df(df_inter, PATHS["inter"])
+                            deleted_from.append(f"interactions ({inter_deleted})")
+                        
+                        # Suppression participations liées
+                        original_len = len(df_parts)
+                        globals()["df_parts"] = df_parts[df_parts["ID"] != purge_id]
+                        part_deleted = original_len - len(df_parts)
+                        if part_deleted > 0:
+                            save_df(df_parts, PATHS["parts"])
+                            deleted_from.append(f"participations ({part_deleted})")
+                        
+                        # Suppression paiements liés
+                        original_len = len(df_pay)
+                        globals()["df_pay"] = df_pay[df_pay["ID"] != purge_id]
+                        pay_deleted = original_len - len(df_pay)
+                        if pay_deleted > 0:
+                            save_df(df_pay, PATHS["pay"])
+                            deleted_from.append(f"paiements ({pay_deleted})")
+                        
+                        # Suppression certifications liées
+                        original_len = len(df_cert)
+                        globals()["df_cert"] = df_cert[df_cert["ID"] != purge_id]
+                        cert_deleted = original_len - len(df_cert)
+                        if cert_deleted > 0:
+                            save_df(df_cert, PATHS["cert"])
+                            deleted_from.append(f"certifications ({cert_deleted})")
+                    
+                    elif purge_type == "Événement":
+                        # Suppression événement + participations + paiements liés
+                        original_len = len(df_events)
+                        globals()["df_events"] = df_events[df_events["ID_Événement"] != purge_id]
+                        deleted_count += original_len - len(df_events)
+                        if deleted_count > 0:
+                            save_df(df_events, PATHS["events"])
+                            deleted_from.append("evenements")
+                        
+                        # Suppression participations à cet événement
+                        original_len = len(df_parts)
+                        globals()["df_parts"] = df_parts[df_parts["ID_Événement"] != purge_id]
+                        part_deleted = original_len - len(df_parts)
+                        if part_deleted > 0:
+                            save_df(df_parts, PATHS["parts"])
+                            deleted_from.append(f"participations ({part_deleted})")
+                        
+                        # Suppression paiements à cet événement
+                        original_len = len(df_pay)
+                        globals()["df_pay"] = df_pay[df_pay["ID_Événement"] != purge_id]
+                        pay_deleted = original_len - len(df_pay)
+                        if pay_deleted > 0:
+                            save_df(df_pay, PATHS["pay"])
+                            deleted_from.append(f"paiements ({pay_deleted})")
+                    
+                    elif purge_type == "Interaction":
+                        original_len = len(df_inter)
+                        globals()["df_inter"] = df_inter[df_inter["ID_Interaction"] != purge_id]
+                        deleted_count += original_len - len(df_inter)
+                        if deleted_count > 0:
+                            save_df(df_inter, PATHS["inter"])
+                            deleted_from.append("interactions")
+                    
+                    elif purge_type == "Participation":
+                        original_len = len(df_parts)
+                        globals()["df_parts"] = df_parts[df_parts["ID_Participation"] != purge_id]
+                        deleted_count += original_len - len(df_parts)
+                        if deleted_count > 0:
+                            save_df(df_parts, PATHS["parts"])
+                            deleted_from.append("participations")
+                    
+                    elif purge_type == "Paiement":
+                        original_len = len(df_pay)
+                        globals()["df_pay"] = df_pay[df_pay["ID_Paiement"] != purge_id]
+                        deleted_count += original_len - len(df_pay)
+                        if deleted_count > 0:
+                            save_df(df_pay, PATHS["pay"])
+                            deleted_from.append("paiements")
+                    
+                    elif purge_type == "Certification":
+                        original_len = len(df_cert)
+                        globals()["df_cert"] = df_cert[df_cert["ID_Certif"] != purge_id]
+                        deleted_count += original_len - len(df_cert)
+                        if deleted_count > 0:
+                            save_df(df_cert, PATHS["cert"])
+                            deleted_from.append("certifications")
+                    
+                    # Journalisation
+                    log_event("purge_id", {
+                        "purged_id": purge_id,
+                        "type": purge_type,
+                        "deleted_count": deleted_count,
+                        "tables_affected": deleted_from,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    
+                    if deleted_count > 0 or deleted_from:
+                        st.success(f"✅ ID '{purge_id}' purgé avec succès!")
+                        st.info(f"📊 Suppressions: {', '.join(deleted_from)}")
+                        st.info("🔄 Rechargez la page pour voir les modifications.")
+                    else:
+                        st.warning(f"⚠️ ID '{purge_id}' introuvable dans la base.")
+                
+                except Exception as e:
+                    st.error(f"❌ Erreur lors de la purge: {e}")
+                    log_event("error_purge_id", {"purge_id": purge_id, "error": str(e)})
+            else:
+                st.error("❌ Veuillez saisir un ID à purger.")
+
+    # ... reste du code existant (load_and_compute_kpis etc.) ...
+    
+    
