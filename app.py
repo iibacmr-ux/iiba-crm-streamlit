@@ -607,9 +607,9 @@ if page == "Événements":
             couts = st.columns(5)
             c_salle = couts[0].number_input("Coût salle", min_value=0.0, step=1000.0)
             c_form = couts[1].number_input("Coût formateur", min_value=0.0, step=1000.0)
-            c_log = couts[asset:1].number_input("Coût logistique", min_value=0.0, step=1000.0)
-            c_pub = couts[asset:2].number_input("Coût pub", min_value=0.0, step=1000.0)
-            c_aut = couts.number_input("Autres coûts", min_value=0.0, step=1000.0)
+            c_log = couts[2].number_input("Coût logistique", min_value=0.0, step=1000.0)
+            c_pub = couts[3].number_input("Coût pub", min_value=0.0, step=1000.0)
+            c_aut = couts[4].number_input("Autres coûts", min_value=0.0, step=1000.0)
 
             notes = st.text_area("Notes")
             ok = st.form_submit_button("💾 Créer l'événement")
