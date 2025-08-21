@@ -95,6 +95,7 @@ PARAM_DEFAULTS = {
     ]),
     "kpi_target_contacts_total_year_2025":"1000",
     "kpi_target_ca_regle_year_2025":"5000000",
+    "contacts_period_fallback": "1",   # 1 = ON (utilise fallback si Date_Creation manquante), 0 = OFF
 }
 
 ALL_DEFAULTS = {**PARAM_DEFAULTS, **{f"list_{k}":v for k,v in DEFAULT_LISTS.items()}}
@@ -742,23 +743,26 @@ elif page == "Rapports":
     # Logique : on prend Date_Creation si dispo. Sinon, on essaie de déduire une "date de référence"
     # depuis la 1re interaction, 1re participation (date d'événement) ou 1er paiement.
     def filtered_contacts_for_period(year_sel: str, month_sel: str, dfe2_all: pd.DataFrame, dfi_all: pd.DataFrame, dfp_all: pd.DataFrame, dfpay_all: pd.DataFrame) -> pd.DataFrame:
-        if df_contacts.empty:
-            return df_contacts.copy()
+        """
+        Filtre les contacts par période.
+        - Si contacts_period_fallback = ON (1) : utilise Date_Creation, sinon 1re interaction/participation/paiement.
+        - Si OFF (0) : n'utilise QUE Date_Creation ; sans Date_Creation => contact exclu du filtrage période.
+        """        
+        if not use_fallback:
+        # Filtrage stricte sur Date_Creation uniquement
+        mask = _build_mask_from_dates(base["_dc"], year_sel, month_sel)
+        return base[mask].drop(columns=["_dc"], errors="ignore")
 
-        # 1) Date_Creation (si dispo)
-        base = df_contacts.copy()
-        base["_dc"] = _safe_parse_series(base.get("Date_Creation", pd.Series(index=base.index, dtype=object)))
-
-        # 2) Sinon, caler des dates fallback
-        # 2a) 1re Interaction
+        # --- Fallback activé : tenter 1re interaction / participation / paiement ---
+        # 1re Interaction
         if not dfi_all.empty:
             dfi_all = dfi_all.copy()
-            dfi_all["_di"] = _safe_parse_series(dfi_all["Date"])
+            dfi_all["_di"] = dfi_all["Date"].map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
             first_inter = dfi_all.groupby("ID")["_di"].min()
         else:
             first_inter = pd.Series(dtype=object)
 
-        # 2b) 1re Participation par date d'événement
+        # 1re Participation (via date d'événement)
         if not dfp_all.empty and not df_events.empty:
             ev_date_map = df_events.set_index("ID_Événement")["Date"].map(parse_date)
             dfp_all = dfp_all.copy()
@@ -767,35 +771,27 @@ elif page == "Rapports":
         else:
             first_part = pd.Series(dtype=object)
 
-        # 2c) 1er Paiement
+        # 1er Paiement
         if not dfpay_all.empty:
             dfpay_all = dfpay_all.copy()
-            dfpay_all["_dp"] = _safe_parse_series(dfpay_all["Date_Paiement"])
+            dfpay_all["_dp"] = dfpay_all["Date_Paiement"].map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
             first_pay = dfpay_all.groupby("ID")["_dp"].min()
         else:
             first_pay = pd.Series(dtype=object)
 
-        # 3) Date référence = Date_Creation ou min(first_inter, first_part, first_pay)
-        def _first_non_none(values):
-            vals = [v for v in values if isinstance(v, (datetime, date))]
-            if not vals:
-                return None
-            return min(vals)
+        def _first_valid_date(dc, fi, fp, fpay):
+            cand = [d for d in (dc, fi, fp, fpay) if isinstance(d, (datetime, date))]
+            return min(cand) if cand else None
 
         ref_dates = {}
-        for cid in base["ID"]:
-            dc = base.loc[base["ID"] == cid, "_dc"].values[0]
-            if isinstance(dc, (datetime, date)):
-                ref_dates[cid] = dc
-                continue
+        for cid in base["ID"].astype(str):
+            dc = base.loc[base["ID"] == cid, "_dc"].values[0] if cid in set(base["ID"]) else None
             fi = first_inter.get(cid, None)
             fp = first_part.get(cid, None)
             fpay = first_pay.get(cid, None)
-            ref_dates[cid] = _first_non_none([fi, fp, fpay])
+            ref_dates[cid] = _first_valid_date(dc, fi, fp, fpay)
 
-        base["_ref"] = base["ID"].map(ref_dates)
-
-        # 4) Filtre période sur _ref
+        base["_ref"] = base["ID"].astype(str).map(ref_dates)
         mask = _build_mask_from_dates(base["_ref"], year_sel, month_sel)
         return base[mask].drop(columns=["_dc","_ref"], errors="ignore")
 
@@ -1060,6 +1056,19 @@ elif page == "Rapports":
                                                df_parts[df_parts["ID"].isin(dfc2["ID"])],
                                                df_pay[df_pay["ID"].isin(dfc2["ID"])],
                                                df_cert[df_cert["ID"].isin(dfc2["ID"])])
+    
+    # Normalisation des types de clé
+    dfc2 = dfc2.copy()
+    if "ID" in dfc2.columns:
+        dfc2["ID"] = dfc2["ID"].astype(str).str.strip()
+
+    ag_period = ag_period.copy()
+    if not ag_period.empty and "ID" in ag_period.columns:
+        ag_period["ID"] = ag_period["ID"].astype(str).str.strip()
+    else:
+        # garantir un DF avec colonne ID pour éviter ValueError si vide
+        ag_period = pd.DataFrame({"ID": []})    
+    
     dfc_enriched = dfc2.merge(ag_period, on="ID", how="left")
     if "Score_Engagement" in dfc_enriched.columns:
         dfc_enriched['Score_Engagement'] = pd.to_numeric(dfc_enriched['Score_Engagement'], errors='coerce').fillna(0)
@@ -1568,6 +1577,15 @@ elif page == "Admin":
                 min_value=0, max_value=100,
                 value=int(PARAMS.get("objectif_nps", "70"))
             )
+
+        # Filtrage période — Contacts
+        st.subheader("🗓️ Filtrage période — Contacts")
+
+        use_fallback_contacts = st.checkbox(
+            "Activer le fallback si Date_Creation manquante (utilise 1re interaction / participation / paiement)",
+            value=PARAMS.get("contacts_period_fallback", "1") in ("1","true","True")
+        )
+
         
         if st.form_submit_button("💾 Enregistrer Paramètres Avancés"):
             PARAMS.update({
@@ -1580,7 +1598,8 @@ elif page == "Admin":
                 "objectif_croissance_ca": str(objectif_croissance_ca),
                 "objectif_marge": str(objectif_marge),
                 "objectif_retention": str(objectif_retention),
-                "objectif_nps": str(objectif_nps)
+                "objectif_nps": str(objectif_nps),
+                "contacts_period_fallback": "1" if use_fallback_contacts else "0"
             })
             save_params(PARAMS)
             st.success("✅ Paramètres avancés enregistrés!")
