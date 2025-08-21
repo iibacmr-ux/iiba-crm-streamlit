@@ -591,31 +591,65 @@ if page == "CRM (Grille centrale)":
 if page == "Événements":
     st.title("📅 Événements")
     
-    with st.expander("➕ Créer un nouvel événement", expanded=False):
+# --- Sélecteur d'événement (pour pré-remplir les champs) ---
+    st.subheader("Sélectionner un événement (pour préremplir)")
+    if not df_events.empty:
+        def _label_evt(r):
+            return f"{r['ID_Événement']} — {r['Nom_Événement']} ({r['Date'] or ''})"
+        ev_options = df_events.apply(_label_evt, axis=1).tolist()
+        ev_map = dict(zip(ev_options, df_events["ID_Événement"]))
+        sel_ev_label = st.selectbox("Événement", [""] + ev_options, index=0, key="select_event_label")
+        st.session_state["selected_event_id"] = ev_map.get(sel_ev_label, None) if sel_ev_label else None
+    else:
+        st.info("Aucun événement existant pour préremplir.")
+
+    with st.expander("➕ Créer un nouvel événement (pré-rempli si un événement est sélectionné)", expanded=False):
+        # Pré-remplir à partir de l'événement sélectionné
+        pref = {}
+        sel_evt_id = st.session_state.get("selected_event_id")
+        if sel_evt_id:
+            row = df_events[df_events["ID_Événement"] == sel_evt_id]
+            if not row.empty:
+                pref = row.iloc[0].to_dict()
+
         with st.form("new_event"):
             c1, c2, c3 = st.columns(3)
-            nom = c1.text_input("Nom de l'événement")
-            typ = c2.selectbox("Type", SET["types_evenements"])
-            dat = c3.date_input("Date", value=date.today())
+            nom = c1.text_input("Nom de l'événement", value=pref.get("Nom_Événement",""))
+            typ = c2.selectbox("Type", SET["types_evenements"], index=SET["types_evenements"].index(pref.get("Type","Formation")) if pref.get("Type","Formation") in SET["types_evenements"] else 0)
+            dat_default = parse_date(pref.get("Date")) or date.today()
+            dat = c3.date_input("Date", value=dat_default)
 
             c4, c5, c6 = st.columns(3)
-            lieu = c4.selectbox("Lieu", SET["lieux"])
-            duree = c5.number_input("Durée (h)", min_value=0.0, step=0.5, value=2.0)
-            formateur = c6.text_input("Formateur(s)")
+            lieu = c4.selectbox("Lieu", SET["lieux"], index=SET["lieux"].index(pref.get("Lieu","Présentiel")) if pref.get("Lieu","Présentiel") in SET["lieux"] else 0)
+            duree_val = 2.0
+            try:
+                duree_val = float(pref.get("Durée_h", 2.0))
+            except:
+                pass
+            duree = c5.number_input("Durée (h)", min_value=0.0, step=0.5, value=duree_val)
+            formateur = c6.text_input("Formateur(s)", value=pref.get("Formateur",""))
 
-            obj = st.text_area("Objectif")
+            obj = st.text_area("Objectif", value=pref.get("Objectif",""))
 
             couts = st.columns(5)
-            c_salle = couts[0].number_input("Coût salle", min_value=0.0, step=1000.0)
-            c_form = couts[1].number_input("Coût formateur", min_value=0.0, step=1000.0)
-            c_log = couts[2].number_input("Coût logistique", min_value=0.0, step=1000.0)
-            c_pub = couts[3].number_input("Coût pub", min_value=0.0, step=1000.0)
-            c_aut = couts[4].number_input("Autres coûts", min_value=0.0, step=1000.0)
+            def _num(v): 
+                try: return float(v)
+                except: return 0.0
+            c_salle = couts[0].number_input("Coût salle", min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Salle",0)))
+            c_form  = couts[1].number_input("Coût formateur", min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Formateur",0)))
+            c_log   = couts[2].number_input("Coût logistique", min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Logistique",0)))
+            c_pub   = couts[3].number_input("Coût pub", min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Pub",0)))
+            c_aut   = couts[4].number_input("Autres coûts", min_value=0.0, step=1000.0, value=_num(pref.get("Cout_Autres",0)))
 
-            notes = st.text_area("Notes")
+            notes = st.text_area("Notes", value=pref.get("Notes",""))
             ok = st.form_submit_button("💾 Créer l'événement")
 
             if ok:
+                # --- Validation : nom obligatoire ---
+                if not str(nom).strip():
+                    st.error("❌ Le nom de l'événement est obligatoire. Création annulée.")
+                    st.stop()
+
                 new_id = generate_id("EVT", df_events, "ID_Événement")
                 row = {
                     "ID_Événement": new_id, "Nom_Événement": nom, "Type": typ, "Date": dat.isoformat(),
