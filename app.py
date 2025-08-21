@@ -972,28 +972,34 @@ elif page == "Rapports":
         # --- Fallback activé : calculer la 1re date connue (interaction/participation/paiement) ---
         # 1) 1re interaction
         if not dfi_all.empty:
-            dfi = dfi_all.copy()
-            dfi["_di"] = _safe_parse_series(dfi["Date"])
-            first_inter = dfi.groupby("ID")["_di"].min()
+            dfi_all = dfi_all.copy()
+            dfi_all["_di"] = dfi_all["Date"].map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
+            dfi_all["_di_dt"] = pd.to_datetime(dfi_all["_di"], errors="coerce")
+            first_inter = dfi_all.groupby("ID")["_di_dt"].min()
         else:
-            first_inter = pd.Series(dtype=object)
+            first_inter = pd.Series(dtype="datetime64[ns]")
 
         # 2) 1re participation (via la date de l'événement)
-        if not dfp_all.empty and not dfe_all.empty:
-            ev_date_map = dfe_all.set_index("ID_Événement")["Date"].map(parse_date)
-            dfp = dfp_all.copy()
-            dfp["_de"] = dfp["ID_Événement"].map(ev_date_map)
-            first_part = dfp.groupby("ID")["_de"].min()
+        if not dfp_all.empty and not df_events.empty:
+            ev_date_map = df_events.set_index("ID_Événement")["Date"].map(parse_date)
+            dfp_all = dfp_all.copy()
+            dfp_all["_de"] = dfp_all["ID_Événement"].map(ev_date_map)
+
+            # 🔧 Sécuriser le dtype pour l'agrégat min()
+            dfp_all["_de_dt"] = pd.to_datetime(dfp_all["_de"], errors="coerce")
+            # ⚠️ Si tu agrèges sur _de (python date), Pandas peut planter — on agrège sur _de_dt
+            first_part = dfp_all.groupby("ID")["_de_dt"].min()
         else:
-            first_part = pd.Series(dtype=object)
+            first_part = pd.Series(dtype="datetime64[ns]")
 
         # 3) 1er paiement
         if not dfpay_all.empty:
-            dfpay = dfpay_all.copy()
-            dfpay["_dp"] = _safe_parse_series(dfpay["Date_Paiement"])
-            first_pay = dfpay.groupby("ID")["_dp"].min()
+            dfpay_all = dfpay_all.copy()
+            dfpay_all["_dp"] = dfpay_all["Date_Paiement"].map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
+            dfpay_all["_dp_dt"] = pd.to_datetime(dfpay_all["_dp"], errors="coerce")
+            first_pay = dfpay_all.groupby("ID")["_dp_dt"].min()
         else:
-            first_pay = pd.Series(dtype=object)
+            first_pay = pd.Series(dtype="datetime64[ns]")
 
         # Choisir la plus ancienne des dates disponibles
         def _first_valid_date(dc, fi, fp, fpay):
