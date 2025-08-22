@@ -3031,7 +3031,7 @@ with tabs[0]:
             df_users = pd.concat([df_users, pd.DataFrame([row])], ignore_index=True)
             _save_users_df(df_users)
             st.success(f"Utilisateur '{new_user_id}' créé.")
-            st.experimental_rerun()
+            _safe_rerun()
 
 # ---- Changer mot de passe
 with tabs[1]:
@@ -3069,7 +3069,7 @@ with tabs[2]:
                     df_users.loc[df_users["user_id"].isin(to_activate), ["active","updated_at"]] = [True, _now_iso()]
                     _save_users_df(df_users)
                     st.success(f"Comptes activés : {', '.join(to_activate)}")
-                    st.experimental_rerun()
+                    _safe_rerun()
                 else:
                     st.warning("Aucun compte sélectionné.")
         with col_d:
@@ -3079,7 +3079,7 @@ with tabs[2]:
                     df_users.loc[df_users["user_id"].isin(to_deactivate), ["active","updated_at"]] = [False, _now_iso()]
                     _save_users_df(df_users)
                     st.success(f"Comptes désactivés : {', '.join(to_deactivate)}")
-                    st.experimental_rerun()
+                    _safe_rerun()
                 else:
                     st.warning("Aucun compte sélectionné.")
 
@@ -3117,7 +3117,7 @@ with tabs[4]:
                 df_users = df_users[df_users["user_id"] != uid_del].copy()
                 _save_users_df(df_users)
                 st.success(f"Utilisateur '{uid_del}' supprimé.")
-                st.experimental_rerun()
+                _safe_rerun()
 
 # ---- Tableau récap (sans colonnes sensibles)
 st.markdown("### 📋 Utilisateurs existants")
