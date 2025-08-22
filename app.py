@@ -2944,3 +2944,186 @@ elif page == "Admin":
             else:
                 st.error("❌ Veuillez saisir un ID à purger.")
  
+ # =========================
+# 👤 Gestion des utilisateurs (Admin)
+# =========================
+st.markdown("---")
+st.header("👤 Gestion des utilisateurs")
+
+# -- Sécurité : accessible admins uniquement
+current_user = st.session_state.get("auth_user", {})
+if not current_user or current_user.get("role") != "admin":
+    st.warning("Accès réservé aux administrateurs.")
+    st.stop()
+
+# -- Dépendance bcrypt
+try:
+    import bcrypt
+except Exception:
+    st.error("Le module 'bcrypt' est requis pour la gestion de mots de passe. Installez-le : pip install bcrypt")
+    st.stop()
+
+USERS_PATH = DATA_DIR / "users.csv"
+USER_COLS = ["user_id","full_name","role","active","pwd_hash","created_at","updated_at"]
+
+def _ensure_users_df() -> pd.DataFrame:
+    if not USERS_PATH.exists():
+        dfu = pd.DataFrame(columns=USER_COLS)
+        dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
+        return dfu
+    dfu = pd.read_csv(USERS_PATH, dtype=str).fillna("")
+    # garde le schéma
+    for c in USER_COLS:
+        if c not in dfu.columns:
+            dfu[c] = ""
+    # types
+    dfu["active"] = dfu["active"].astype(str).str.lower().isin(["1","true","yes","y","on"])
+    return dfu[USER_COLS].copy()
+
+def _save_users_df(dfu: pd.DataFrame):
+    out = dfu.copy()
+    out["active"] = out["active"].map(lambda x: "1" if bool(x) else "0")
+    out.to_csv(USERS_PATH, index=False, encoding="utf-8")
+
+def _hash_password(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+df_users = _ensure_users_df()
+user_ids = df_users["user_id"].tolist()
+
+tabs = st.tabs(["➕ Créer un utilisateur", "🔑 Changer mot de passe", "✅ Activer / ❌ Désactiver", "🧯 Réinitialiser MDP", "🗑️ Supprimer"])
+
+# ---- Créer
+with tabs[0]:
+    st.subheader("➕ Créer un utilisateur")
+    with st.form("create_user_form"):
+        col1,col2 = st.columns([2,2])
+        new_user_id = col1.text_input("Identifiant (email / login)", placeholder="prenom.nom@iiba.cm")
+        full_name   = col2.text_input("Nom complet", placeholder="Prénom NOM")
+        role        = st.selectbox("Rôle", ["admin","standard"], index=1, help="admin = accès total ; standard = CRM & Événements")
+        active      = st.checkbox("Compte actif", value=True)
+        colp1, colp2 = st.columns([2,1])
+        pw_plain    = colp1.text_input("Mot de passe initial", type="password", placeholder="Définir un mot de passe")
+        show_hint   = colp2.checkbox("Afficher en clair", value=False)
+        if show_hint and pw_plain:
+            st.info(f"Mot de passe saisi : **{pw_plain}**")
+        ok_create = st.form_submit_button("Créer l'utilisateur")
+    if ok_create:
+        if not new_user_id or not full_name:
+            st.error("Identifiant et Nom complet sont obligatoires.")
+        elif new_user_id in user_ids:
+            st.error("Cet identifiant existe déjà.")
+        elif not pw_plain or len(pw_plain) < 6:
+            st.error("Mot de passe requis (≥ 6 caractères).")
+        else:
+            row = {
+                "user_id": new_user_id,
+                "full_name": full_name,
+                "role": role,
+                "active": True if active else False,
+                "pwd_hash": _hash_password(pw_plain),
+                "created_at": _now_iso(),
+                "updated_at": _now_iso(),
+            }
+            df_users = pd.concat([df_users, pd.DataFrame([row])], ignore_index=True)
+            _save_users_df(df_users)
+            st.success(f"Utilisateur '{new_user_id}' créé.")
+            st.experimental_rerun()
+
+# ---- Changer mot de passe
+with tabs[1]:
+    st.subheader("🔑 Changer le mot de passe")
+    if df_users.empty:
+        st.info("Aucun utilisateur.")
+    else:
+        with st.form("change_pwd_form"):
+            uid = st.selectbox("Utilisateur", user_ids, index=0)
+            npw = st.text_input("Nouveau mot de passe", type="password")
+            npw2 = st.text_input("Confirmer le mot de passe", type="password")
+            ok = st.form_submit_button("Mettre à jour le mot de passe")
+        if ok:
+            if not uid:
+                st.error("Sélectionnez un utilisateur.")
+            elif not npw or len(npw) < 6 or npw != npw2:
+                st.error("Le mot de passe est vide, trop court, ou les deux champs ne correspondent pas.")
+            else:
+                df_users.loc[df_users["user_id"]==uid, "pwd_hash"] = _hash_password(npw)
+                df_users.loc[df_users["user_id"]==uid, "updated_at"] = _now_iso()
+                _save_users_df(df_users)
+                st.success(f"Mot de passe mis à jour pour {uid}.")
+
+# ---- Activer / Désactiver
+with tabs[2]:
+    st.subheader("✅ Activer / ❌ Désactiver des comptes")
+    if df_users.empty:
+        st.info("Aucun utilisateur.")
+    else:
+        col_a, col_d = st.columns(2)
+        with col_a:
+            to_activate = st.multiselect("Sélectionner pour activer", df_users.loc[~df_users["active"], "user_id"].tolist())
+            if st.button("Activer"):
+                if to_activate:
+                    df_users.loc[df_users["user_id"].isin(to_activate), ["active","updated_at"]] = [True, _now_iso()]
+                    _save_users_df(df_users)
+                    st.success(f"Comptes activés : {', '.join(to_activate)}")
+                    st.experimental_rerun()
+                else:
+                    st.warning("Aucun compte sélectionné.")
+        with col_d:
+            to_deactivate = st.multiselect("Sélectionner pour désactiver", df_users.loc[df_users["active"], "user_id"].tolist())
+            if st.button("Désactiver"):
+                if to_deactivate:
+                    df_users.loc[df_users["user_id"].isin(to_deactivate), ["active","updated_at"]] = [False, _now_iso()]
+                    _save_users_df(df_users)
+                    st.success(f"Comptes désactivés : {', '.join(to_deactivate)}")
+                    st.experimental_rerun()
+                else:
+                    st.warning("Aucun compte sélectionné.")
+
+# ---- Réinitialiser MDP (génère un nouveau MDP aléatoire)
+with tabs[3]:
+    st.subheader("🧯 Réinitialiser le mot de passe")
+    if df_users.empty:
+        st.info("Aucun utilisateur.")
+    else:
+        uid_reset = st.selectbox("Utilisateur", user_ids, key="uid_reset")
+        if st.button("Générer un nouveau mot de passe"):
+            import secrets, string
+            alphabet = string.ascii_letters + string.digits
+            new_pw = "".join(secrets.choice(alphabet) for _ in range(10))
+            df_users.loc[df_users["user_id"]==uid_reset, "pwd_hash"] = _hash_password(new_pw)
+            df_users.loc[df_users["user_id"]==uid_reset, "updated_at"] = _now_iso()
+            _save_users_df(df_users)
+            st.success(f"Nouveau mot de passe pour {uid_reset} : **{new_pw}**")
+            st.caption("⚠️ Affiché une seule fois — communique-le à l’utilisateur puis demande-lui de le changer.")
+
+# ---- Supprimer (danger)
+with tabs[4]:
+    st.subheader("🗑️ Supprimer un utilisateur (irréversible)")
+    if df_users.empty:
+        st.info("Aucun utilisateur.")
+    else:
+        uid_del = st.selectbox("Utilisateur à supprimer", user_ids, key="uid_del")
+        confirm = st.text_input("Confirmer en tapant SUPPRIMER", placeholder="SUPPRIMER")
+        if st.button("Supprimer définitivement", type="secondary"):
+            if confirm != "SUPPRIMER":
+                st.error("Confirmation invalide. Tapez exactement SUPPRIMER.")
+            elif uid_del == current_user.get("user_id"):
+                st.error("Vous ne pouvez pas supprimer votre propre compte.")
+            else:
+                df_users = df_users[df_users["user_id"] != uid_del].copy()
+                _save_users_df(df_users)
+                st.success(f"Utilisateur '{uid_del}' supprimé.")
+                st.experimental_rerun()
+
+# ---- Tableau récap (sans colonnes sensibles)
+st.markdown("### 📋 Utilisateurs existants")
+if df_users.empty:
+    st.info("Aucun utilisateur enregistré.")
+else:
+    show = df_users[["user_id","full_name","role","active","created_at","updated_at"]].copy()
+    show["active"] = show["active"].map(lambda x: "✅" if x else "❌")
+    st.dataframe(show, use_container_width=True)
