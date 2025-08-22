@@ -342,14 +342,17 @@ def _force_activate_admin():
     dfu = _normalize_users_df(dfu)
 
     m = dfu["user_id"].astype(str).str.strip().str.lower() == "admin@iiba.cm"
+    print("_force_activate_admin - m :", m)
     if m.any():
         # réactive + redonne le rôle admin
+        print("réactive + redonne le rôle admin - m :", m)
         dfu.loc[m, "active"] = True
         dfu.loc[m, "role"] = "admin"
         dfu.loc[m, "updated_at"] = datetime.now().isoformat(timespec="seconds")
         dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
     else:
         # si le compte n'existe pas, on le (ré)crée proprement
+        print("le compte n'existe pas, on le (ré)crée proprement - m :", m)
         default_pw = "admin123"
         row = {
             "user_id": "admin@iiba.cm",
@@ -390,6 +393,7 @@ def login_box():
         users_df = _ensure_users_df()
         users_df = _normalize_users_df(users_df)
         m = (users_df["user_id"].astype(str).str.strip().str.lower() == str(uid).strip().lower())
+        print("st.sidebar.button - m :", m)
         if not m.any():
             st.sidebar.error("Utilisateur introuvable.")
             return
