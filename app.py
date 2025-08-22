@@ -357,6 +357,50 @@ st.sidebar.title("Navigation")
 # === AUTH MINIMAL ===
 import bcrypt
 
+def _ensure_users_df() -> pd.DataFrame:
+    """Charge users.csv, normalise, et injecte admin par défaut si besoin."""
+    if not USERS_PATH.exists():
+        dfu = pd.DataFrame(columns=USER_COLS)
+        # admin par défaut
+        default_pw = "admin123"  # 🔐 change immédiatement après connexion
+        row = {
+            "user_id": "admin@iiba.cm",
+            "full_name": "Admin IIBA Cameroun",
+            "role": "admin",
+            "active": True,
+            "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
+            "must_change_pw": True,  # forcer changement au 1er login (optionnel)
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
+        dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
+        return dfu
+
+    try:
+        raw = pd.read_csv(USERS_PATH, dtype=str).fillna("")
+    except Exception:
+        raw = pd.DataFrame(columns=USER_COLS)
+    dfu = _normalize_users_df(raw)
+
+    # s’assure qu’un admin existe toujours
+    if not (dfu["user_id"] == "admin@iiba.cm").any():
+        default_pw = "admin123"
+        row = {
+            "user_id": "admin@iiba.cm",
+            "full_name": "Admin IIBA Cameroun",
+            "role": "admin",
+            "active": True,
+            "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
+            "must_change_pw": True,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
+        dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
+
+    return dfu
+
 USERS_PATH = DATA_DIR / "users.csv"
 
 USER_COLS = [
@@ -3043,50 +3087,6 @@ except Exception:
 
 USERS_PATH = DATA_DIR / "users.csv"
 USER_COLS = ["user_id","full_name","role","active","pwd_hash","created_at","updated_at"]
-
-def _ensure_users_df() -> pd.DataFrame:
-    """Charge users.csv, normalise, et injecte admin par défaut si besoin."""
-    if not USERS_PATH.exists():
-        dfu = pd.DataFrame(columns=USER_COLS)
-        # admin par défaut
-        default_pw = "admin123"  # 🔐 change immédiatement après connexion
-        row = {
-            "user_id": "admin@iiba.cm",
-            "full_name": "Admin IIBA Cameroun",
-            "role": "admin",
-            "active": True,
-            "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
-            "must_change_pw": True,  # forcer changement au 1er login (optionnel)
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
-        dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
-        return dfu
-
-    try:
-        raw = pd.read_csv(USERS_PATH, dtype=str).fillna("")
-    except Exception:
-        raw = pd.DataFrame(columns=USER_COLS)
-    dfu = _normalize_users_df(raw)
-
-    # s’assure qu’un admin existe toujours
-    if not (dfu["user_id"] == "admin@iiba.cm").any():
-        default_pw = "admin123"
-        row = {
-            "user_id": "admin@iiba.cm",
-            "full_name": "Admin IIBA Cameroun",
-            "role": "admin",
-            "active": True,
-            "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
-            "must_change_pw": True,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
-        dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
-
-    return dfu
 
 def _save_users_df(dfu: pd.DataFrame):
     out = dfu.copy()
