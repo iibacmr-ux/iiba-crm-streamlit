@@ -2953,8 +2953,8 @@ st.header("👤 Gestion des utilisateurs")
 # -- Sécurité : accessible admins uniquement
 current_user = st.session_state.get("auth_user", {})
     if not current_user or current_user.get("role") != "admin":
-    st.warning("Accès réservé aux administrateurs.")
-    st.stop()
+        st.warning("Accès réservé aux administrateurs.")
+        st.stop()
 
 # -- Dépendance bcrypt
 try:
