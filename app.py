@@ -354,6 +354,48 @@ st.sidebar.title("Navigation")
 # === AUTH MINIMAL ===
 import bcrypt
 USERS_PATH = DATA_DIR / "users.csv"
+USER_COLS = [
+    "user_id", "full_name", "role", "active",
+    "pwd_hash", "must_change_pw", "created_at", "updated_at"
+]
+
+def _normalize_users_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Uniformise les colonnes en minuscules + alias legacy."""
+    # noms de colonnes en minuscules
+    df = df.copy()
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    # mapping d’alias hérités -> cibles modernes
+    alias = {
+        "userid": "user_id",
+        "email": "user_id",
+        "login": "user_id",
+        "nom": "full_name",     # si tu avais Nom + Prenom autrefois, tu peux concaténer en amont
+        "prenom": "full_name",  # (ici on mappe au mieux – idéalement géré dans l'écran Admin)
+        "role": "role",
+        "active": "active",
+        "passwordhash": "pwd_hash",
+        "pwdhash": "pwd_hash",
+        "mustchangepw": "must_change_pw",
+        "created_at": "created_at",
+        "updated_at": "updated_at",
+    }
+    for old, new in alias.items():
+        if old in df.columns and new not in df.columns:
+            df[new] = df[old]
+
+    # colonnes manquantes par défaut
+    for c in USER_COLS:
+        if c not in df.columns:
+            df[c] = "" if c not in ("active", "must_change_pw") else False
+
+    # typages
+    df["active"] = df["active"].astype(str).str.lower().isin(["1","true","yes","y","on"])
+    df["must_change_pw"] = df["must_change_pw"].astype(str).str.lower().isin(["1","true","yes","y","on"])
+
+    # projection colonnes
+    return df[USER_COLS].copy()
+
 
 def _bootstrap_users():
     if USERS_PATH.exists():
@@ -378,28 +420,59 @@ def verify_password(clearPwd: str, hashed: str) -> bool:
     except Exception:
         return False
 
+def _check_password(clear_pw: str, pwd_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(clear_pw.encode("utf-8"), pwd_hash.encode("utf-8"))
+    except Exception:
+        return False
+        
 users_df = load_users()
 
 def login_box():
+    """Boîte de login simple; remplace ta version actuelle."""
     st.sidebar.markdown("### 🔐 Connexion")
-    uid = st.sidebar.text_input("Email / UserID", value="admin@iiba.cm")
-    pwd = st.sidebar.text_input("Mot de passe", value="change-me", type="password")
+    uid = st.sidebar.text_input("Email / User ID", value=st.session_state.get("last_uid",""))
+    pw = st.sidebar.text_input("Mot de passe", type="password")
+
     if st.sidebar.button("Se connecter", key="btn_login"):
-        row = users_df[
-            (users_df["UserID"]==uid) &
-            (users_df["Is_Active"].astype(str).str.lower().isin(["1","true","yes"]))
-        ]
-        if not row.empty and verify_password(pwd, row.iloc[0]["PasswordHash"]):
-            st.session_state["user"] = {
-                "UserID": row.iloc[0]["UserID"],
-                "Role": row.iloc[0]["Role"],
-                "Nom": row.iloc[0]["Nom"],
-                "Prénom": row.iloc[0]["Prénom"],
-            }
-            st.success(f"Bienvenue {row.iloc[0]['Prénom']} !")
-            st.rerun()
+        users_df = _ensure_users_df()
+        # Toujours travailler avec colonnes normalisées
+        users_df = _normalize_users_df(users_df)
+
+        # Filtre utilisateur
+        m = (users_df["user_id"].astype(str).str.strip().str.lower() == str(uid).strip().lower())
+        if not m.any():
+            st.sidebar.error("Utilisateur introuvable.")
+            return
+        row = users_df[m].iloc[0]
+        if not bool(row["active"]):
+            st.sidebar.error("Compte inactif. Contactez un administrateur.")
+            return
+        if not _check_password(pw, row["pwd_hash"]):
+            st.sidebar.error("Mot de passe incorrect.")
+            return
+
+        # Auth OK → session
+        st.session_state["auth_user_id"] = row["user_id"]
+        st.session_state["auth_role"] = row["role"]
+        st.session_state["auth_full_name"] = row["full_name"]
+        st.session_state["last_uid"] = uid
+
+        # Force changement de mot de passe si must_change_pw
+        if bool(row.get("must_change_pw", False)):
+            st.session_state["force_change_pw"] = True
         else:
-            st.error("Identifiants invalides ou compte inactif.")
+            st.session_state["force_change_pw"] = False
+
+        st.experimental_rerun()
+
+    # Si déjà connecté, affiche le badge et un bouton logout
+    if "auth_user_id" in st.session_state:
+        st.sidebar.success(f"Connecté : {st.session_state['auth_full_name']} ({st.session_state['auth_role']})")
+        if st.sidebar.button("Se déconnecter", key="btn_logout"):
+            for k in ["auth_user_id","auth_role","auth_full_name","force_change_pw"]:
+                st.session_state.pop(k, None)
+            st.experimental_rerun()
 
 if "user" not in st.session_state:
     login_box()
@@ -2967,18 +3040,48 @@ USERS_PATH = DATA_DIR / "users.csv"
 USER_COLS = ["user_id","full_name","role","active","pwd_hash","created_at","updated_at"]
 
 def _ensure_users_df() -> pd.DataFrame:
+    """Charge users.csv, normalise, et injecte admin par défaut si besoin."""
     if not USERS_PATH.exists():
         dfu = pd.DataFrame(columns=USER_COLS)
+        # admin par défaut
+        default_pw = "admin123"  # 🔐 change immédiatement après connexion
+        row = {
+            "user_id": "admin@iiba.cm",
+            "full_name": "Admin IIBA Cameroun",
+            "role": "admin",
+            "active": True,
+            "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
+            "must_change_pw": True,  # forcer changement au 1er login (optionnel)
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
         dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
         return dfu
-    dfu = pd.read_csv(USERS_PATH, dtype=str).fillna("")
-    # garde le schéma
-    for c in USER_COLS:
-        if c not in dfu.columns:
-            dfu[c] = ""
-    # types
-    dfu["active"] = dfu["active"].astype(str).str.lower().isin(["1","true","yes","y","on"])
-    return dfu[USER_COLS].copy()
+
+    try:
+        raw = pd.read_csv(USERS_PATH, dtype=str).fillna("")
+    except Exception:
+        raw = pd.DataFrame(columns=USER_COLS)
+    dfu = _normalize_users_df(raw)
+
+    # s’assure qu’un admin existe toujours
+    if not (dfu["user_id"] == "admin@iiba.cm").any():
+        default_pw = "admin123"
+        row = {
+            "user_id": "admin@iiba.cm",
+            "full_name": "Admin IIBA Cameroun",
+            "role": "admin",
+            "active": True,
+            "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
+            "must_change_pw": True,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
+        dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
+
+    return dfu
 
 def _save_users_df(dfu: pd.DataFrame):
     out = dfu.copy()
