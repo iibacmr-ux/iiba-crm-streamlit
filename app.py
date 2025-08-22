@@ -477,6 +477,14 @@ def _check_password(clear_pw: str, pwd_hash: str) -> bool:
         
 users_df = load_users()
 
+def _safe_rerun():
+    """Compat rerun pour toutes versions de Streamlit."""
+    import streamlit as _st
+    if hasattr(_st, "rerun"):
+        _st.rerun()
+    elif hasattr(_st, "experimental_rerun"):
+        _st.experimental_rerun()
+            
 def login_box():
     """Boîte de login simple; remplace ta version actuelle."""
     st.sidebar.markdown("### 🔐 Connexion")
@@ -513,7 +521,7 @@ def login_box():
         else:
             st.session_state["force_change_pw"] = False
 
-        st.experimental_rerun()
+        _safe_rerun()
 
     # Si déjà connecté, affiche le badge et un bouton logout
     if "auth_user_id" in st.session_state:
@@ -521,7 +529,7 @@ def login_box():
         if st.sidebar.button("Se déconnecter", key="btn_logout"):
             for k in ["auth_user_id","auth_role","auth_full_name","force_change_pw"]:
                 st.session_state.pop(k, None)
-            st.experimental_rerun()
+            _safe_rerun()
 
 if "user" not in st.session_state:
     login_box()
@@ -925,14 +933,6 @@ if page == "CRM (Grille centrale)":
 if page == "Événements":
     st.title("📅 Événements")
 
-    def _safe_rerun():
-        """Compat rerun pour toutes versions de Streamlit."""
-        import streamlit as _st
-        if hasattr(_st, "rerun"):
-            _st.rerun()
-        elif hasattr(_st, "experimental_rerun"):
-            _st.experimental_rerun()
-            
     # --- Session state helpers ---
     if "selected_event_id" not in st.session_state:
         st.session_state["selected_event_id"] = ""
