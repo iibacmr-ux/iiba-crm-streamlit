@@ -28,11 +28,8 @@ import openpyxl
 st.set_page_config(page_title="IIBA Cameroun — CRM", page_icon="📊", layout="wide")
 
 # ----------- Paths et schémas ----------------
-# DATA_DIR global : si non défini par l'app, on le crée ici
-if "DATA_DIR" not in globals() or DATA_DIR is None:
-    DATA_DIR = Path("./data")
-DATA_DIR = Path(DATA_DIR)  # au cas où ce soit une string
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
 
 PATHS = {
     "contacts": DATA_DIR / "contacts.csv",
@@ -53,8 +50,6 @@ E_COLS = ["ID_Événement","Nom_Événement","Type","Date","Durée_h","Lieu","Fo
 P_COLS = ["ID_Participation","ID","ID_Événement","Rôle","Inscription","Arrivée","Temps_Present","Feedback","Note","Commentaire"]
 PAY_COLS = ["ID_Paiement","ID","ID_Événement","Date_Paiement","Montant","Moyen","Statut","Référence","Notes","Relance"]
 CERT_COLS = ["ID_Certif","ID","Type_Certif","Date_Examen","Résultat","Score","Date_Obtention","Validité","Renouvellement","Notes"]
-# === AUDIT / META ===
-AUDIT_COLS = ["Created_At", "Created_By", "Updated_At", "Updated_By"]
 
 ALL_SCHEMAS = {
     "contacts": C_COLS, "interactions": I_COLS, "evenements": E_COLS,
@@ -91,7 +86,7 @@ PARAM_DEFAULTS = {
     "grid_crm_columns": ",".join([
         "ID","Nom","Prénom","Société","Type","Statut","Email",
         "Interactions","Participations","CA_réglé","Impayé","Resp_principal","A_animé_ou_invité",
-        "Score_composite","Proba_conversion","Tags","Created_At", "Created_By", "Updated_At", "Updated_By"
+        "Score_composite","Proba_conversion","Tags"
     ]),
     "grid_events_columns": ",".join(E_COLS),
     "kpi_enabled": ",".join([
@@ -104,30 +99,6 @@ PARAM_DEFAULTS = {
 }
 
 ALL_DEFAULTS = {**PARAM_DEFAULTS, **{f"list_{k}":v for k,v in DEFAULT_LISTS.items()}}
-
-# === AUDIT / META ===
-def _now_iso():
-    from datetime import datetime
-    return datetime.utcnow().isoformat()
-
-def stamp_create(row: dict, user: dict):
-    """Ajoute/initialise les colonnes d’audit lors d’une création."""
-    row = dict(row)
-    now = _now_iso()
-    uid = user.get("UserID", "system") if user else "system"
-    row.setdefault("Created_At", now)
-    row.setdefault("Created_By", uid)
-    row["Updated_At"] = row.get("Updated_At", now)
-    row["Updated_By"] = row.get("Updated_By", uid)
-    return row
-
-def stamp_update(row: dict, user: dict):
-    """Met à jour Updated_* lors d’une édition."""
-    row = dict(row)
-    row["Updated_At"] = _now_iso()
-    row["Updated_By"] = user.get("UserID", "system") if user else "system"
-    return row
-# === AUDIT / META === FIN
 
 def load_params()->dict:
     if not PATHS["params"].exists():
@@ -175,24 +146,17 @@ SET = {
 # Utils for dataframe loading/saving
 
 def ensure_df(path:Path, cols:list)->pd.DataFrame:
-    # Force présence des colonnes d’audit
-    full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
-
     if path.exists():
-        try:
+        try: 
             df = pd.read_csv(path, dtype=str, encoding="utf-8")
         except Exception:
-            df = pd.DataFrame(columns=full_cols)
+            df = pd.DataFrame(columns=cols)
     else:
-        df = pd.DataFrame(columns=full_cols)
-
-    # Garantit toutes les colonnes métier + audit
-    for c in full_cols:
+        df = pd.DataFrame(columns=cols)
+    for c in cols:
         if c not in df.columns:
-            df[c] = ""
-
-    # Restitue dans l’ordre souhaité (métier d’abord, audit ensuite)
-    return df[full_cols]
+            df[c]=""
+    return df[cols]
 
 def save_df(df:pd.DataFrame, path:Path):
     df.to_csv(path, index=False, encoding="utf-8")
@@ -353,202 +317,7 @@ def aggregates_for_contacts(today=None):
 # ------------------ Navigation & pages ----------------------
 
 st.sidebar.title("Navigation")
-
-# === AUTH MINIMAL ===
-import bcrypt
-
-def _ensure_users_df() -> pd.DataFrame:
-    """Charge users.csv, normalise, et injecte admin par défaut si besoin."""
-    if not USERS_PATH.exists():
-        dfu = pd.DataFrame(columns=USER_COLS)
-        # admin par défaut
-        default_pw = "admin123"  # 🔐 change immédiatement après connexion
-        row = {
-            "user_id": "admin@iiba.cm",
-            "full_name": "Admin IIBA Cameroun",
-            "role": "admin",
-            "active": True,
-            "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
-            "must_change_pw": True,  # forcer changement au 1er login (optionnel)
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
-        dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
-        return dfu
-
-    try:
-        raw = pd.read_csv(USERS_PATH, dtype=str).fillna("")
-    except Exception:
-        raw = pd.DataFrame(columns=USER_COLS)
-    dfu = _normalize_users_df(raw)
-
-    # s’assure qu’un admin existe toujours
-    if not (dfu["user_id"] == "admin@iiba.cm").any():
-        default_pw = "admin123"
-        row = {
-            "user_id": "admin@iiba.cm",
-            "full_name": "Admin IIBA Cameroun",
-            "role": "admin",
-            "active": True,
-            "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
-            "must_change_pw": True,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
-        dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
-
-    return dfu
-
-USERS_PATH = DATA_DIR / "users.csv"
-
-USER_COLS = [
-    "user_id", "full_name", "role", "active",
-    "pwd_hash", "must_change_pw", "created_at", "updated_at"
-]
-
-def _normalize_users_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Uniformise les colonnes en minuscules + alias legacy."""
-    # noms de colonnes en minuscules
-    df = df.copy()
-    df.columns = [c.strip().lower() for c in df.columns]
-
-    # mapping d’alias hérités -> cibles modernes
-    alias = {
-        "userid": "user_id",
-        "email": "user_id",
-        "login": "user_id",
-        "nom": "full_name",     # si tu avais Nom + Prenom autrefois, tu peux concaténer en amont
-        "prenom": "full_name",  # (ici on mappe au mieux – idéalement géré dans l'écran Admin)
-        "role": "role",
-        "active": "active",
-        "passwordhash": "pwd_hash",
-        "pwdhash": "pwd_hash",
-        "mustchangepw": "must_change_pw",
-        "created_at": "created_at",
-        "updated_at": "updated_at",
-    }
-    for old, new in alias.items():
-        if old in df.columns and new not in df.columns:
-            df[new] = df[old]
-
-    # colonnes manquantes par défaut
-    for c in USER_COLS:
-        if c not in df.columns:
-            df[c] = "" if c not in ("active", "must_change_pw") else False
-
-    # typages
-    df["active"] = df["active"].astype(str).str.lower().isin(["1","true","yes","y","on"])
-    df["must_change_pw"] = df["must_change_pw"].astype(str).str.lower().isin(["1","true","yes","y","on"])
-
-    # projection colonnes
-    return df[USER_COLS].copy()
-
-
-def _bootstrap_users():
-    if USERS_PATH.exists():
-        return
-    import pandas as pd
-    # mot de passe initial: change-me
-    ph = bcrypt.hashpw(b"change-me", bcrypt.gensalt()).decode()
-    pd.DataFrame([{
-        "UserID":"admin@iiba.cm","Nom":"Admin","Prénom":"IIBA",
-        "Poste":"Comité","Role":"admin","Is_Active":"1",
-        "PasswordHash":ph,"Created_At":_now_iso(),"Updated_At":_now_iso()
-    }]).to_csv(USERS_PATH, index=False, encoding="utf-8")
-
-def load_users():
-    import pandas as pd
-    _bootstrap_users()
-    return pd.read_csv(USERS_PATH, dtype=str).fillna("")
-
-def verify_password(clearPwd: str, hashed: str) -> bool:
-    try:
-        return bcrypt.checkpw(clearPwd.encode(), hashed.encode())
-    except Exception:
-        return False
-
-def _check_password(clear_pw: str, pwd_hash: str) -> bool:
-    try:
-        return bcrypt.checkpw(clear_pw.encode("utf-8"), pwd_hash.encode("utf-8"))
-    except Exception:
-        return False
-        
-users_df = load_users()
-
-def _safe_rerun():
-    """Compat rerun pour toutes versions de Streamlit."""
-    import streamlit as _st
-    if hasattr(_st, "rerun"):
-        _st.rerun()
-    elif hasattr(_st, "experimental_rerun"):
-        _st.experimental_rerun()
-            
-def login_box():
-    """Boîte de login simple; remplace ta version actuelle."""
-    st.sidebar.markdown("### 🔐 Connexion")
-    uid = st.sidebar.text_input("Email / User ID", value=st.session_state.get("last_uid",""))
-    pw = st.sidebar.text_input("Mot de passe", type="password")
-
-    if st.sidebar.button("Se connecter", key="btn_login"):
-        users_df = _ensure_users_df()
-        # Toujours travailler avec colonnes normalisées
-        users_df = _normalize_users_df(users_df)
-
-        # Filtre utilisateur
-        m = (users_df["user_id"].astype(str).str.strip().str.lower() == str(uid).strip().lower())
-        if not m.any():
-            st.sidebar.error("Utilisateur introuvable.")
-            return
-        row = users_df[m].iloc[0]
-        if not bool(row["active"]):
-            st.sidebar.error("Compte inactif. Contactez un administrateur.")
-            return
-        if not _check_password(pw, row["pwd_hash"]):
-            st.sidebar.error("Mot de passe incorrect.")
-            return
-
-        # Auth OK → session
-        st.session_state["auth_user_id"] = row["user_id"]
-        st.session_state["auth_role"] = row["role"]
-        st.session_state["auth_full_name"] = row["full_name"]
-        st.session_state["last_uid"] = uid
-
-        # Force changement de mot de passe si must_change_pw
-        if bool(row.get("must_change_pw", False)):
-            st.session_state["force_change_pw"] = True
-        else:
-            st.session_state["force_change_pw"] = False
-
-        _safe_rerun()
-
-    # Si déjà connecté, affiche le badge et un bouton logout
-    if "auth_user_id" in st.session_state:
-        st.sidebar.success(f"Connecté : {st.session_state['auth_full_name']} ({st.session_state['auth_role']})")
-        if st.sidebar.button("Se déconnecter", key="btn_logout"):
-            for k in ["auth_user_id","auth_role","auth_full_name","force_change_pw"]:
-                st.session_state.pop(k, None)
-            _safe_rerun()
-
-if "user" not in st.session_state:
-    login_box()
-    st.stop()
-
-ROLE = st.session_state["user"]["Role"]
-def allow_page(name:str)->bool:
-    if ROLE == "admin":
-        return True
-    # standard : CRM + Événements seulement
-    return name in ["CRM (Grille centrale)","Événements"]
-
 page = st.sidebar.radio("Aller à", ["CRM (Grille centrale)","Événements","Rapports","Admin"], index=0)
-
-# entoure la sélection de page (juste après avoir construit le radio)
-if not allow_page(page):
-    st.error("⛔ Accès refusé. Demandez un rôle 'admin' à un membre du comité.")
-    st.stop()
-
 this_year = datetime.now().year
 annee = st.sidebar.selectbox("Année", ["Toutes"]+[str(this_year-1),str(this_year),str(this_year+1)], index=1)
 mois = st.sidebar.selectbox("Mois", ["Tous"]+[f"{m:02d}" for m in range(1,13)], index=0)
@@ -585,16 +354,6 @@ if page == "CRM (Grille centrale)":
         "Interactions","Participations","CA_réglé","Impayé","Resp_principal","A_animé_ou_invité",
         "Score_composite","Proba_conversion","Tags"
     ])
-    
-    default_cols = [
-        "ID","Nom","Prénom","Société","Type","Statut","Email",
-        "Interactions","Participations","CA_réglé","Impayé","Resp_principal","A_animé_ou_invité",
-        "Score_composite","Proba_conversion","Tags"
-    ]
-    # ajoute audit à la fin
-    default_cols += [c for c in AUDIT_COLS if c in dfc.columns]
-
-    table_cols = parse_cols(PARAMS.get("grid_crm_columns", ""), default_cols)    
 
     def _label_contact(row):
         return f"{row['ID']} — {row['Prénom']} {row['Nom']} — {row['Société']}"
@@ -715,15 +474,9 @@ if page == "CRM (Grille centrale)":
                             st.stop()
                         idx = df_contacts.index[df_contacts["ID"] == sel_id][0]
                         new_row = {"ID":sel_id,"Nom":nom,"Prénom":prenom,"Genre":genre,"Titre":titre,"Société":societe,"Secteur":secteur,
-                                       "Email":email,"Téléphone":tel,"LinkedIn":linkedin,"Ville":ville,"Pays":pays,"Type":typec,"Source":source,
-                                       "Statut":statut,"Score_Engagement":int(score),"Date_Creation":dc.isoformat(),"Notes":notes,"Top20":top20}
-
-                        # conserve les champs existants pour ne pas perdre l’audit à l’édition
-                        raw_existing = df_contacts.loc[idx].to_dict()
-                        raw_existing.update(new_row)
-                        raw_existing = stamp_update(raw_existing, st.session_state.get("user", {}))
-
-                        df_contacts.loc[idx] = raw_existing
+                                   "Email":email,"Téléphone":tel,"LinkedIn":linkedin,"Ville":ville,"Pays":pays,"Type":typec,"Source":source,
+                                   "Statut":statut,"Score_Engagement":int(score),"Date_Creation":dc.isoformat(),"Notes":notes,"Top20":top20}
+                        df_contacts.loc[idx] = new_row
                         save_df(df_contacts, PATHS["contacts"])
                         st.success("Contact mis à jour.")
                 st.markdown("---")
@@ -933,6 +686,14 @@ if page == "CRM (Grille centrale)":
 if page == "Événements":
     st.title("📅 Événements")
 
+    def _safe_rerun():
+        """Compat rerun pour toutes versions de Streamlit."""
+        import streamlit as _st
+        if hasattr(_st, "rerun"):
+            _st.rerun()
+        elif hasattr(_st, "experimental_rerun"):
+            _st.experimental_rerun()
+            
     # --- Session state helpers ---
     if "selected_event_id" not in st.session_state:
         st.session_state["selected_event_id"] = ""
@@ -1117,10 +878,7 @@ if page == "Événements":
     filt = st.text_input("Filtre rapide (nom, type, lieu, notes…)", "", key="evt_filter")
     page_size_evt = st.selectbox("Taille de page", [20,50,100,200], index=0, key="pg_evt")
 
-    evt_default_cols = E_COLS + [c for c in AUDIT_COLS if c in df_events.columns]
-    # si tu as déjà une logique de colonnes, concatène simplement les AUDIT
-    df_show = df_events[evt_default_cols].copy()
-
+    df_show = df_events.copy()
     if filt:
         t = filt.lower()
         df_show = df_show[df_show.apply(lambda r: any(t in str(r[c]).lower() for c in ["Nom_Événement","Type","Lieu","Notes"]), axis=1)]
@@ -1128,20 +886,15 @@ if page == "Événements":
     if HAS_AGGRID:
         gb = GridOptionsBuilder.from_dataframe(df_show)
         gb.configure_default_column(filter=True, sortable=True, resizable=True, editable=True)
-        
-        # --- Si tu laisses l’édition dans AgGrid, ces colonnes audit restent visibles mais il faut éviter de les éditer. Ajoute une configuration de colonne non-éditable :
-        # rendre non-éditables les colonnes d’audit
-        for c in AUDIT_COLS:
-            if c in df_show.columns:
-                gb.configure_column(c, editable=False)
-
         gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size_evt)
         gb.configure_selection("single", use_checkbox=True)
         go = gb.build()
-        grid = AgGrid(df_show, gridOptions=go, height=520,
-                      update_mode=GridUpdateMode.MODEL_CHANGED,
-                      data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-                      key="evt_grid", allow_unsafe_jscode=True)
+        grid = AgGrid(
+            df_show, gridOptions=go, height=520,
+            update_mode=GridUpdateMode.MODEL_CHANGED,
+            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+            key="evt_grid", allow_unsafe_jscode=True
+        )
         # On garde la grille “mass-edit”; le formulaire reste la source de vérité UX pour créer/éditer/dupliquer/supprimer.
         col_apply = st.columns([1])[0]
         if col_apply.button("💾 Appliquer les modifications (grille)", key="evt_apply_grid"):
@@ -3066,172 +2819,3 @@ elif page == "Admin":
             else:
                 st.error("❌ Veuillez saisir un ID à purger.")
  
- # =========================
-# 👤 Gestion des utilisateurs (Admin)
-# =========================
-st.markdown("---")
-st.header("👤 Gestion des utilisateurs")
-
-# -- Sécurité : accessible admins uniquement
-current_user = st.session_state.get("auth_user", {})
-if not current_user or current_user.get("role") != "admin":
-    st.warning("Accès réservé aux administrateurs.")
-    st.stop()
-
-# -- Dépendance bcrypt
-try:
-    import bcrypt
-except Exception:
-    st.error("Le module 'bcrypt' est requis pour la gestion de mots de passe. Installez-le : pip install bcrypt")
-    st.stop()
-
-USERS_PATH = DATA_DIR / "users.csv"
-USER_COLS = ["user_id","full_name","role","active","pwd_hash","created_at","updated_at"]
-
-def _save_users_df(dfu: pd.DataFrame):
-    out = dfu.copy()
-    out["active"] = out["active"].map(lambda x: "1" if bool(x) else "0")
-    out.to_csv(USERS_PATH, index=False, encoding="utf-8")
-
-def _hash_password(pw: str) -> str:
-    return bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-df_users = _ensure_users_df()
-user_ids = df_users["user_id"].tolist()
-
-tabs = st.tabs(["➕ Créer un utilisateur", "🔑 Changer mot de passe", "✅ Activer / ❌ Désactiver", "🧯 Réinitialiser MDP", "🗑️ Supprimer"])
-
-# ---- Créer
-with tabs[0]:
-    st.subheader("➕ Créer un utilisateur")
-    with st.form("create_user_form"):
-        col1,col2 = st.columns([2,2])
-        new_user_id = col1.text_input("Identifiant (email / login)", placeholder="prenom.nom@iiba.cm")
-        full_name   = col2.text_input("Nom complet", placeholder="Prénom NOM")
-        role        = st.selectbox("Rôle", ["admin","standard"], index=1, help="admin = accès total ; standard = CRM & Événements")
-        active      = st.checkbox("Compte actif", value=True)
-        colp1, colp2 = st.columns([2,1])
-        pw_plain    = colp1.text_input("Mot de passe initial", type="password", placeholder="Définir un mot de passe")
-        show_hint   = colp2.checkbox("Afficher en clair", value=False)
-        if show_hint and pw_plain:
-            st.info(f"Mot de passe saisi : **{pw_plain}**")
-        ok_create = st.form_submit_button("Créer l'utilisateur")
-    if ok_create:
-        if not new_user_id or not full_name:
-            st.error("Identifiant et Nom complet sont obligatoires.")
-        elif new_user_id in user_ids:
-            st.error("Cet identifiant existe déjà.")
-        elif not pw_plain or len(pw_plain) < 6:
-            st.error("Mot de passe requis (≥ 6 caractères).")
-        else:
-            row = {
-                "user_id": new_user_id,
-                "full_name": full_name,
-                "role": role,
-                "active": True if active else False,
-                "pwd_hash": _hash_password(pw_plain),
-                "created_at": _now_iso(),
-                "updated_at": _now_iso(),
-            }
-            df_users = pd.concat([df_users, pd.DataFrame([row])], ignore_index=True)
-            _save_users_df(df_users)
-            st.success(f"Utilisateur '{new_user_id}' créé.")
-            _safe_rerun()
-
-# ---- Changer mot de passe
-with tabs[1]:
-    st.subheader("🔑 Changer le mot de passe")
-    if df_users.empty:
-        st.info("Aucun utilisateur.")
-    else:
-        with st.form("change_pwd_form"):
-            uid = st.selectbox("Utilisateur", user_ids, index=0)
-            npw = st.text_input("Nouveau mot de passe", type="password")
-            npw2 = st.text_input("Confirmer le mot de passe", type="password")
-            ok = st.form_submit_button("Mettre à jour le mot de passe")
-        if ok:
-            if not uid:
-                st.error("Sélectionnez un utilisateur.")
-            elif not npw or len(npw) < 6 or npw != npw2:
-                st.error("Le mot de passe est vide, trop court, ou les deux champs ne correspondent pas.")
-            else:
-                df_users.loc[df_users["user_id"]==uid, "pwd_hash"] = _hash_password(npw)
-                df_users.loc[df_users["user_id"]==uid, "updated_at"] = _now_iso()
-                _save_users_df(df_users)
-                st.success(f"Mot de passe mis à jour pour {uid}.")
-
-# ---- Activer / Désactiver
-with tabs[2]:
-    st.subheader("✅ Activer / ❌ Désactiver des comptes")
-    if df_users.empty:
-        st.info("Aucun utilisateur.")
-    else:
-        col_a, col_d = st.columns(2)
-        with col_a:
-            to_activate = st.multiselect("Sélectionner pour activer", df_users.loc[~df_users["active"], "user_id"].tolist())
-            if st.button("Activer"):
-                if to_activate:
-                    df_users.loc[df_users["user_id"].isin(to_activate), ["active","updated_at"]] = [True, _now_iso()]
-                    _save_users_df(df_users)
-                    st.success(f"Comptes activés : {', '.join(to_activate)}")
-                    _safe_rerun()
-                else:
-                    st.warning("Aucun compte sélectionné.")
-        with col_d:
-            to_deactivate = st.multiselect("Sélectionner pour désactiver", df_users.loc[df_users["active"], "user_id"].tolist())
-            if st.button("Désactiver"):
-                if to_deactivate:
-                    df_users.loc[df_users["user_id"].isin(to_deactivate), ["active","updated_at"]] = [False, _now_iso()]
-                    _save_users_df(df_users)
-                    st.success(f"Comptes désactivés : {', '.join(to_deactivate)}")
-                    _safe_rerun()
-                else:
-                    st.warning("Aucun compte sélectionné.")
-
-# ---- Réinitialiser MDP (génère un nouveau MDP aléatoire)
-with tabs[3]:
-    st.subheader("🧯 Réinitialiser le mot de passe")
-    if df_users.empty:
-        st.info("Aucun utilisateur.")
-    else:
-        uid_reset = st.selectbox("Utilisateur", user_ids, key="uid_reset")
-        if st.button("Générer un nouveau mot de passe"):
-            import secrets, string
-            alphabet = string.ascii_letters + string.digits
-            new_pw = "".join(secrets.choice(alphabet) for _ in range(10))
-            df_users.loc[df_users["user_id"]==uid_reset, "pwd_hash"] = _hash_password(new_pw)
-            df_users.loc[df_users["user_id"]==uid_reset, "updated_at"] = _now_iso()
-            _save_users_df(df_users)
-            st.success(f"Nouveau mot de passe pour {uid_reset} : **{new_pw}**")
-            st.caption("⚠️ Affiché une seule fois — communique-le à l’utilisateur puis demande-lui de le changer.")
-
-# ---- Supprimer (danger)
-with tabs[4]:
-    st.subheader("🗑️ Supprimer un utilisateur (irréversible)")
-    if df_users.empty:
-        st.info("Aucun utilisateur.")
-    else:
-        uid_del = st.selectbox("Utilisateur à supprimer", user_ids, key="uid_del")
-        confirm = st.text_input("Confirmer en tapant SUPPRIMER", placeholder="SUPPRIMER")
-        if st.button("Supprimer définitivement", type="secondary"):
-            if confirm != "SUPPRIMER":
-                st.error("Confirmation invalide. Tapez exactement SUPPRIMER.")
-            elif uid_del == current_user.get("user_id"):
-                st.error("Vous ne pouvez pas supprimer votre propre compte.")
-            else:
-                df_users = df_users[df_users["user_id"] != uid_del].copy()
-                _save_users_df(df_users)
-                st.success(f"Utilisateur '{uid_del}' supprimé.")
-                _safe_rerun()
-
-# ---- Tableau récap (sans colonnes sensibles)
-st.markdown("### 📋 Utilisateurs existants")
-if df_users.empty:
-    st.info("Aucun utilisateur enregistré.")
-else:
-    show = df_users[["user_id","full_name","role","active","created_at","updated_at"]].copy()
-    show["active"] = show["active"].map(lambda x: "✅" if x else "❌")
-    st.dataframe(show, use_container_width=True)
