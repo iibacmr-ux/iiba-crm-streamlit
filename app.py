@@ -28,8 +28,11 @@ import openpyxl
 st.set_page_config(page_title="IIBA Cameroun — CRM", page_icon="📊", layout="wide")
 
 # ----------- Paths et schémas ----------------
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
+# DATA_DIR global : si non défini par l'app, on le crée ici
+if "DATA_DIR" not in globals() or DATA_DIR is None:
+    DATA_DIR = Path("./data")
+DATA_DIR = Path(DATA_DIR)  # au cas où ce soit une string
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 PATHS = {
     "contacts": DATA_DIR / "contacts.csv",
@@ -353,7 +356,9 @@ st.sidebar.title("Navigation")
 
 # === AUTH MINIMAL ===
 import bcrypt
+
 USERS_PATH = DATA_DIR / "users.csv"
+
 USER_COLS = [
     "user_id", "full_name", "role", "active",
     "pwd_hash", "must_change_pw", "created_at", "updated_at"
