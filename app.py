@@ -403,7 +403,7 @@ def login_box():
             st.sidebar.error("Compte inactif. Contactez un administrateur.")
             return
         if not _check_password(pw, row["pwd_hash"]):
-            st.sidebar.error("Mot de passe incorrect.")
+            st.sidebar.error("Mot de passe incorrect.X")
             return
 
         st.session_state["auth_user_id"] = row["user_id"]
