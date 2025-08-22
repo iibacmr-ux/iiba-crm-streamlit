@@ -394,12 +394,12 @@ def login_box():
         users_df = _normalize_users_df(users_df)
         m = (users_df["user_id"].astype(str).str.strip().str.lower() == str(uid).strip().lower()) 
         
-        st.sidebar.error(f"login_box: user_id : {dfu.loc[m, "user_id"]}")  # print 
-        st.sidebar.error(f"login_box: user_id : {dfu.loc[m, "updated_at"]}")  # print 
-        st.sidebar.error(f"login_box: user_id : {dfu.loc[m, "active"]}")  # print  
-        st.sidebar.error(f"login_box: user_id : {dfu.loc[m, "role"]}")  # print  
-        st.sidebar.error(f"login_box: user_id : {dfu.loc[m, "pwd_hash"]}")  # print pwd_hash.encode("utf-8")
-        st.sidebar.error(f"login_box: user_id : {dfu.loc[m, "pwd_hash"].encode("utf-8")}")  # print pwd_hash.encode("utf-8")
+        st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "user_id"]}")  # print 
+        st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "updated_at"]}")  # print 
+        st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "active"]}")  # print  
+        st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "role"]}")  # print  
+        st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "pwd_hash"]}")  # print pwd_hash.encode("utf-8")
+        st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "pwd_hash"].encode("utf-8")}")  # print pwd_hash.encode("utf-8")
 
         if not m.any():
             st.sidebar.error("Utilisateur introuvable.")
