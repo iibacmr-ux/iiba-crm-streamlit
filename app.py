@@ -382,8 +382,8 @@ users_df = load_users()
 
 def login_box():
     st.sidebar.markdown("### 🔐 Connexion")
-    uid = st.sidebar.text_input("Email / UserID")
-    pwd = st.sidebar.text_input("Mot de passe", type="password")
+    uid = st.sidebar.text_input("Email / UserID", value="admin@iiba.cm")
+    pwd = st.sidebar.text_input("Mot de passe", value="change-me", type="password")
     if st.sidebar.button("Se connecter", key="btn_login"):
         row = users_df[
             (users_df["UserID"]==uid) &
