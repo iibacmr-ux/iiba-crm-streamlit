@@ -345,8 +345,8 @@ def _force_activate_admin():
     st.sidebar.error(f"_force_activate_admin : {m}") # print
     if m.any():
         # réactive + redonne le rôle admin
-        st.sidebar.error(f"user_id : {dfu.loc[m, "user_id"]}")  # print
-        st.sidebar.error(f"réactive + redonne le rôle admin : {m}")  # print
+        st.sidebar.error(f"_force_activate_admin: user_id : {dfu.loc[m, "user_id"]}")  # print
+        st.sidebar.error(f"_force_activate_admin: réactive + redonne le rôle admin : {m}")  # print
         dfu.loc[m, "active"] = True
         dfu.loc[m, "role"] = "admin"
         dfu.loc[m, "updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -388,8 +388,7 @@ def _safe_rerun():
 def login_box():
     st.sidebar.markdown("### 🔐 Connexion")
     uid = st.sidebar.text_input("Email / User ID", value=st.session_state.get("last_uid",""))
-    pw = st.sidebar.text_input("Mot de passe", type="password")
-    st.sidebar.error(f"_force_activate_admin : {m}") # print
+    pw = st.sidebar.text_input("Mot de passe", type="password") 
     
     if st.sidebar.button("Se connecter", key="btn_login"):
         users_df = _ensure_users_df()
