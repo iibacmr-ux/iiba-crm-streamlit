@@ -1009,17 +1009,17 @@ if page == "Événements":
         
         # --- Si tu laisses l’édition dans AgGrid, ces colonnes audit restent visibles mais il faut éviter de les éditer. Ajoute une configuration de colonne non-éditable :
         # rendre non-éditables les colonnes d’audit
-            for c in AUDIT_COLS:
-                if c in df_show.columns:
-                    gb.configure_column(c, editable=False)
+        for c in AUDIT_COLS:
+            if c in df_show.columns:
+                gb.configure_column(c, editable=False)
 
-            gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size_evt)
-            gb.configure_selection("single", use_checkbox=True)
-            go = gb.build()
-            grid = AgGrid(df_show, gridOptions=go, height=520,
-                          update_mode=GridUpdateMode.MODEL_CHANGED,
-                          data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-                          key="evt_grid", allow_unsafe_jscode=True)
+        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size_evt)
+        gb.configure_selection("single", use_checkbox=True)
+        go = gb.build()
+        grid = AgGrid(df_show, gridOptions=go, height=520,
+                      update_mode=GridUpdateMode.MODEL_CHANGED,
+                      data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                      key="evt_grid", allow_unsafe_jscode=True)
         # On garde la grille “mass-edit”; le formulaire reste la source de vérité UX pour créer/éditer/dupliquer/supprimer.
         col_apply = st.columns([1])[0]
         if col_apply.button("💾 Appliquer les modifications (grille)", key="evt_apply_grid"):
