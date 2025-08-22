@@ -1050,14 +1050,21 @@ elif page == "Rapports":
         # Choisir la 1re date valide parmi: Date_Creation, 1re interaction, 1re participation, 1er paiement
         def _first_valid_date(dc, fi, fp, fpay):
             from datetime import date, datetime
-            import pandas as pd
-
+            
             candidates = []
             for v in (dc, fi, fp, fpay):
-                # Convertir pd.Timestamp en datetime
+                # Étape 1: Vérifier que ce n'est pas None, NaN ou NaT
+                if v is None or pd.isna(v):
+                    continue
+                    
+                # Étape 2: Convertir pd.Timestamp en datetime
                 if isinstance(v, pd.Timestamp):
+                    # Double vérification que le Timestamp n'est pas NaT
+                    if pd.isna(v):
+                        continue
                     v = v.to_pydatetime()
-                # Ne garder que les datetime / date valides
+                    
+                # Étape 3: Ne garder que les datetime / date valides
                 if isinstance(v, datetime):
                     candidates.append(v.date())
                 elif isinstance(v, date):
@@ -1065,7 +1072,6 @@ elif page == "Rapports":
 
             # Retourner la plus ancienne date, ou None si aucun candidat valide
             return min(candidates) if candidates else None
-
         # Construire un dict ID -> date de référence
         ref_dates = {}
         ids = base["ID"].tolist()
