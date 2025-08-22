@@ -344,19 +344,19 @@ def _force_activate_admin():
     m = dfu["user_id"].astype(str).str.strip().str.lower() == "admin@iiba.cm"  
     
     default_pw = "123456"
-        row = {
-            "user_id": "admin",
-            "full_name": "Admin IIBA Cameroun2",
-            "role": "admin",
-            "active": True,
-            "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
-            "must_change_pw": True,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
-        dfu = dfu[USER_COLS]  # garantir l'ordre/les colonnes
-        dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
+    row = {
+        "user_id": "admin",
+        "full_name": "Admin IIBA Cameroun2",
+        "role": "admin",
+        "active": True,
+        "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
+        "must_change_pw": True,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
+    dfu = dfu[USER_COLS]  # garantir l'ordre/les colonnes
+    dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
         
     if m.any():
         # réactive + redonne le rôle admin
