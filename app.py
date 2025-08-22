@@ -588,14 +588,14 @@ if page == "CRM (Grille centrale)":
                                        "Email":email,"Téléphone":tel,"LinkedIn":linkedin,"Ville":ville,"Pays":pays,"Type":typec,"Source":source,
                                        "Statut":statut,"Score_Engagement":int(score),"Date_Creation":dc.isoformat(),"Notes":notes,"Top20":top20}
 
-                            # conserve les champs existants pour ne pas perdre l’audit à l’édition
-                            raw_existing = df_contacts.loc[idx].to_dict()
-                            raw_existing.update(new_row)
-                            raw_existing = stamp_update(raw_existing, st.session_state.get("user", {}))
+                        # conserve les champs existants pour ne pas perdre l’audit à l’édition
+                        raw_existing = df_contacts.loc[idx].to_dict()
+                        raw_existing.update(new_row)
+                        raw_existing = stamp_update(raw_existing, st.session_state.get("user", {}))
 
-                            df_contacts.loc[idx] = raw_existing
-                            save_df(df_contacts, PATHS["contacts"])
-                            st.success("Contact mis à jour.")
+                        df_contacts.loc[idx] = raw_existing
+                        save_df(df_contacts, PATHS["contacts"])
+                        st.success("Contact mis à jour.")
                 st.markdown("---")
                 with st.expander("➕ Ajouter ce contact à un **nouvel événement**"):
                     with st.form("quick_evt"):
