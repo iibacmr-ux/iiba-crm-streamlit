@@ -342,32 +342,23 @@ def _force_activate_admin():
     dfu = _normalize_users_df(dfu)
 
     m = dfu["user_id"].astype(str).str.strip().str.lower() == "admin@iiba.cm" 
-    st.sidebar.error(f"_force_activate_admin : {m}") # print
-    if m.any():
-        # réactive + redonne le rôle admin
-        st.sidebar.error(f"_force_activate_admin: user_id : {dfu.loc[m, "user_id"]}")  # print
-        st.sidebar.error(f"_force_activate_admin: réactive + redonne le rôle admin : {m}")  # print
-        dfu.loc[m, "active"] = True
-        dfu.loc[m, "role"] = "admin"
-        dfu.loc[m, "updated_at"] = datetime.now().isoformat(timespec="seconds")
-        dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
-    else:
-        # si le compte n'existe pas, on le (ré)crée proprement
-        st.sidebar.error(f"réactive + redonne le rôle admin : {m}") # print
-        default_pw = "admin123"
-        row = {
-            "user_id": "admin@iiba.cm",
-            "full_name": "Admin IIBA Cameroun",
-            "role": "admin",
-            "active": True,
-            "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
-            "must_change_pw": True,
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
-        dfu = dfu[USER_COLS]  # garantir l'ordre/les colonnes
-        dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
+    st.sidebar.error(f"_force_activate_admin : {m}") # print 
+    # si le compte n'existe pas, on le (ré)crée proprement
+    st.sidebar.error(f"réactive + redonne le rôle admin : {m}") # print
+    default_pw = "admin123"
+    row = {
+        "user_id": "admin@iiba.cm",
+        "full_name": "Admin IIBA Cameroun",
+        "role": "admin",
+        "active": True,
+        "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
+        "must_change_pw": True,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
+    dfu = dfu[USER_COLS]  # garantir l'ordre/les colonnes
+    dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
 
 # appelez-le une fois au chargement (avant login_box())
 _force_activate_admin()
