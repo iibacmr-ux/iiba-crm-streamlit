@@ -502,9 +502,9 @@ def login_box():
             st.sidebar.error("Utilisateur introuvable.")
             return
         row = users_df[m].iloc[0]
-        if not bool(row["active"]):
-            st.sidebar.error("Compte inactif. Contactez un administrateur.")
-            return
+        # if not bool(row["active"]):
+        #     st.sidebar.error("Compte inactif. Contactez un administrateur.")
+        #     return
         if not _check_password(pw, row["pwd_hash"]):
             st.sidebar.error("Mot de passe incorrect.")
             return
