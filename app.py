@@ -395,6 +395,7 @@ def login_box():
         users_df = _normalize_users_df(users_df)
         m = (users_df["user_id"].astype(str).str.strip().str.lower() == str(uid).strip().lower())
         print("st.sidebar.button - m :", m)
+        st.sidebar.error("st.sidebar.button")
         if not m.any():
             st.sidebar.error("Utilisateur introuvable.")
             return
@@ -402,8 +403,7 @@ def login_box():
         if not bool(row["active"]):
             st.sidebar.error("Compte inactif. Contactez un administrateur.")
             return
-        if not _check_password(pw, row["pwd_hash"]):
-            st.sidebar.error("_check_password")
+        if not _check_password(pw, row["pwd_hash"]): 
             st.sidebar.error("Mot de passe incorrect.")
             return
 
