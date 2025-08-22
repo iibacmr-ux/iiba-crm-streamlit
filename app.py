@@ -1553,6 +1553,9 @@ elif page == "Rapports":
 
         # Choisir la 1re date valide parmi: Date_Creation, 1re interaction, 1re participation, 1er paiement
         def _first_valid_date(dc, fi, fp, fpay):
+            # FIX RAPIDE
+            if any(pd.isna(x) for x in (dc, fi, fp, fpay) if x is not None):
+                return None
             cands = []
             for v in (dc, fi, fp, fpay):
                 if isinstance(v, pd.Timestamp):
