@@ -1785,375 +1785,375 @@ _Généré le {datetime.now().strftime('%Y-%m-%d %H:%M')}_"""
         )
 
 
-# === NOUVEAU RAPPORT FINANCIER ANNUEL ===
-st.markdown("---")
-st.header("💰 Plan Financier Annuel — IIBA Cameroun")
+    # === NOUVEAU RAPPORT FINANCIER ANNUEL ===
+    st.markdown("---")
+    st.header("💰 Plan Financier Annuel — IIBA Cameroun")
 
-# Budgets annuels 2024 (basés sur le fichier Excel fourni)
-BUDGET_INCOME = {
-    "Membership revenue": 296000,
-    "Event Registrations": 1442500, 
-    "Professional Development Days": 606000,
-    "Study Groups": 11591203,
-    "Career Centre": 0,
-    "Merchandise Sales": 0,
-    "Donations": 0,
-    "Sponsorship": 0,
-    "Interest": 0,
-    "Other": 100000
-}
-
-BUDGET_EXPENSES = {
-    "Office Supplies": 1258173,
-    "Event Food & Beverage": 254375,
-    "Rental Space": 3038940,
-    "Merchandise expenses": 125450,
-    "Accounting Fees": 358322,
-    "PayPal fees": 0,
-    "Banking Fees": 0,
-    "Postal fees": 1000,
-    "Software fees": 342895,
-    "Other": 8520741
-}
-
-# === Calcul des ACTUAL basés sur les données réelles ===
-def calculate_actual_financials(dfpay_all, year_filter=None):
-    """
-    Calcule les montants réels (ACTUAL) à partir des données de paiements
-    """
-    if dfpay_all.empty:
-        return {}, {}
-    
-    df = dfpay_all.copy()
-    
-    # Filtre par année si spécifié
-    if year_filter:
-        try:
-            df["_date"] = pd.to_datetime(df["Date_Paiement"], errors='coerce')
-            df = df[df["_date"].dt.year == year_filter]
-        except:
-            pass
-    
-    # Conversion des montants
-    df["Montant"] = pd.to_numeric(df["Montant"], errors='coerce').fillna(0)
-    
-    # Séparation Income vs Expenses selon le statut
-    income_df = df[df["Statut"] == "Réglé"].copy() if "Statut" in df.columns else df.copy()
-    expenses_df = df[df["Statut"] != "Réglé"].copy() if "Statut" in df.columns else pd.DataFrame()
-    
-    # Mappage des catégories (basé sur les données d'exemple)
-    income_mapping = {
-        "Study Groups": ["Study Groups", "Frais de formation", "frais de formation"],
-        "Event Registrations": ["Event Registrations", "Achat billet", "achat billet"],
-        "Professional Development Days": ["Professional Development Days", "Formation", "CBAP"],
-        "Membership revenue": ["Membership revenue", "membre", "Membre"],
-        "Other": ["Other", "Plateforme", "simulation"]
+    # Budgets annuels 2024 (basés sur le fichier Excel fourni)
+    BUDGET_INCOME = {
+        "Membership revenue": 296000,
+        "Event Registrations": 1442500, 
+        "Professional Development Days": 606000,
+        "Study Groups": 11591203,
+        "Career Centre": 0,
+        "Merchandise Sales": 0,
+        "Donations": 0,
+        "Sponsorship": 0,
+        "Interest": 0,
+        "Other": 100000
     }
-    
-    expense_mapping = {
-        "Office Supplies": ["Office Supplies", "Impression", "fournitures", "papier"],
-        "Rental Space": ["Rental Space", "Loyer", "salle", "Location"],
-        "Event Food & Beverage": ["Event Food & Beverage", "repas", "eau", "cookies"],
-        "Software fees": ["Software fees", "internet", "wifi", "Camtel"],
-        "Accounting Fees": ["Accounting Fees", "comptable", "fiscal"],
-        "Merchandise expenses": ["Merchandise expenses", "T-shirt", "Polo", "cadeau"],
-        "Postal fees": ["Postal fees", "livraison", "courrier"],
-        "Other": ["Other", "transport", "formateur", "salaire"]
+
+    BUDGET_EXPENSES = {
+        "Office Supplies": 1258173,
+        "Event Food & Beverage": 254375,
+        "Rental Space": 3038940,
+        "Merchandise expenses": 125450,
+        "Accounting Fees": 358322,
+        "PayPal fees": 0,
+        "Banking Fees": 0,
+        "Postal fees": 1000,
+        "Software fees": 342895,
+        "Other": 8520741
     }
-    
-    # Calcul ACTUAL INCOME
-    actual_income = {}
-    for category, keywords in income_mapping.items():
-        total = 0
-        if not income_df.empty and "Détails" in income_df.columns:
-            for keyword in keywords:
-                mask = income_df["Détails"].str.contains(keyword, case=False, na=False)
-                total += income_df[mask]["Montant"].sum()
-        actual_income[category] = float(total)
-    
-    # Calcul ACTUAL EXPENSES (à partir des vraies données de dépenses si disponibles)
-    actual_expenses = {}
-    for category in BUDGET_EXPENSES.keys():
-        actual_expenses[category] = 0  # À compléter avec vraies données
-    
-    return actual_income, actual_expenses
 
-# Calcul pour l'année courante
-year_current = datetime.now().year
-actual_income, actual_expenses = calculate_actual_financials(df_pay, year_current)
-
-# === Interface utilisateur ===
-col_year, col_export = st.columns([1, 1])
-
-with col_year:
-    selected_year = st.selectbox("Année du rapport financier", 
-                                options=[2024, 2023, 2025], 
-                                index=0)
-
-# Recalcul si année différente
-if selected_year != year_current:
-    actual_income, actual_expenses = calculate_actual_financials(df_pay, selected_year)
-
-# === SUMMARY TABLE ===
-st.subheader(f"📊 Résumé Exécutif — {selected_year}")
-
-total_budget_income = sum(BUDGET_INCOME.values())
-total_actual_income = sum(actual_income.values())
-total_budget_expenses = sum(BUDGET_EXPENSES.values())
-total_actual_expenses = sum(actual_expenses.values())
-
-budget_difference = total_budget_income - total_budget_expenses
-actual_difference = total_actual_income - total_actual_expenses
-variance_difference = actual_difference - budget_difference
-
-summary_data = {
-    "Indicateur": ["Total Income", "Total Expenses", "Difference"],
-    "BUDGET (FCFA)": [f"{total_budget_income:,.0f}", f"{total_budget_expenses:,.0f}", f"{budget_difference:,.0f}"],
-    "ACTUAL (FCFA)": [f"{total_actual_income:,.0f}", f"{total_actual_expenses:,.0f}", f"{actual_difference:,.0f}"],
-    "UNDER/OVER (FCFA)": [
-        f"{total_actual_income - total_budget_income:,.0f}",
-        f"{total_actual_expenses - total_budget_expenses:,.0f}",
-        f"{variance_difference:,.0f}"
-    ]
-}
-
-df_summary = pd.DataFrame(summary_data)
-st.dataframe(df_summary, use_container_width=True)
-
-# Performance indicators
-col_perf1, col_perf2, col_perf3 = st.columns(3)
-income_performance = (total_actual_income / total_budget_income * 100) if total_budget_income > 0 else 0
-expense_performance = (total_actual_expenses / total_budget_expenses * 100) if total_budget_expenses > 0 else 0
-
-col_perf1.metric("📈 Performance Revenus", f"{income_performance:.1f}%", 
-                f"{total_actual_income - total_budget_income:,.0f} FCFA")
-col_perf2.metric("📉 Performance Dépenses", f"{expense_performance:.1f}%",
-                f"{total_actual_expenses - total_budget_expenses:,.0f} FCFA")
-col_perf3.metric("⚖️ Marge Réalisée", f"{actual_difference:,.0f} FCFA",
-                f"{variance_difference:,.0f} FCFA vs budget")
-
-# === DÉTAIL REVENUS ===
-st.subheader("💰 Détail des Revenus par Catégorie")
-
-income_detail = []
-for category, budget_amount in BUDGET_INCOME.items():
-    actual_amount = actual_income.get(category, 0)
-    variance = actual_amount - budget_amount
-    variance_pct = (variance / budget_amount * 100) if budget_amount > 0 else 0
-    
-    income_detail.append({
-        "Catégorie": category,
-        "BUDGET (FCFA)": f"{budget_amount:,.0f}",
-        "ACTUAL (FCFA)": f"{actual_amount:,.0f}",
-        "ÉCART (FCFA)": f"{variance:,.0f}",
-        "ÉCART (%)": f"{variance_pct:+.1f}%",
-        "Commentaires": "Données partielles" if actual_amount == 0 else "Conforme" if abs(variance_pct) < 10 else "À analyser"
-    })
-
-df_income = pd.DataFrame(income_detail)
-st.dataframe(df_income, use_container_width=True)
-
-# === DÉTAIL DÉPENSES ===  
-st.subheader("💸 Détail des Dépenses par Catégorie")
-
-expense_detail = []
-for category, budget_amount in BUDGET_EXPENSES.items():
-    actual_amount = actual_expenses.get(category, 0)
-    variance = actual_amount - budget_amount
-    variance_pct = (variance / budget_amount * 100) if budget_amount > 0 else 0
-    
-    expense_detail.append({
-        "Catégorie": category,
-        "BUDGET (FCFA)": f"{budget_amount:,.0f}",
-        "ACTUAL (FCFA)": f"{actual_amount:,.0f}",
-        "ÉCART (FCFA)": f"{variance:,.0f}",
-        "ÉCART (%)": f"{variance_pct:+.1f}%",
-        "Statut": "✅ Sous budget" if variance < 0 else "⚠️ Dépassement" if variance > budget_amount * 0.1 else "📊 Conforme"
-    })
-
-df_expense = pd.DataFrame(expense_detail)
-st.dataframe(df_expense, use_container_width=True)
-
-# === GRAPHIQUES DE PERFORMANCE ===
-if alt:
-    st.subheader("📊 Visualisations Financières")
-    
-    tab_rev, tab_exp, tab_comp = st.tabs(["Revenus", "Dépenses", "Comparaison"])
-    
-    with tab_rev:
-        # Graphique revenus Budget vs Actual
-        income_chart_data = []
-        for cat, budget in BUDGET_INCOME.items():
-            if budget > 0:  # Exclure les catégories à 0
-                income_chart_data.extend([
-                    {"Catégorie": cat, "Type": "Budget", "Montant": budget},
-                    {"Catégorie": cat, "Type": "Actual", "Montant": actual_income.get(cat, 0)}
-                ])
+    # === Calcul des ACTUAL basés sur les données réelles ===
+    def calculate_actual_financials(dfpay_all, year_filter=None):
+        """
+        Calcule les montants réels (ACTUAL) à partir des données de paiements
+        """
+        if dfpay_all.empty:
+            return {}, {}
         
-        if income_chart_data:
-            chart_income = alt.Chart(pd.DataFrame(income_chart_data)).mark_bar().encode(
-                x=alt.X('Catégorie:N', sort='-y'),
-                y=alt.Y('Montant:Q', title='Montant (FCFA)'),
-                color=alt.Color('Type:N', scale=alt.Scale(range=['#1f77b4', '#ff7f0e'])),
-                tooltip=['Catégorie', 'Type', 'Montant']
-            ).properties(height=400, title=f'Revenus Budget vs Actual - {selected_year}')
-            
-            st.altair_chart(chart_income, use_container_width=True)
-    
-    with tab_exp:
-        # Graphique dépenses par catégorie
-        expense_chart_data = []
-        for cat, budget in BUDGET_EXPENSES.items():
-            if budget > 0:
-                expense_chart_data.extend([
-                    {"Catégorie": cat, "Type": "Budget", "Montant": budget},
-                    {"Catégorie": cat, "Type": "Actual", "Montant": actual_expenses.get(cat, 0)}
-                ])
+        df = dfpay_all.copy()
         
-        if expense_chart_data:
-            chart_expense = alt.Chart(pd.DataFrame(expense_chart_data)).mark_bar().encode(
-                x=alt.X('Catégorie:N', sort='-y'),
-                y=alt.Y('Montant:Q', title='Montant (FCFA)'),
-                color=alt.Color('Type:N', scale=alt.Scale(range=['#d62728', '#ff9896'])),
-                tooltip=['Catégorie', 'Type', 'Montant']
-            ).properties(height=400, title=f'Dépenses Budget vs Actual - {selected_year}')
-            
-            st.altair_chart(chart_expense, use_container_width=True)
-    
-    with tab_comp:
-        # Graphique de performance globale
-        perf_data = pd.DataFrame({
-            "Indicateur": ["Revenus", "Dépenses"],
-            "Performance (%)": [income_performance, expense_performance],
-            "Objectif": [100, 100]
+        # Filtre par année si spécifié
+        if year_filter:
+            try:
+                df["_date"] = pd.to_datetime(df["Date_Paiement"], errors='coerce')
+                df = df[df["_date"].dt.year == year_filter]
+            except:
+                pass
+        
+        # Conversion des montants
+        df["Montant"] = pd.to_numeric(df["Montant"], errors='coerce').fillna(0)
+        
+        # Séparation Income vs Expenses selon le statut
+        income_df = df[df["Statut"] == "Réglé"].copy() if "Statut" in df.columns else df.copy()
+        expenses_df = df[df["Statut"] != "Réglé"].copy() if "Statut" in df.columns else pd.DataFrame()
+        
+        # Mappage des catégories (basé sur les données d'exemple)
+        income_mapping = {
+            "Study Groups": ["Study Groups", "Frais de formation", "frais de formation"],
+            "Event Registrations": ["Event Registrations", "Achat billet", "achat billet"],
+            "Professional Development Days": ["Professional Development Days", "Formation", "CBAP"],
+            "Membership revenue": ["Membership revenue", "membre", "Membre"],
+            "Other": ["Other", "Plateforme", "simulation"]
+        }
+        
+        expense_mapping = {
+            "Office Supplies": ["Office Supplies", "Impression", "fournitures", "papier"],
+            "Rental Space": ["Rental Space", "Loyer", "salle", "Location"],
+            "Event Food & Beverage": ["Event Food & Beverage", "repas", "eau", "cookies"],
+            "Software fees": ["Software fees", "internet", "wifi", "Camtel"],
+            "Accounting Fees": ["Accounting Fees", "comptable", "fiscal"],
+            "Merchandise expenses": ["Merchandise expenses", "T-shirt", "Polo", "cadeau"],
+            "Postal fees": ["Postal fees", "livraison", "courrier"],
+            "Other": ["Other", "transport", "formateur", "salaire"]
+        }
+        
+        # Calcul ACTUAL INCOME
+        actual_income = {}
+        for category, keywords in income_mapping.items():
+            total = 0
+            if not income_df.empty and "Détails" in income_df.columns:
+                for keyword in keywords:
+                    mask = income_df["Détails"].str.contains(keyword, case=False, na=False)
+                    total += income_df[mask]["Montant"].sum()
+            actual_income[category] = float(total)
+        
+        # Calcul ACTUAL EXPENSES (à partir des vraies données de dépenses si disponibles)
+        actual_expenses = {}
+        for category in BUDGET_EXPENSES.keys():
+            actual_expenses[category] = 0  # À compléter avec vraies données
+        
+        return actual_income, actual_expenses
+
+    # Calcul pour l'année courante
+    year_current = datetime.now().year
+    actual_income, actual_expenses = calculate_actual_financials(df_pay, year_current)
+
+    # === Interface utilisateur ===
+    col_year, col_export = st.columns([1, 1])
+
+    with col_year:
+        selected_year = st.selectbox("Année du rapport financier", 
+                                    options=[2024, 2023, 2025], 
+                                    index=0)
+
+    # Recalcul si année différente
+    if selected_year != year_current:
+        actual_income, actual_expenses = calculate_actual_financials(df_pay, selected_year)
+
+    # === SUMMARY TABLE ===
+    st.subheader(f"📊 Résumé Exécutif — {selected_year}")
+
+    total_budget_income = sum(BUDGET_INCOME.values())
+    total_actual_income = sum(actual_income.values())
+    total_budget_expenses = sum(BUDGET_EXPENSES.values())
+    total_actual_expenses = sum(actual_expenses.values())
+
+    budget_difference = total_budget_income - total_budget_expenses
+    actual_difference = total_actual_income - total_actual_expenses
+    variance_difference = actual_difference - budget_difference
+
+    summary_data = {
+        "Indicateur": ["Total Income", "Total Expenses", "Difference"],
+        "BUDGET (FCFA)": [f"{total_budget_income:,.0f}", f"{total_budget_expenses:,.0f}", f"{budget_difference:,.0f}"],
+        "ACTUAL (FCFA)": [f"{total_actual_income:,.0f}", f"{total_actual_expenses:,.0f}", f"{actual_difference:,.0f}"],
+        "UNDER/OVER (FCFA)": [
+            f"{total_actual_income - total_budget_income:,.0f}",
+            f"{total_actual_expenses - total_budget_expenses:,.0f}",
+            f"{variance_difference:,.0f}"
+        ]
+    }
+
+    df_summary = pd.DataFrame(summary_data)
+    st.dataframe(df_summary, use_container_width=True)
+
+    # Performance indicators
+    col_perf1, col_perf2, col_perf3 = st.columns(3)
+    income_performance = (total_actual_income / total_budget_income * 100) if total_budget_income > 0 else 0
+    expense_performance = (total_actual_expenses / total_budget_expenses * 100) if total_budget_expenses > 0 else 0
+
+    col_perf1.metric("📈 Performance Revenus", f"{income_performance:.1f}%", 
+                    f"{total_actual_income - total_budget_income:,.0f} FCFA")
+    col_perf2.metric("📉 Performance Dépenses", f"{expense_performance:.1f}%",
+                    f"{total_actual_expenses - total_budget_expenses:,.0f} FCFA")
+    col_perf3.metric("⚖️ Marge Réalisée", f"{actual_difference:,.0f} FCFA",
+                    f"{variance_difference:,.0f} FCFA vs budget")
+
+    # === DÉTAIL REVENUS ===
+    st.subheader("💰 Détail des Revenus par Catégorie")
+
+    income_detail = []
+    for category, budget_amount in BUDGET_INCOME.items():
+        actual_amount = actual_income.get(category, 0)
+        variance = actual_amount - budget_amount
+        variance_pct = (variance / budget_amount * 100) if budget_amount > 0 else 0
+        
+        income_detail.append({
+            "Catégorie": category,
+            "BUDGET (FCFA)": f"{budget_amount:,.0f}",
+            "ACTUAL (FCFA)": f"{actual_amount:,.0f}",
+            "ÉCART (FCFA)": f"{variance:,.0f}",
+            "ÉCART (%)": f"{variance_pct:+.1f}%",
+            "Commentaires": "Données partielles" if actual_amount == 0 else "Conforme" if abs(variance_pct) < 10 else "À analyser"
         })
+
+    df_income = pd.DataFrame(income_detail)
+    st.dataframe(df_income, use_container_width=True)
+
+    # === DÉTAIL DÉPENSES ===  
+    st.subheader("💸 Détail des Dépenses par Catégorie")
+
+    expense_detail = []
+    for category, budget_amount in BUDGET_EXPENSES.items():
+        actual_amount = actual_expenses.get(category, 0)
+        variance = actual_amount - budget_amount
+        variance_pct = (variance / budget_amount * 100) if budget_amount > 0 else 0
         
-        chart_perf = alt.Chart(perf_data).mark_bar().encode(
-            x='Indicateur:N',
-            y=alt.Y('Performance (%):Q', scale=alt.Scale(domain=[0, 120])),
-            color=alt.condition(
-                alt.datum['Performance (%)'] >= 90,
-                alt.value('#2ca02c'),  # Vert si >= 90%
-                alt.value('#d62728')   # Rouge si < 90%
-            ),
-            tooltip=['Indicateur', 'Performance (%)']
-        ).properties(height=300, title='Performance vs Objectifs')
+        expense_detail.append({
+            "Catégorie": category,
+            "BUDGET (FCFA)": f"{budget_amount:,.0f}",
+            "ACTUAL (FCFA)": f"{actual_amount:,.0f}",
+            "ÉCART (FCFA)": f"{variance:,.0f}",
+            "ÉCART (%)": f"{variance_pct:+.1f}%",
+            "Statut": "✅ Sous budget" if variance < 0 else "⚠️ Dépassement" if variance > budget_amount * 0.1 else "📊 Conforme"
+        })
+
+    df_expense = pd.DataFrame(expense_detail)
+    st.dataframe(df_expense, use_container_width=True)
+
+    # === GRAPHIQUES DE PERFORMANCE ===
+    if alt:
+        st.subheader("📊 Visualisations Financières")
         
-        # Ligne d'objectif à 100%
-        line_objective = alt.Chart(perf_data).mark_rule(color='black', strokeDash=[5, 5]).encode(
-            y=alt.datum(100)
-        )
+        tab_rev, tab_exp, tab_comp = st.tabs(["Revenus", "Dépenses", "Comparaison"])
         
-        st.altair_chart((chart_perf + line_objective), use_container_width=True)
-
-# === ANALYSE ET RECOMMANDATIONS ===
-st.subheader("🔍 Analyse et Recommandations")
-
-col_analysis1, col_analysis2 = st.columns(2)
-
-with col_analysis1:
-    st.write("**📈 Points Forts**")
-    strengths = []
-    if income_performance >= 90:
-        strengths.append("Objectifs de revenus atteints/dépassés")
-    if expense_performance <= 100:
-        strengths.append("Maîtrise des coûts")
-    if actual_difference > 0:
-        strengths.append("Bénéfice réalisé")
-    
-    if strengths:
-        for strength in strengths:
-            st.write(f"✅ {strength}")
-    else:
-        st.write("⚠️ Performance à améliorer")
-
-with col_analysis2:
-    st.write("**🎯 Actions Prioritaires**")
-    actions = []
-    if income_performance < 90:
-        actions.append("Renforcer les activités génératrices de revenus")
-    if expense_performance > 110:
-        actions.append("Optimiser la structure des coûts")
-    if actual_difference < 0:
-        actions.append("Plan de redressement financier urgent")
-    
-    if actions:
-        for action in actions:
-            st.write(f"🔧 {action}")
-    else:
-        st.write("✅ Performance financière satisfaisante")
-
-# === EXPORT EXCEL ===
-with col_export:
-    if st.button("📊 Générer Plan Financier Excel Complet"):
-        try:
-            # Création du fichier Excel avec tous les onglets
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                # Onglet Summary
-                df_summary.to_excel(writer, sheet_name="Summary", index=False)
-                
-                # Onglet Income Detail
-                df_income.to_excel(writer, sheet_name="Income Detail", index=False)
-                
-                # Onglet Expense Detail  
-                df_expense.to_excel(writer, sheet_name="Expense Detail", index=False)
-                
-                # Onglet Raw Data (optionnel - données brutes filtrées)
-                if not df_pay.empty:
-                    df_pay_filtered = df_pay.copy()
-                    try:
-                        df_pay_filtered["_year"] = pd.to_datetime(df_pay_filtered["Date_Paiement"], errors='coerce').dt.year
-                        df_pay_filtered = df_pay_filtered[df_pay_filtered["_year"] == selected_year]
-                    except:
-                        pass
-                    df_pay_filtered.to_excel(writer, sheet_name="Raw Data", index=False)
-                
-                # Onglet Analysis (métriques calculées)
-                analysis_data = pd.DataFrame({
-                    "Métrique": ["Performance Revenus (%)", "Performance Dépenses (%)", "Marge Réalisée (FCFA)", "Écart vs Budget (FCFA)"],
-                    "Valeur": [f"{income_performance:.1f}", f"{expense_performance:.1f}", f"{actual_difference:,.0f}", f"{variance_difference:,.0f}"],
-                    "Objectif": ["≥90%", "≤100%", ">0", ">0"],
-                    "Statut": [
-                        "✅ Atteint" if income_performance >= 90 else "❌ Non atteint",
-                        "✅ Atteint" if expense_performance <= 100 else "❌ Dépassé", 
-                        "✅ Positif" if actual_difference > 0 else "❌ Négatif",
-                        "✅ Favorable" if variance_difference > 0 else "❌ Défavorable"
-                    ]
-                })
-                analysis_data.to_excel(writer, sheet_name="Analysis", index=False)
+        with tab_rev:
+            # Graphique revenus Budget vs Actual
+            income_chart_data = []
+            for cat, budget in BUDGET_INCOME.items():
+                if budget > 0:  # Exclure les catégories à 0
+                    income_chart_data.extend([
+                        {"Catégorie": cat, "Type": "Budget", "Montant": budget},
+                        {"Catégorie": cat, "Type": "Actual", "Montant": actual_income.get(cat, 0)}
+                    ])
             
-            # Téléchargement
-            st.download_button(
-                "⬇️ Télécharger Plan Financier Excel",
-                buffer.getvalue(),
-                file_name=f"Plan_Financier_IIBA_{selected_year}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            if income_chart_data:
+                chart_income = alt.Chart(pd.DataFrame(income_chart_data)).mark_bar().encode(
+                    x=alt.X('Catégorie:N', sort='-y'),
+                    y=alt.Y('Montant:Q', title='Montant (FCFA)'),
+                    color=alt.Color('Type:N', scale=alt.Scale(range=['#1f77b4', '#ff7f0e'])),
+                    tooltip=['Catégorie', 'Type', 'Montant']
+                ).properties(height=400, title=f'Revenus Budget vs Actual - {selected_year}')
+                
+                st.altair_chart(chart_income, use_container_width=True)
+        
+        with tab_exp:
+            # Graphique dépenses par catégorie
+            expense_chart_data = []
+            for cat, budget in BUDGET_EXPENSES.items():
+                if budget > 0:
+                    expense_chart_data.extend([
+                        {"Catégorie": cat, "Type": "Budget", "Montant": budget},
+                        {"Catégorie": cat, "Type": "Actual", "Montant": actual_expenses.get(cat, 0)}
+                    ])
+            
+            if expense_chart_data:
+                chart_expense = alt.Chart(pd.DataFrame(expense_chart_data)).mark_bar().encode(
+                    x=alt.X('Catégorie:N', sort='-y'),
+                    y=alt.Y('Montant:Q', title='Montant (FCFA)'),
+                    color=alt.Color('Type:N', scale=alt.Scale(range=['#d62728', '#ff9896'])),
+                    tooltip=['Catégorie', 'Type', 'Montant']
+                ).properties(height=400, title=f'Dépenses Budget vs Actual - {selected_year}')
+                
+                st.altair_chart(chart_expense, use_container_width=True)
+        
+        with tab_comp:
+            # Graphique de performance globale
+            perf_data = pd.DataFrame({
+                "Indicateur": ["Revenus", "Dépenses"],
+                "Performance (%)": [income_performance, expense_performance],
+                "Objectif": [100, 100]
+            })
+            
+            chart_perf = alt.Chart(perf_data).mark_bar().encode(
+                x='Indicateur:N',
+                y=alt.Y('Performance (%):Q', scale=alt.Scale(domain=[0, 120])),
+                color=alt.condition(
+                    alt.datum['Performance (%)'] >= 90,
+                    alt.value('#2ca02c'),  # Vert si >= 90%
+                    alt.value('#d62728')   # Rouge si < 90%
+                ),
+                tooltip=['Indicateur', 'Performance (%)']
+            ).properties(height=300, title='Performance vs Objectifs')
+            
+            # Ligne d'objectif à 100%
+            line_objective = alt.Chart(perf_data).mark_rule(color='black', strokeDash=[5, 5]).encode(
+                y=alt.datum(100)
             )
             
-            st.success(f"✅ Plan financier {selected_year} généré avec succès!")
-            
-        except Exception as e:
-            st.error(f"❌ Erreur lors de la génération : {e}")
+            st.altair_chart((chart_perf + line_objective), use_container_width=True)
 
-# === NOTES ET MÉTHODOLOGIE ===
-with st.expander("ℹ️ Notes et Méthodologie"):
-    st.write("""
-    **Calcul des montants ACTUAL :**
-    - Revenus : basés sur les paiements avec statut 'Réglé'
-    - Dépenses : basées sur tous les paiements enregistrés
-    - Catégories : mappage automatique par mots-clés dans les descriptions
-    
-    **Indicateurs de performance :**
-    - Performance Revenus = (Actual / Budget) × 100
-    - Performance Dépenses = (Actual / Budget) × 100  
-    - Marge = Revenus Actual - Dépenses Actual
-    
-    **Seuils d'alerte :**
-    - Revenus < 90% du budget : Action requise
-    - Dépenses > 110% du budget : Vigilance 
-    - Marge négative : Plan de redressement
-    """)
+    # === ANALYSE ET RECOMMANDATIONS ===
+    st.subheader("🔍 Analyse et Recommandations")
+
+    col_analysis1, col_analysis2 = st.columns(2)
+
+    with col_analysis1:
+        st.write("**📈 Points Forts**")
+        strengths = []
+        if income_performance >= 90:
+            strengths.append("Objectifs de revenus atteints/dépassés")
+        if expense_performance <= 100:
+            strengths.append("Maîtrise des coûts")
+        if actual_difference > 0:
+            strengths.append("Bénéfice réalisé")
+        
+        if strengths:
+            for strength in strengths:
+                st.write(f"✅ {strength}")
+        else:
+            st.write("⚠️ Performance à améliorer")
+
+    with col_analysis2:
+        st.write("**🎯 Actions Prioritaires**")
+        actions = []
+        if income_performance < 90:
+            actions.append("Renforcer les activités génératrices de revenus")
+        if expense_performance > 110:
+            actions.append("Optimiser la structure des coûts")
+        if actual_difference < 0:
+            actions.append("Plan de redressement financier urgent")
+        
+        if actions:
+            for action in actions:
+                st.write(f"🔧 {action}")
+        else:
+            st.write("✅ Performance financière satisfaisante")
+
+    # === EXPORT EXCEL ===
+    with col_export:
+        if st.button("📊 Générer Plan Financier Excel Complet"):
+            try:
+                # Création du fichier Excel avec tous les onglets
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    # Onglet Summary
+                    df_summary.to_excel(writer, sheet_name="Summary", index=False)
+                    
+                    # Onglet Income Detail
+                    df_income.to_excel(writer, sheet_name="Income Detail", index=False)
+                    
+                    # Onglet Expense Detail  
+                    df_expense.to_excel(writer, sheet_name="Expense Detail", index=False)
+                    
+                    # Onglet Raw Data (optionnel - données brutes filtrées)
+                    if not df_pay.empty:
+                        df_pay_filtered = df_pay.copy()
+                        try:
+                            df_pay_filtered["_year"] = pd.to_datetime(df_pay_filtered["Date_Paiement"], errors='coerce').dt.year
+                            df_pay_filtered = df_pay_filtered[df_pay_filtered["_year"] == selected_year]
+                        except:
+                            pass
+                        df_pay_filtered.to_excel(writer, sheet_name="Raw Data", index=False)
+                    
+                    # Onglet Analysis (métriques calculées)
+                    analysis_data = pd.DataFrame({
+                        "Métrique": ["Performance Revenus (%)", "Performance Dépenses (%)", "Marge Réalisée (FCFA)", "Écart vs Budget (FCFA)"],
+                        "Valeur": [f"{income_performance:.1f}", f"{expense_performance:.1f}", f"{actual_difference:,.0f}", f"{variance_difference:,.0f}"],
+                        "Objectif": ["≥90%", "≤100%", ">0", ">0"],
+                        "Statut": [
+                            "✅ Atteint" if income_performance >= 90 else "❌ Non atteint",
+                            "✅ Atteint" if expense_performance <= 100 else "❌ Dépassé", 
+                            "✅ Positif" if actual_difference > 0 else "❌ Négatif",
+                            "✅ Favorable" if variance_difference > 0 else "❌ Défavorable"
+                        ]
+                    })
+                    analysis_data.to_excel(writer, sheet_name="Analysis", index=False)
+                
+                # Téléchargement
+                st.download_button(
+                    "⬇️ Télécharger Plan Financier Excel",
+                    buffer.getvalue(),
+                    file_name=f"Plan_Financier_IIBA_{selected_year}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                
+                st.success(f"✅ Plan financier {selected_year} généré avec succès!")
+                
+            except Exception as e:
+                st.error(f"❌ Erreur lors de la génération : {e}")
+
+    # === NOTES ET MÉTHODOLOGIE ===
+    with st.expander("ℹ️ Notes et Méthodologie"):
+        st.write("""
+        **Calcul des montants ACTUAL :**
+        - Revenus : basés sur les paiements avec statut 'Réglé'
+        - Dépenses : basées sur tous les paiements enregistrés
+        - Catégories : mappage automatique par mots-clés dans les descriptions
+        
+        **Indicateurs de performance :**
+        - Performance Revenus = (Actual / Budget) × 100
+        - Performance Dépenses = (Actual / Budget) × 100  
+        - Marge = Revenus Actual - Dépenses Actual
+        
+        **Seuils d'alerte :**
+        - Revenus < 90% du budget : Action requise
+        - Dépenses > 110% du budget : Vigilance 
+        - Marge négative : Plan de redressement
+        """)
 
 
 # ---------------------- PAGE ADMIN — Migration & Import/Export ----------------------
