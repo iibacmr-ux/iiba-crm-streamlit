@@ -395,7 +395,7 @@ def login_box():
         users_df = _normalize_users_df(users_df)
         m = (users_df["user_id"].astype(str).str.strip().str.lower() == str(uid).strip().lower())
         print("st.sidebar.button - m :", m)
-        st.sidebar.error("st.sidebar.button")
+        st.st.sidebar.error(f"st.sidebar.button : {m}")
         if not m.any():
             st.sidebar.error("Utilisateur introuvable.")
             return
