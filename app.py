@@ -388,7 +388,8 @@ def login_box():
     st.sidebar.markdown("### 🔐 Connexion")
     uid = st.sidebar.text_input("Email / User ID", value=st.session_state.get("last_uid",""))
     pw = st.sidebar.text_input("Mot de passe", type="password")
-
+    print("login_box --->")
+    
     if st.sidebar.button("Se connecter", key="btn_login"):
         users_df = _ensure_users_df()
         users_df = _normalize_users_df(users_df)
