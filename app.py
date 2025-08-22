@@ -345,7 +345,7 @@ def _force_activate_admin():
     
     if m.any():
         # réactive + redonne le rôle admin
-        st.sidebar.error(f"_force_activate_admin - if m.any(): user_id : {dfu.loc[m, "user_id"]}")  # print 
+        # st.sidebar.error(f"_force_activate_admin - if m.any(): user_id : {dfu.loc[m, "user_id"]}")  # print 
         dfu.loc[m, "active"] = True
         dfu.loc[m, "role"] = "admin"
         dfu.loc[m, "updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -1414,52 +1414,881 @@ elif page == "Entreprises":
         st.info("Aucune entreprise enregistrée.")
 
 # PAGE RAPPORTS (CODE EXISTANT CONSERVÉ - partie simplifiée)
+
+
 elif page == "Rapports":
     st.title("📑 Rapports & KPI — IIBA Cameroun")
-    
-    # KPI de base
-    total_contacts = len(df_contacts)
-    prospects_actifs = len(df_contacts[(df_contacts.get("Type","")=="Prospect") & (df_contacts.get("Statut","")=="Actif")])
-    membres = len(df_contacts[df_contacts.get("Type","")=="Membre"])
-    events_count = len(df_events)
-    parts_total = len(df_parts)
-    entreprises_total = len(df_entreprises)  # NOUVEAU
+
+    # ---------- Helpers génériques ----------
+    def _safe_parse_series(s: pd.Series) -> pd.Series:
+        return s.map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
+
+    def _build_mask_from_dates(d: pd.Series, year_sel: str, month_sel: str) -> pd.Series:
+        mask = pd.Series(True, index=d.index)
+        if year_sel != "Toutes":
+            y = int(year_sel)
+            mask = mask & d.map(lambda x: isinstance(x, (datetime, date)) and x.year == y)
+        if month_sel != "Tous":
+            m = int(month_sel)
+            mask = mask & d.map(lambda x: isinstance(x, (datetime, date)) and x.month == m)
+        return mask.fillna(False)
+
+    # ---------- Filtrage des tables principales ----------
+    def filtered_tables_for_period(year_sel: str, month_sel: str):
+        # Événements
+        if df_events.empty:
+            dfe2 = df_events.copy()
+        else:
+            ev_dates = _safe_parse_series(df_events["Date"])
+            mask_e = _build_mask_from_dates(ev_dates, year_sel, month_sel)
+            dfe2 = df_events[mask_e].copy()
+
+        # Participations (via date d'événement)
+        if df_parts.empty:
+            dfp2 = df_parts.copy()
+        else:
+            dfp2 = df_parts.copy()
+            if not df_events.empty:
+                ev_dates_map = df_events.set_index("ID_Événement")["Date"].map(parse_date)
+                dfp2["_d_evt"] = dfp2["ID_Événement"].map(ev_dates_map)
+                mask_p = _build_mask_from_dates(dfp2["_d_evt"], year_sel, month_sel)
+                dfp2 = dfp2[mask_p].copy()
+            else:
+                dfp2 = dfp2.iloc[0:0].copy()
+
+        # Paiements
+        if df_pay.empty:
+            dfpay2 = df_pay.copy()
+        else:
+            pay_dates = _safe_parse_series(df_pay["Date_Paiement"])
+            mask_pay = _build_mask_from_dates(pay_dates, year_sel, month_sel)
+            dfpay2 = df_pay[mask_pay].copy()
+
+        # Certifications
+        if df_cert.empty:
+            dfcert2 = df_cert.copy()
+        else:
+            obt = _safe_parse_series(df_cert["Date_Obtention"]) if "Date_Obtention" in df_cert.columns else pd.Series([None]*len(df_cert), index=df_cert.index)
+            exa = _safe_parse_series(df_cert["Date_Examen"])    if "Date_Examen"    in df_cert.columns    else pd.Series([None]*len(df_cert), index=df_cert.index)
+            mask_c = _build_mask_from_dates(obt, year_sel, month_sel) | _build_mask_from_dates(exa, year_sel, month_sel)
+            dfcert2 = df_cert[mask_c.fillna(False)].copy()
+
+        return dfe2, dfp2, dfpay2, dfcert2
+
+    # ---------- Filtrage des CONTACTS par période ----------
+    # Logique : on prend Date_Creation si dispo. Sinon, on essaie de déduire une "date de référence"
+    # depuis la 1re interaction, 1re participation (date d'événement) ou 1er paiement.
+    def filtered_contacts_for_period(
+        year_sel: str,
+        month_sel: str,
+        dfe_all: pd.DataFrame,   # events (toutes lignes, pas filtrées)
+        dfi_all: pd.DataFrame,   # interactions (toutes)
+        dfp_all: pd.DataFrame,   # participations (toutes)
+        dfpay_all: pd.DataFrame  # paiements (toutes)
+    ) -> pd.DataFrame:
+        """
+        Filtre les CONTACTS par période.
+        Logique configurable via PARAMS["contacts_period_fallback"]:
+          - OFF/0: ne filtre que sur Date_Creation (contact inclus si Date_Creation ∈ période)
+          - ON/1 (par défaut): utilise Date_Creation, sinon retombe sur la 1re activité détectée
+            (1re interaction, 1re participation via date d'événement, 1er paiement).
+        """
+
+        base = df_contacts.copy()
+        if base.empty or "ID" not in base.columns:
+            return base  # rien à filtrer
+
+        # Normalisation ID en str (évite les merges/map sur types hétérogènes)
+        base["ID"] = base["ID"].astype(str).str.strip()
+
+        # Parse Date_Creation -> série de dates (ou None)
+        if "Date_Creation" in base.columns:
+            base["_dc"] = _safe_parse_series(base["Date_Creation"])
+        else:
+            base["_dc"] = pd.Series([None] * len(base), index=base.index)
+
+        # Paramètre fallback (Admin -> Paramètres)
+        use_fallback = str(PARAMS.get("contacts_period_fallback", "on")).lower() in ("on", "1", "true", "vrai", "yes")
+
+        # ========== MODE STRICT (fallback OFF) ==========
+        if not use_fallback:
+            mask = _build_mask_from_dates(base["_dc"], year_sel, month_sel)
+            return base[mask].drop(columns=["_dc"], errors="ignore")
+
+        # ========== MODE FALLBACK (ON) ==========
+        # 1) 1re Interaction
+        if not dfi_all.empty and "Date" in dfi_all.columns and "ID" in dfi_all.columns:
+            dfi = dfi_all.copy()
+            dfi["ID"] = dfi["ID"].astype(str).str.strip()
+            dfi["_di"] = pd.to_datetime(_safe_parse_series(dfi["Date"]), errors="coerce") 
+            first_inter = dfi.groupby("ID")["_di"].min()
+        else:
+            first_inter = pd.Series(dtype=object)
+
+        # 2) 1re Participation (via date d'événement)
+        if (not dfp_all.empty and "ID" in dfp_all.columns and "ID_Événement" in dfp_all.columns
+            and not dfe_all.empty and "ID_Événement" in dfe_all.columns and "Date" in dfe_all.columns):
+            dfp = dfp_all.copy()
+            dfp = dfp[dfp["ID_Événement"].notna()]  # évite les NaN dans le mapping
+            dfp["ID"] = dfp["ID"].astype(str).str.strip()
+
+            ev_dates = dfe_all.copy()
+            ev_dates["_de"] = _safe_parse_series(ev_dates["Date"])           # objets date/None
+            ev_map = ev_dates.set_index("ID_Événement")["_de"]
+
+            dfp["_de"] = dfp["ID_Événement"].map(ev_map)
+            dfp["_de"] = pd.to_datetime(dfp["_de"], errors="coerce")         # -> datetime64[ns]
+            first_part = dfp.groupby("ID")["_de"].min()
+        else:
+            first_part = pd.Series(dtype="datetime64[ns]")
+
+        # 3) 1er Paiement
+        if not dfpay_all.empty and "Date_Paiement" in dfpay_all.columns and "ID" in dfpay_all.columns:
+            dfpay = dfpay_all.copy()
+            dfpay["ID"] = dfpay["ID"].astype(str).str.strip()
+            dfpay["_dp"] = pd.to_datetime(_safe_parse_series(dfpay["Date_Paiement"]), errors="coerce")
+            first_pay = dfpay.groupby("ID")["_dp"].min()
+        else:
+            first_pay = pd.Series(dtype=object)
+
+        # Choisir la 1re date valide parmi: Date_Creation, 1re interaction, 1re participation, 1er paiement
+        def _first_valid_date(dc, fi, fp, fpay):
+            cands = []
+            for v in (dc, fi, fp, fpay):
+                if isinstance(v, pd.Timestamp):
+                    v = v.to_pydatetime()
+                if isinstance(v, datetime):
+                    cands.append(v.date())
+                elif isinstance(v, date):
+                    cands.append(v)
+            return min(cands) if cands else None
+
+        # Construire un dict ID -> date de référence
+        ref_dates = {}
+        ids = base["ID"].tolist()
+        # set pour lecture rapide
+        set_ids = set(ids)
+
+        # accès direct aux séries pour perf
+        s_dc = base.set_index("ID")["_dc"] if "ID" in base.columns else pd.Series(dtype=object)
+
+        for cid in ids:
+            dc   = s_dc.get(cid, None) if not s_dc.empty else None
+            fi   = first_inter.get(cid, None) if not first_inter.empty else None
+            fp   = first_part.get(cid, None)  if not first_part.empty else None
+            fpay = first_pay.get(cid, None)   if not first_pay.empty else None
+            ref_dates[cid] = _first_valid_date(dc, fi, fp, fpay)
+
+        base["_ref"] = base["ID"].map(ref_dates)
+
+        # Filtrage final par période
+        mask = _build_mask_from_dates(base["_ref"], year_sel, month_sel)
+        return base[mask].drop(columns=["_dc", "_ref"], errors="ignore")
+
+
+
+    # ---------- Agrégats période (version locale, basée sur les tables filtrées) ----------
+    def aggregates_for_contacts_period(contacts: pd.DataFrame,
+                                       dfi: pd.DataFrame, dfp: pd.DataFrame,
+                                       dfpay: pd.DataFrame, dfcert: pd.DataFrame) -> pd.DataFrame:
+        if contacts.empty:
+            return pd.DataFrame({"ID": [], "Interactions": [], "Interactions_recent": [], "Dernier_contact": [],
+                                 "Resp_principal": [], "Participations": [], "A_animé_ou_invité": [],
+                                 "CA_total": [], "CA_réglé": [], "Impayé": [], "Paiements_regles_n": [],
+                                 "A_certification": [], "Score_composite": [], "Tags": [], "Proba_conversion": []})
+
+        # Params scoring (identiques à aggregates_for_contacts)
+        vip_thr = float(PARAMS.get("vip_threshold", "500000"))
+        w_int = float(PARAMS.get("score_w_interaction", "1"))
+        w_part = float(PARAMS.get("score_w_participation", "1"))
+        w_pay = float(PARAMS.get("score_w_payment_regle", "2"))
+        lookback = int(PARAMS.get("interactions_lookback_days", "90"))
+        hot_int_min = int(PARAMS.get("rule_hot_interactions_recent_min", "3"))
+        hot_part_min = int(PARAMS.get("rule_hot_participations_min", "1"))
+        hot_partiel = PARAMS.get("rule_hot_payment_partial_counts_as_hot", "1") in ("1", "true", "True")
+
+        today = date.today()
+        recent_cut_ts = pd.Timestamp(today - timedelta(days=lookback))
+
+        # ---------------- Interactions ----------------
+        if not dfi.empty:
+            dfi = dfi.copy()
+            # ⬅️ Convertir proprement en datetime64[ns]
+            dfi["_d"] = pd.to_datetime(dfi["Date"], errors="coerce")
+            # Compteurs
+            inter_count = dfi.groupby("ID")["ID_Interaction"].count()
+            last_contact = dfi.groupby("ID")["_d"].max()
+            recent_inter = (
+                dfi.loc[dfi["_d"] >= recent_cut_ts]
+                   .groupby("ID")["ID_Interaction"].count()
+            )
+            # Responsable le plus actif
+            tmp = dfi.groupby(["ID", "Responsable"])["ID_Interaction"].count().reset_index()
+            if not tmp.empty:
+                idx = tmp.groupby("ID")["ID_Interaction"].idxmax()
+                resp_max = tmp.loc[idx].set_index("ID")["Responsable"]
+            else:
+                resp_max = pd.Series(dtype=str)
+        else:
+            inter_count = pd.Series(dtype=int)
+            last_contact = pd.Series(dtype="datetime64[ns]")
+            recent_inter = pd.Series(dtype=int)
+            resp_max = pd.Series(dtype=str)
+
+        # ---------------- Participations ----------------
+        if not dfp.empty:
+            parts_count = dfp.groupby("ID")["ID_Participation"].count()
+            has_anim = (
+                dfp.assign(_anim=dfp["Rôle"].isin(["Animateur", "Invité"]))
+                   .groupby("ID")["_anim"].any()
+            )
+        else:
+            parts_count = pd.Series(dtype=int)
+            has_anim = pd.Series(dtype=bool)
+
+        # ---------------- Paiements ----------------
+        if not dfpay.empty:
+            pay = dfpay.copy()
+            pay["Montant"] = pd.to_numeric(pay["Montant"], errors="coerce").fillna(0.0)
+            total_pay = pay.groupby("ID")["Montant"].sum()
+            pay_regle = pay[pay["Statut"] == "Réglé"].groupby("ID")["Montant"].sum()
+            pay_impaye = pay[pay["Statut"] != "Réglé"].groupby("ID")["Montant"].sum()
+            pay_reg_count = pay[pay["Statut"] == "Réglé"].groupby("ID")["Montant"].count()
+        else:
+            total_pay = pd.Series(dtype=float)
+            pay_regle = pd.Series(dtype=float)
+            pay_impaye = pd.Series(dtype=float)
+            pay_reg_count = pd.Series(dtype=int)
+
+        # ---------------- Certifications ----------------
+        if not dfcert.empty:
+            has_cert = dfcert[dfcert["Résultat"] == "Réussi"].groupby("ID")["ID_Certif"].count() > 0
+        else:
+            has_cert = pd.Series(dtype=bool)
+
+        # ---------------- Assemblage ----------------
+        ag = pd.DataFrame(index=contacts["ID"])
+        ag["Interactions"] = ag.index.map(inter_count).fillna(0).astype(int)
+        ag["Interactions_recent"] = ag.index.map(recent_inter).fillna(0).astype(int)
+
+        # Dernier contact en date → date pure
+        # (1) map via Series to ensure we get a pandas Series, not an Index/ndarray
+        lc = ag.index.to_series().map(last_contact)
+
+        # (2) force to datetime, coerce bad values to NaT
+        lc = pd.to_datetime(lc, errors="coerce")
+
+        # (3) safely extract the date
+        ag["Dernier_contact"] = lc.dt.date
+            
+        ag["Resp_principal"] = ag.index.map(resp_max).fillna("")
+        ag["Participations"] = ag.index.map(parts_count).fillna(0).astype(int)
+        ag["A_animé_ou_invité"] = ag.index.map(has_anim).fillna(False)
+        ag["CA_total"] = ag.index.map(total_pay).fillna(0.0)
+        ag["CA_réglé"] = ag.index.map(pay_regle).fillna(0.0)
+        ag["Impayé"] = ag.index.map(pay_impaye).fillna(0.0)
+        ag["Paiements_regles_n"] = ag.index.map(pay_reg_count).fillna(0).astype(int)
+
+        ag["A_certification"] = ag.index.map(has_cert).fillna(False)
+        ag["Score_composite"] = (w_int * ag["Interactions"] +
+                                 w_part * ag["Participations"] +
+                                 w_pay * ag["Paiements_regles_n"]).round(2)
+
+        def make_tags(row):
+            tags = []
+            if row.name in set(contacts.loc[contacts.get("Top20", False) == True, "ID"]):
+                tags.append("Prospect Top-20")
+            if row["Participations"] >= 3 and row["CA_réglé"] <= 0:
+                tags.append("Régulier-non-converti")
+            if row["A_animé_ou_invité"] or row["Participations"] >= 4:
+                tags.append("Futur formateur")
+            if row["A_certification"]:
+                tags.append("Ambassadeur (certifié)")
+            if row["CA_réglé"] >= vip_thr:
+                tags.append("VIP (CA élevé)")
+            return ", ".join(tags)
+
+        ag["Tags"] = ag.apply(make_tags, axis=1)
+
+        def proba(row):
+            if row.name in set(contacts[contacts.get("Type", "") == "Membre"]["ID"]):
+                return "Converti"
+            chaud = (row["Interactions_recent"] >= hot_int_min and row["Participations"] >= hot_part_min)
+            if hot_partiel and row["Impayé"] > 0 and row["CA_réglé"] == 0:
+                chaud = True
+            tiede = (row["Interactions_recent"] >= 1 or row["Participations"] >= 1)
+            if chaud:
+                return "Chaud"
+            if tiede:
+                return "Tiède"
+            return "Froid"
+
+        ag["Proba_conversion"] = ag.apply(proba, axis=1)
+        return ag.reset_index(names="ID")
+
+
+    # ---------- Finance événements (identique) ----------
+    def event_financials(dfe2, dfpay2):
+        rec_by_evt = pd.Series(dtype=float)
+        if not dfpay2.empty:
+            r = dfpay2[dfpay2["Statut"]=="Réglé"].copy()
+            r["Montant"] = pd.to_numeric(r["Montant"], errors='coerce').fillna(0)
+            rec_by_evt = r.groupby("ID_Événement")["Montant"].sum()
+        ev = dfe2 if not dfe2.empty else df_events.copy()
+        if ev.empty:
+            return pd.DataFrame(columns=["ID_Événement", "Nom_Événement", "Type", "Date", "Coût_Total", "Recette", "Bénéfice"])
+        for c in ["Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total"]:
+            ev[c] = pd.to_numeric(ev[c], errors='coerce').fillna(0)
+        ev["Cout_Total"] = ev["Cout_Total"].where(ev["Cout_Total"]>0, ev[["Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres"]].sum(axis=1))
+        ev = ev.set_index("ID_Événement")
+        rep = pd.DataFrame({
+            "Nom_Événement": ev["Nom_Événement"],
+            "Type": ev["Type"],
+            "Date": ev["Date"],
+            "Coût_Total": ev["Cout_Total"]
+        })
+        rep["Recette"] = rec_by_evt.reindex(rep.index, fill_value=0)
+        rep["Bénéfice"] = rep["Recette"] - rep["Coût_Total"]
+        return rep.reset_index()
+
+    # === Filtrages période ===
+    dfe2, dfp2, dfpay2, dfcert2 = filtered_tables_for_period(annee, mois)
+    dfc2 = filtered_contacts_for_period(annee, mois, df_events, df_inter, df_parts, df_pay)
+
+    # === KPI de base (sur période) === 
+    total_contacts = len(dfc2)
+
+    prospects_actifs = len(dfc2[(dfc2.get("Type","")=="Prospect") & (dfc2.get("Statut","")=="Actif")])
+    membres = len(dfc2[dfc2.get("Type","")=="Membre"])
+    events_count = len(dfe2)
+    parts_total = len(dfp2)
 
     ca_regle, impayes = 0.0, 0.0
-    if not df_pay.empty:
-        df_pay_copy = df_pay.copy()
-        df_pay_copy["Montant"] = pd.to_numeric(df_pay_copy["Montant"], errors='coerce').fillna(0)
-        ca_regle = float(df_pay_copy[df_pay_copy["Statut"]=="Réglé"]["Montant"].sum())
-        impayes = float(df_pay_copy[df_pay_copy["Statut"]!="Réglé"]["Montant"].sum())
+    if not dfpay2.empty:
+        dfpay2["Montant"] = pd.to_numeric(dfpay2["Montant"], errors='coerce').fillna(0)
+        ca_regle = float(dfpay2[dfpay2["Statut"]=="Réglé"]["Montant"].sum())
+        impayes = float(dfpay2[dfpay2["Statut"]!="Réglé"]["Montant"].sum())
 
-    denom_prospects = max(1, len(df_contacts[df_contacts.get("Type","")=="Prospect"]))
+    denom_prospects = max(1, len(dfc2[dfc2.get("Type","")=="Prospect"]))
     taux_conv = (membres / denom_prospects) * 100
 
-    # Affichage KPI
-    col_k1, col_k2, col_k3, col_k4 = st.columns(4)
-    col_k1.metric("👥 Contacts", total_contacts)
-    col_k2.metric("🧲 Prospects actifs", prospects_actifs)
-    col_k3.metric("🏆 Membres", membres)
-    col_k4.metric("🏢 Entreprises", entreprises_total)  # NOUVEAU
+    # --- Interactions filtrées pour la période (pour KPI Engagement) ---
+    if not df_inter.empty:
+        di = _safe_parse_series(df_inter["Date"])
+        mask_i = _build_mask_from_dates(di, annee, mois)
+        dfi2 = df_inter[mask_i].copy()
+    else:
+        dfi2 = df_inter.copy()
 
-    col_k5, col_k6, col_k7, col_k8 = st.columns(4)
-    col_k5.metric("📅 Événements", events_count)
-    col_k6.metric("🎟 Participations", parts_total)
-    col_k7.metric("💰 CA réglé", f"{int(ca_regle):,} FCFA".replace(",", " "))
-    col_k8.metric("🔄 Taux conversion", f"{taux_conv:.1f}%")
+    # --- KPI Engagement (au moins 1 interaction OU 1 participation dans la période) ---
+    ids_contacts_periode = set(dfc2.get("ID", pd.Series([], dtype=str)).astype(str))
+    ids_inter = set(dfi2.get("ID", pd.Series([], dtype=str)).astype(str)) if not dfi2.empty else set()
+    ids_parts = set(dfp2.get("ID", pd.Series([], dtype=str)).astype(str)) if not dfp2.empty else set()
+    ids_engaged = (ids_inter | ids_parts) & ids_contacts_periode
+    engagement_n = len(ids_engaged)
+    engagement_rate = (engagement_n / max(1, len(ids_contacts_periode))) * 100
 
-    # Export Excel simple
-    st.markdown("---")
+    # --- Dictionnaire KPI (inclut alias 'taux_conversion') ---
+    kpis = {
+        "contacts_total":        ("👥 Contacts (créés / période)", total_contacts),
+        "prospects_actifs":      ("🧲 Prospects actifs (période)", prospects_actifs),
+        "membres":               ("🏆 Membres (période)", membres),
+        "events_count":          ("📅 Événements (période)", events_count),
+        "participations_total":  ("🎟 Participations (période)", parts_total),
+        "ca_regle":              ("💰 CA réglé (période)", f"{int(ca_regle):,} FCFA".replace(",", " ")),
+        "impayes":               ("❌ Impayés (période)", f"{int(impayes):,} FCFA".replace(",", " ")),
+        "taux_conv":             ("🔄 Taux conversion (période)", f"{taux_conv:.1f}%"),
+        # Nouveau KPI Engagement
+        "engagement":            ("🙌 Engagement (période)", f"{engagement_rate:.1f}%"),
+    }
+
+    # Alias pour compatibilité avec Admin ("taux_conversion")
+    aliases = {
+        "taux_conversion": "taux_conv",
+    }
+
+    # Liste des KPI activés (depuis PARAMS), en appliquant les alias
+    enabled_raw = [x.strip() for x in PARAMS.get("kpi_enabled","").split(",") if x.strip()]
+    enabled_keys = []
+    for k in (enabled_raw or list(kpis.keys())):
+        enabled_keys.append(aliases.get(k, k))  # remap si alias, sinon identique
+
+    # Ne garder que ceux réellement disponibles
+    enabled = [k for k in enabled_keys if k in kpis]
+
+    # --- Affichage sur 2 lignes (4 colonnes max par ligne) ---
+    ncols = 4
+    rows = [enabled[i:i+ncols] for i in range(0, len(enabled), ncols)]
+    for row in rows:
+        cols = st.columns(len(row))
+        for col, k in zip(cols, row):
+            label, value = kpis[k]
+            col.metric(label, value)    
+            
+    # --- Finance événementielle (période) ---
+    ev_fin = event_financials(dfe2, dfpay2)
+
+    # --- Graphe CA/Coût/Bénéfice par événement ---
+    if alt and not ev_fin.empty:
+        chart1 = alt.Chart(
+            ev_fin.melt(id_vars=["Nom_Événement"], value_vars=["Recette","Coût_Total","Bénéfice"])
+        ).mark_bar().encode(
+            x=alt.X("Nom_Événement:N", sort="-y", title="Événement"),
+            y=alt.Y('value:Q', title='Montant (FCFA)'),
+            color=alt.Color('variable:N', title='Indicateur'),
+            tooltip=['Nom_Événement', 'variable', 'value']
+        ).properties(height=300, title='CA vs Coût vs Bénéfice (période)')
+        st.altair_chart(chart1, use_container_width=True)
+
+    # --- Participants par mois (via date d'événement liée) ---
+    if not dfp2.empty and "_d_evt" in dfp2.columns:
+        _m = pd.to_datetime(dfp2["_d_evt"], errors="coerce")
+        dfp2["_mois"] = _m.dt.to_period("M").astype(str)
+        agg = dfp2.dropna(subset=["_mois"]).groupby("_mois")["ID_Participation"].count().reset_index()
+        if alt and not agg.empty:
+            chart2 = alt.Chart(agg).mark_line(point=True).encode(
+                x=alt.X('_mois:N', title='Mois'),
+                y=alt.Y('ID_Participation:Q', title='Participations')
+            ).properties(height=250, title="Participants par mois (période)")
+            st.altair_chart(chart2, use_container_width=True)
+
+    # --- Satisfaction moyenne par type d’événement (période) ---
+    if not dfp2.empty and not df_events.empty:
+        type_map = df_events.set_index('ID_Événement')["Type"]
+        dfp2 = dfp2.copy()
+        dfp2["Type"] = dfp2["ID_Événement"].map(type_map)
+        if "Note" in dfp2.columns:
+            dfp2["Note"] = pd.to_numeric(dfp2["Note"], errors='coerce')
+        agg_satis = dfp2.dropna(subset=["Type","Note"]).groupby('Type')["Note"].mean().reset_index()
+        if alt and not agg_satis.empty:
+            chart3 = alt.Chart(agg_satis).mark_bar().encode(
+                x=alt.X('Type:N', title="Type d'événement"),
+                y=alt.Y('Note:Q', title="Note moyenne"),
+                tooltip=['Type', 'Note']
+            ).properties(height=250, title="Satisfaction par type (période)")
+            st.altair_chart(chart3, use_container_width=True)
+
+    # --- Objectifs vs Réel (libellés + période) ---
+    st.header("🎯 Objectifs vs Réel (période)")
+    def get_target(k):
+        try:
+            return float(PARAMS.get(k, "0"))
+        except:
+            return 0.0
+    y = datetime.now().year
+    df_targets = pd.DataFrame([
+        ("Contacts créés",                get_target(f'kpi_target_contacts_total_year_{y}'), total_contacts),
+        ("Participations enregistrées",   get_target(f'kpi_target_participations_total_year_{y}'), parts_total),
+        ("CA réglé (FCFA)",               get_target(f'kpi_target_ca_regle_year_{y}'), ca_regle),
+    ], columns=['Indicateur','Objectif','Réel'])
+    df_targets['Écart'] = df_targets['Réel'] - df_targets['Objectif']
+    st.dataframe(df_targets, use_container_width=True)
+
+    # --- Export Excel du rapport de base (période) ---
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        df_contacts.to_excel(writer, sheet_name="Contacts", index=False)
-        df_events.to_excel(writer, sheet_name="Événements", index=False)
-        df_parts.to_excel(writer, sheet_name="Participations", index=False)
-        df_pay.to_excel(writer, sheet_name="Paiements", index=False)
-        df_cert.to_excel(writer, sheet_name="Certifications", index=False)
-        df_entreprises.to_excel(writer, sheet_name="Entreprises", index=False)  # NOUVEAU
-    st.download_button("⬇ Export Excel Complet", buf.getvalue(), "export_iiba_complet.xlsx",
+        dfc2.to_excel(writer, sheet_name="Contacts(période)", index=False)
+        dfe2.to_excel(writer, sheet_name="Événements(période)", index=False)
+        dfp2.to_excel(writer, sheet_name="Participations(période)", index=False)
+        dfpay2.to_excel(writer, sheet_name="Paiements(période)", index=False)
+        dfcert2.to_excel(writer, sheet_name="Certifications(période)", index=False)
+        ev_fin.to_excel(writer, sheet_name="Finance(période)", index=False)
+    st.download_button("⬇ Export Rapport Excel (période)", buf.getvalue(), "rapport_iiba_cameroon_periode.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    st.markdown("---")
+    st.header("📊 Rapports Avancés & Analyse Stratégique (période)")
+
+    # === Données enrichies (période) ===
+    # Construire aggrégats sur la période uniquement pour les IDs présents dans dfc2
+    ids_period = pd.Index([])
+    if not dfc2.empty and "ID" in dfc2.columns:
+        ids_period = dfc2["ID"].astype(str).str.strip()
+
+    sub_inter = df_inter[df_inter.get("ID", "").astype(str).isin(ids_period)] if not df_inter.empty else df_inter
+    sub_parts = df_parts[df_parts.get("ID", "").astype(str).isin(ids_period)] if not df_parts.empty else df_parts
+    sub_pay  = df_pay [df_pay .get("ID", "").astype(str).isin(ids_period)] if not df_pay.empty  else df_pay
+    sub_cert = df_cert[df_cert.get("ID","").astype(str).isin(ids_period)]   if not df_cert.empty else df_cert
+
+    ag_period = aggregates_for_contacts_period(
+        dfc2.copy(),  # contacts (période)
+        sub_inter.copy(),
+        sub_parts.copy(),
+        sub_pay.copy(),
+        sub_cert.copy()
+    )
+
+    # --- Normalisation des clés de jointure "ID" ---
+    def _normalize_id_col(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        if "ID" not in df.columns:
+            df["ID"] = ""
+        # .astype(str) avant .fillna, puis strip
+        df["ID"] = df["ID"].astype(str).str.strip()
+        # Quelques "nan" littéraux peuvent rester après astype(str)
+        df["ID"] = df["ID"].replace({"nan": "", "None": "", "NaT": ""})
+        return df
+
+    dfc2 = _normalize_id_col(dfc2)
+    ag_period = _normalize_id_col(ag_period)
+
+    # S’assurer qu’on n’a qu’une ligne par ID côté aggrégats
+    if not ag_period.empty:
+        ag_period = ag_period.drop_duplicates(subset=["ID"])
+
+    # Si ag_period est vide, garantir au moins la colonne "ID" pour éviter le ValueError
+    if ag_period.empty and "ID" not in ag_period.columns:
+        ag_period = pd.DataFrame({"ID": []})
+
+    # --- Jointure sûre ---
+    dfc_enriched = dfc2.merge(ag_period, on="ID", how="left", validate="one_to_one")
+    # Normaliser le type au besoin
+    if "Score_Engagement" in dfc_enriched.columns:
+        dfc_enriched["Score_Engagement"] = pd.to_numeric(dfc_enriched["Score_Engagement"], errors="coerce").fillna(0)
+
+    total_ba = len(dfc_enriched)
+    certifies = len(dfc_enriched[dfc_enriched.get("A_certification", False) == True])
+    taux_certif = (certifies / total_ba * 100) if total_ba > 0 else 0
+    secteur_counts = dfc_enriched["Secteur"].value_counts(dropna=True)
+    top_secteurs = secteur_counts.head(4)
+    diversite_sectorielle = int(secteur_counts.shape[0])
+
+    def estimate_salary(row):
+        base_salary = {
+            "Banque": 800000, "Télécom": 750000, "IT": 700000,
+            "Éducation": 500000, "Santé": 600000, "ONG": 450000,
+            "Industrie": 650000, "Public": 550000, "Autre": 500000
+        }
+        multiplier = 1.3 if row.get("A_certification", False) else 1.0
+        return base_salary.get(row.get("Secteur","Autre"), 500000) * multiplier
+    if total_ba > 0:
+        dfc_enriched["Salaire_Estime"] = dfc_enriched.apply(estimate_salary, axis=1)
+        salaire_moyen = int(dfc_enriched["Salaire_Estime"].mean())
+    else:
+        salaire_moyen = 0
+
+    taux_participation = float(dfc_enriched.get("Participations", pd.Series(dtype=float)).mean() or 0)
+    ca_total = float(dfc_enriched.get("CA_réglé", pd.Series(dtype=float)).sum() or 0)
+    prospects_chauds = len(dfc_enriched[dfc_enriched.get("Proba_conversion","") == "Chaud"])
+
+    # Onglets avancés
+    tab_exec, tab_profil, tab_swot, tab_bsc = st.tabs([
+        "🎯 Executive Summary",
+        "👤 Profil BA Camerounais",
+        "⚖️ SWOT Analysis",
+        "📈 Balanced Scorecard"
+    ])
+
+    with tab_exec:
+        st.subheader("📋 Synthèse Exécutive — période")
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("👥 Total BA", total_ba)
+        c2.metric("🎓 Certifiés", f"{taux_certif:.1f}%")
+        c3.metric("💰 Salaire Moyen", f"{salaire_moyen:,} FCFA")
+        c4.metric("🏢 Secteurs", diversite_sectorielle)
+
+        st.subheader("🏆 Top Événements (bénéfice)")
+        ev_fin_period = event_financials(dfe2, dfpay2)
+        if not ev_fin_period.empty:
+            top_events = ev_fin_period.nlargest(5, "Bénéfice")[["Nom_Événement", "Recette", "Coût_Total", "Bénéfice"]]
+            st.dataframe(top_events, use_container_width=True)
+        else:
+            st.info("Pas de données financières d'événements sur la période.")
+
+        st.subheader("🎯 Segmentation (période)")
+        segments = dfc_enriched["Proba_conversion"].value_counts()
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            if total_ba > 0 and not segments.empty:
+                for segment, count in segments.items():
+                    pct = (count / total_ba * 100)
+                    st.write(f"• {segment}: {count} ({pct:.1f}%)")
+            else:
+                st.write("Aucune donnée de segmentation.")
+        with col_s2:
+            if alt and not segments.empty:
+                chart_data = pd.DataFrame({'Segment': segments.index, 'Count': segments.values})
+                pie_chart = alt.Chart(chart_data).mark_arc().encode(
+                    theta=alt.Theta(field="Count", type="quantitative"),
+                    color=alt.Color(field="Segment", type="nominal"),
+                    tooltip=['Segment', 'Count']
+                ).properties(width=220, height=220)
+                st.altair_chart(pie_chart, use_container_width=True)
+
+    with tab_profil:
+        st.subheader("👤 Profil Type — période")
+        col_demo1, col_demo2 = st.columns(2)
+        with col_demo1:
+            st.write("**📊 Répartition par Genre**")
+            genre_counts = dfc_enriched["Genre"].value_counts()
+            if total_ba > 0 and not genre_counts.empty:
+                for genre, count in genre_counts.items():
+                    pct = (count / total_ba * 100)
+                    st.write(f"• {genre}: {count} ({pct:.1f}%)")
+            else:
+                st.write("Aucune donnée de genre.")
+
+            st.write("**🏙️ Top Villes**")
+            ville_counts = dfc_enriched["Ville"].value_counts().head(5)
+            if total_ba > 0 and not ville_counts.empty:
+                for ville, count in ville_counts.items():
+                    pct = (count / total_ba * 100)
+                    st.write(f"• {ville}: {count} ({pct:.1f}%)")
+            else:
+                st.write("Aucune donnée de ville.")
+
+        with col_demo2:
+            st.write("**🏢 Secteurs dominants**")
+            if total_ba > 0 and not top_secteurs.empty:
+                for secteur, count in top_secteurs.items():
+                    pct = (count / total_ba * 100)
+                    st.write(f"• {secteur}: {count} ({pct:.1f}%)")
+            else:
+                st.write("Aucune donnée de secteur.")
+
+            st.write("**💼 Types de profils**")
+            type_counts = dfc_enriched["Type"].value_counts()
+            if total_ba > 0 and not type_counts.empty:
+                for typ, count in type_counts.items():
+                    pct = (count / total_ba * 100)
+                    st.write(f"• {typ}: {count} ({pct:.1f}%)")
+            else:
+                st.write("Aucune donnée de type de profil.")
+
+        st.subheader("📈 Engagement par Secteur (période)")
+        if not dfc_enriched.empty:
+            engagement_secteur = dfc_enriched.groupby("Secteur").agg({
+                "Score_composite": "mean",
+                "Participations": "mean",
+                "CA_réglé": "sum"
+            }).round(2)
+            engagement_secteur.columns = ["Score Moyen", "Participations Moy", "CA Total"]
+            st.dataframe(engagement_secteur, use_container_width=True)
+        else:
+            engagement_secteur = pd.DataFrame()
+
+        st.subheader("🌍 Comparaison Standards Internationaux (période)")
+        ba_experience_ratio = (len(dfc_enriched[dfc_enriched.get("Score_Engagement", 0) >= 50]) / total_ba * 100) if total_ba > 0 else 0
+        formation_continue = (len(dfc_enriched[dfc_enriched.get("Participations", 0) >= 2]) / total_ba * 100) if total_ba > 0 else 0
+        kpi_standards = pd.DataFrame({
+            "KPI": [
+                "Taux de certification",
+                "Formation continue",
+                "Expérience métier",
+                "Diversité sectorielle",
+                "Engagement communautaire"
+            ],
+            "Cameroun": [f"{taux_certif:.1f}%", f"{formation_continue:.1f}%", f"{ba_experience_ratio:.1f}%",
+                        f"{diversite_sectorielle} secteurs", f"{dfc_enriched.get('Participations', pd.Series(dtype=float)).mean():.1f} events/BA"],
+            "Standard IIBA": ["25-35%", "60-70%", "70-80%", "8-10 secteurs", "2-3 events/an"]
+        })
+        st.dataframe(kpi_standards, use_container_width=True)
+
+    with tab_swot:
+        st.subheader("⚖️ Analyse SWOT — période")
+        col_sw, col_ot = st.columns(2)
+
+        with col_sw:
+            st.markdown("### 💪 **FORCES**")
+            st.write(f"""
+            • **Diversité sectorielle**: {diversite_sectorielle} secteurs représentés  
+            • **Engagement communautaire**: {taux_participation:.1f} participations moy./BA  
+            • **Base financière**: {ca_total:,.0f} FCFA de revenus  
+            • **Pipeline prospects**: {prospects_chauds} prospects chauds  
+            • **Croissance digitale**: Adoption d'outils en ligne  
+            """)
+
+            st.markdown("### ⚠️ **FAIBLESSES**")
+            st.write(f"""
+            • **Taux de certification**: {taux_certif:.1f}% (vs 30% standard)  
+            • **Concentration géographique**: Focus Douala/Yaoundé  
+            • **Formations avancées limitées**  
+            • **Standardisation des pratiques à renforcer**  
+            • **Visibilité internationale faible**  
+            """)
+
+        with col_ot:
+            st.markdown("### 🚀 **OPPORTUNITÉS**")
+            st.write("""
+            • Transformation digitale : demande croissante BA  
+            • Partenariats entreprises : Top-20 identifiées  
+            • Certification IIBA : programme de développement  
+            • Expansion régionale : Afrique Centrale  
+            • Formations spécialisées : IA, Data, Agile  
+            """)
+
+            st.markdown("### ⛔ **MENACES**")
+            st.write("""
+            • Concurrence de consultants internationaux  
+            • Fuite des cerveaux vers l'étranger  
+            • Économie incertaine (budgets formation)  
+            • Manque de reconnaissance du métier BA  
+            • Technologie évoluant rapidement  
+            """)
+
+        st.subheader("🎯 Plan d'Actions Stratégiques")
+        actions_df = pd.DataFrame({
+            "Axe": ["Formation", "Certification", "Partenariats", "Expansion", "Communication"],
+            "Action": [
+                "Développer programme formation continue",
+                "Accompagner vers certifications IIBA",
+                "Formaliser accords entreprises Top-20",
+                "Ouvrir antennes régionales",
+                "Renforcer visibilité et marketing"
+            ],
+            "Priorité": ["Élevée", "Élevée", "Moyenne", "Faible", "Moyenne"],
+            "Échéance": ["6 mois", "12 mois", "9 mois", "24 mois", "Continu"]
+        })
+        st.dataframe(actions_df, use_container_width=True)
+
+    with tab_bsc:
+        st.subheader("📈 Balanced Scorecard — période")
+        tab_fin, tab_client, tab_proc, tab_app = st.tabs(["💰 Financière", "👥 Client", "⚙️ Processus", "📚 Apprentissage"])
+
+        with tab_fin:
+            col_f1, col_f2, col_f3 = st.columns(3)
+            ev_fin_period = event_financials(dfe2, dfpay2)
+            if not ev_fin_period.empty and ev_fin_period["Recette"].sum() > 0:
+                marge_benefice = (ev_fin_period["Bénéfice"].sum() / ev_fin_period["Recette"].sum() * 100)
+            else:
+                marge_benefice = 0.0
+            col_f1.metric("💵 CA Total (période)", f"{ca_total:,.0f} FCFA")
+            col_f2.metric("📈 Croissance CA", "—", help="À calculer si historique disponible")
+            col_f3.metric("📊 Marge Bénéfice", f"{marge_benefice:.1f}%")
+
+            fin_data = pd.DataFrame({
+                "Indicateur": ["Revenus formations", "Revenus certifications", "Revenus événements", "Coûts opérationnels"],
+                "Réel": [f"{ca_total*0.6:.0f}", f"{ca_total*0.2:.0f}", f"{ca_total*0.2:.0f}", f"{ev_fin_period['Coût_Total'].sum() if not ev_fin_period.empty else 0:.0f}"],
+                "Objectif": ["3M", "1M", "1M", "3.5M"],
+                "Écart": ["À calculer", "À calculer", "À calculer", "À calculer"]
+            })
+            st.dataframe(fin_data, use_container_width=True)
+
+        with tab_client:
+            col_c1, col_c2, col_c3 = st.columns(3)
+            satisfaction_moy = float(dfc_enriched[dfc_enriched.get("A_certification", False) == True].get("Score_Engagement", pd.Series(dtype=float)).mean() or 0)
+            denom_ret = len(dfc_enriched[dfc_enriched.get("Type","").isin(["Membre", "Prospect"])])
+            retention = (len(dfc_enriched[dfc_enriched.get("Type","") == "Membre"]) / denom_ret * 100) if denom_ret > 0 else 0
+            col_c1.metric("😊 Satisfaction", f"{satisfaction_moy:.1f}/100", help="Score engagement (certifiés)")
+            col_c2.metric("🔄 Rétention", f"{retention:.1f}%")
+            col_c3.metric("📈 NPS Estimé", "65")
+
+            client_data = pd.DataFrame({
+                "Segment": ["Prospects Chauds", "Prospects Tièdes", "Prospects Froids", "Membres Actifs"],
+                "Nombre": [
+                    len(dfc_enriched[dfc_enriched.get("Proba_conversion","") == "Chaud"]),
+                    len(dfc_enriched[dfc_enriched.get("Proba_conversion","") == "Tiède"]),
+                    len(dfc_enriched[dfc_enriched.get("Proba_conversion","") == "Froid"]),
+                    len(dfc_enriched[dfc_enriched.get("Type","") == "Membre"])
+                ],
+            })
+            client_data["% Total"] = (client_data["Nombre"] / max(1, client_data["Nombre"].sum()) * 100).round(1)
+            st.dataframe(client_data, use_container_width=True)
+
+        with tab_proc:
+            col_p1, col_p2, col_p3 = st.columns(3)
+            denom_prosp = len(dfc_enriched[dfc_enriched.get("Type","") == "Prospect"])
+            efficacite_conv = (prospects_chauds / denom_prosp * 100) if denom_prosp > 0 else 0
+            temps_reponse = 2.5  # placeholder
+            col_p1.metric("⚡ Efficacité Conversion", f"{efficacite_conv:.1f}%")
+            col_p2.metric("⏱️ Temps Réponse", f"{temps_reponse} jours")
+            col_p3.metric("🎯 Taux Participation", f"{taux_participation:.1f}")
+
+            proc_data = pd.DataFrame({
+                "Processus": ["Acquisition prospects", "Conversion membres", "Délivrance formations", "Suivi post-formation"],
+                "Performance": ["75%", f"{retention:.1f}%", "90%", "60%"],
+                "Objectif": ["80%", "25%", "95%", "75%"],
+                "Actions": ["Améliorer ciblage", "Renforcer follow-up", "Optimiser contenu", "Systématiser enquêtes"]
+            })
+            st.dataframe(proc_data, use_container_width=True)
+
+        with tab_app:
+            col_a1, col_a2, col_a3 = st.columns(3)
+            col_a1.metric("🎓 Taux Certification", f"{taux_certif:.1f}%")
+            col_a2.metric("📖 Formation Continue", f"{(len(dfc_enriched[dfc_enriched.get('Participations',0) >= 2]) / max(1,total_ba) * 100):.1f}%")
+            col_a3.metric("🔄 Innovation", "3 projets", help="Nouveaux programmes/an")
+
+            comp_data = pd.DataFrame({
+                "Compétence": ["Business Analysis", "Agilité", "Data Analysis", "Digital Transformation", "Leadership"],
+                "Niveau Actuel": [65, 45, 35, 40, 55],
+                "Objectif 2025": [80, 65, 60, 70, 70],
+                "Gap": [15, 20, 25, 30, 15]
+            })
+            st.dataframe(comp_data, use_container_width=True)
+
+    # --- Export Markdown consolidé (période) ---
+    st.markdown("---")
+    col_export1, col_export2 = st.columns(2)
+
+    with col_export1:
+        if st.button("📄 Générer Rapport Markdown Complet (période)"):
+            try:
+                ev_fin_period = event_financials(dfe2, dfpay2)
+                if not ev_fin_period.empty and ev_fin_period["Recette"].sum() > 0:
+                    marge_benefice = (ev_fin_period["Bénéfice"].sum() / ev_fin_period["Recette"].sum() * 100)
+                else:
+                    marge_benefice = 0.0
+                genre_counts_md = dfc_enriched["Genre"].value_counts()
+
+                rapport_md = f"""
+# Rapport Stratégique IIBA Cameroun — {datetime.now().year} (période sélectionnée)
+
+## Executive Summary
+- **Total BA**: {total_ba}
+- **Taux Certification**: {taux_certif:.1f}%
+- **CA Réalisé (période)**: {ca_total:,.0f} FCFA
+- **Secteurs (période)**: {diversite_sectorielle}
+
+## Profil Type BA Camerounais (période)
+- Répartition par genre: {dict(genre_counts_md)}
+- Secteurs dominants: {dict(top_secteurs)}
+
+## SWOT (période)
+- Forces: diversité sectorielle, engagement, pipeline, base financière
+- Opportunités: partenariats Top-20, certif IIBA, expansion régionale, IA/Data/Agile
+- Menaces: concurrence, fuite des cerveaux, budgets formation, rythme techno
+
+## Balanced Scorecard (période)
+- CA: {ca_total:,.0f} FCFA — Marge: {marge_benefice:.1f}%
+- Satisfaction: {float(dfc_enriched[dfc_enriched.get("A_certification", False) == True].get("Score_Engagement", pd.Series(dtype=float)).mean() or 0):.1f}/100
+- Rétention: {((len(dfc_enriched[dfc_enriched.get("Type","") == "Membre"]) / max(1,len(dfc_enriched[dfc_enriched.get("Type","").isin(["Membre","Prospect"])])))*100):.1f}%
+
+_Généré le {datetime.now().strftime('%Y-%m-%d %H:%M')}_"""
+                st.download_button(
+                    "⬇️ Télécharger Rapport.md",
+                    rapport_md,
+                    file_name=f"Rapport_IIBA_Cameroun_periode_{datetime.now().strftime('%Y%m%d')}.md",
+                    mime="text/markdown"
+                )
+            except Exception as e:
+                st.error(f"Erreur génération Markdown : {e}")
+
+    with col_export2:
+        # Export Excel des analyses avancées (période)
+        buf_adv = io.BytesIO()
+        with pd.ExcelWriter(buf_adv, engine="openpyxl") as writer:
+            dfc_enriched.to_excel(writer, sheet_name="Contacts_Enrichis(période)", index=False)
+            try:
+                engagement_secteur.to_excel(writer, sheet_name="Engagement_Secteur", index=False)
+            except Exception:
+                pd.DataFrame().to_excel(writer, sheet_name="Engagement_Secteur", index=False)
+            try:
+                kpi_standards.to_excel(writer, sheet_name="KPI_Standards", index=False)
+            except Exception:
+                pd.DataFrame().to_excel(writer, sheet_name="KPI_Standards", index=False)
+            try:
+                actions_df.to_excel(writer, sheet_name="Plan_Actions", index=False)
+            except Exception:
+                pd.DataFrame().to_excel(writer, sheet_name="Plan_Actions", index=False)
+
+        st.download_button(
+            "📊 Export Analyses Excel (période)",
+            buf_adv.getvalue(),
+            file_name=f"Analyses_IIBA_periode_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+
 
 # PAGE ADMIN
 elif page == "Admin":
