@@ -50,6 +50,8 @@ E_COLS = ["ID_Événement","Nom_Événement","Type","Date","Durée_h","Lieu","Fo
 P_COLS = ["ID_Participation","ID","ID_Événement","Rôle","Inscription","Arrivée","Temps_Present","Feedback","Note","Commentaire"]
 PAY_COLS = ["ID_Paiement","ID","ID_Événement","Date_Paiement","Montant","Moyen","Statut","Référence","Notes","Relance"]
 CERT_COLS = ["ID_Certif","ID","Type_Certif","Date_Examen","Résultat","Score","Date_Obtention","Validité","Renouvellement","Notes"]
+# === AUDIT / META ===
+AUDIT_COLS = ["Created_At", "Created_By", "Updated_At", "Updated_By"]
 
 ALL_SCHEMAS = {
     "contacts": C_COLS, "interactions": I_COLS, "evenements": E_COLS,
@@ -86,7 +88,7 @@ PARAM_DEFAULTS = {
     "grid_crm_columns": ",".join([
         "ID","Nom","Prénom","Société","Type","Statut","Email",
         "Interactions","Participations","CA_réglé","Impayé","Resp_principal","A_animé_ou_invité",
-        "Score_composite","Proba_conversion","Tags"
+        "Score_composite","Proba_conversion","Tags","Created_At", "Created_By", "Updated_At", "Updated_By"
     ]),
     "grid_events_columns": ",".join(E_COLS),
     "kpi_enabled": ",".join([
@@ -99,6 +101,30 @@ PARAM_DEFAULTS = {
 }
 
 ALL_DEFAULTS = {**PARAM_DEFAULTS, **{f"list_{k}":v for k,v in DEFAULT_LISTS.items()}}
+
+# === AUDIT / META ===
+def _now_iso():
+    from datetime import datetime
+    return datetime.utcnow().isoformat()
+
+def stamp_create(row: dict, user: dict):
+    """Ajoute/initialise les colonnes d’audit lors d’une création."""
+    row = dict(row)
+    now = _now_iso()
+    uid = user.get("UserID", "system") if user else "system"
+    row.setdefault("Created_At", now)
+    row.setdefault("Created_By", uid)
+    row["Updated_At"] = row.get("Updated_At", now)
+    row["Updated_By"] = row.get("Updated_By", uid)
+    return row
+
+def stamp_update(row: dict, user: dict):
+    """Met à jour Updated_* lors d’une édition."""
+    row = dict(row)
+    row["Updated_At"] = _now_iso()
+    row["Updated_By"] = user.get("UserID", "system") if user else "system"
+    return row
+# === AUDIT / META === FIN
 
 def load_params()->dict:
     if not PATHS["params"].exists():
@@ -146,17 +172,24 @@ SET = {
 # Utils for dataframe loading/saving
 
 def ensure_df(path:Path, cols:list)->pd.DataFrame:
+    # Force présence des colonnes d’audit
+    full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
+
     if path.exists():
-        try: 
+        try:
             df = pd.read_csv(path, dtype=str, encoding="utf-8")
         except Exception:
-            df = pd.DataFrame(columns=cols)
+            df = pd.DataFrame(columns=full_cols)
     else:
-        df = pd.DataFrame(columns=cols)
-    for c in cols:
+        df = pd.DataFrame(columns=full_cols)
+
+    # Garantit toutes les colonnes métier + audit
+    for c in full_cols:
         if c not in df.columns:
-            df[c]=""
-    return df[cols]
+            df[c] = ""
+
+    # Restitue dans l’ordre souhaité (métier d’abord, audit ensuite)
+    return df[full_cols]
 
 def save_df(df:pd.DataFrame, path:Path):
     df.to_csv(path, index=False, encoding="utf-8")
@@ -317,7 +350,75 @@ def aggregates_for_contacts(today=None):
 # ------------------ Navigation & pages ----------------------
 
 st.sidebar.title("Navigation")
+
+# === AUTH MINIMAL ===
+import bcrypt
+USERS_PATH = DATA_DIR / "users.csv"
+
+def _bootstrap_users():
+    if USERS_PATH.exists():
+        return
+    import pandas as pd
+    # mot de passe initial: change-me
+    ph = bcrypt.hashpw(b"change-me", bcrypt.gensalt()).decode()
+    pd.DataFrame([{
+        "UserID":"admin@iiba.cm","Nom":"Admin","Prénom":"IIBA",
+        "Poste":"Comité","Role":"admin","Is_Active":"1",
+        "PasswordHash":ph,"Created_At":_now_iso(),"Updated_At":_now_iso()
+    }]).to_csv(USERS_PATH, index=False, encoding="utf-8")
+
+def load_users():
+    import pandas as pd
+    _bootstrap_users()
+    return pd.read_csv(USERS_PATH, dtype=str).fillna("")
+
+def verify_password(clearPwd: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(clearPwd.encode(), hashed.encode())
+    except Exception:
+        return False
+
+users_df = load_users()
+
+def login_box():
+    st.sidebar.markdown("### 🔐 Connexion")
+    uid = st.sidebar.text_input("Email / UserID")
+    pwd = st.sidebar.text_input("Mot de passe", type="password")
+    if st.sidebar.button("Se connecter", key="btn_login"):
+        row = users_df[
+            (users_df["UserID"]==uid) &
+            (users_df["Is_Active"].astype(str).str.lower().isin(["1","true","yes"]))
+        ]
+        if not row.empty and verify_password(pwd, row.iloc[0]["PasswordHash"]):
+            st.session_state["user"] = {
+                "UserID": row.iloc[0]["UserID"],
+                "Role": row.iloc[0]["Role"],
+                "Nom": row.iloc[0]["Nom"],
+                "Prénom": row.iloc[0]["Prénom"],
+            }
+            st.success(f"Bienvenue {row.iloc[0]['Prénom']} !")
+            st.rerun()
+        else:
+            st.error("Identifiants invalides ou compte inactif.")
+
+if "user" not in st.session_state:
+    login_box()
+    st.stop()
+
+ROLE = st.session_state["user"]["Role"]
+def allow_page(name:str)->bool:
+    if ROLE == "admin":
+        return True
+    # standard : CRM + Événements seulement
+    return name in ["CRM (Grille centrale)","Événements"]
+
 page = st.sidebar.radio("Aller à", ["CRM (Grille centrale)","Événements","Rapports","Admin"], index=0)
+
+# entoure la sélection de page (juste après avoir construit le radio)
+if not allow_page(page):
+    st.error("⛔ Accès refusé. Demandez un rôle 'admin' à un membre du comité.")
+    st.stop()
+
 this_year = datetime.now().year
 annee = st.sidebar.selectbox("Année", ["Toutes"]+[str(this_year-1),str(this_year),str(this_year+1)], index=1)
 mois = st.sidebar.selectbox("Mois", ["Tous"]+[f"{m:02d}" for m in range(1,13)], index=0)
@@ -354,6 +455,16 @@ if page == "CRM (Grille centrale)":
         "Interactions","Participations","CA_réglé","Impayé","Resp_principal","A_animé_ou_invité",
         "Score_composite","Proba_conversion","Tags"
     ])
+    
+    default_cols = [
+        "ID","Nom","Prénom","Société","Type","Statut","Email",
+        "Interactions","Participations","CA_réglé","Impayé","Resp_principal","A_animé_ou_invité",
+        "Score_composite","Proba_conversion","Tags"
+    ]
+    # ajoute audit à la fin
+    default_cols += [c for c in AUDIT_COLS if c in dfc.columns]
+
+    table_cols = parse_cols(PARAMS.get("grid_crm_columns", ""), default_cols)    
 
     def _label_contact(row):
         return f"{row['ID']} — {row['Prénom']} {row['Nom']} — {row['Société']}"
@@ -474,11 +585,17 @@ if page == "CRM (Grille centrale)":
                             st.stop()
                         idx = df_contacts.index[df_contacts["ID"] == sel_id][0]
                         new_row = {"ID":sel_id,"Nom":nom,"Prénom":prenom,"Genre":genre,"Titre":titre,"Société":societe,"Secteur":secteur,
-                                   "Email":email,"Téléphone":tel,"LinkedIn":linkedin,"Ville":ville,"Pays":pays,"Type":typec,"Source":source,
-                                   "Statut":statut,"Score_Engagement":int(score),"Date_Creation":dc.isoformat(),"Notes":notes,"Top20":top20}
-                        df_contacts.loc[idx] = new_row
-                        save_df(df_contacts, PATHS["contacts"])
-                        st.success("Contact mis à jour.")
+                                       "Email":email,"Téléphone":tel,"LinkedIn":linkedin,"Ville":ville,"Pays":pays,"Type":typec,"Source":source,
+                                       "Statut":statut,"Score_Engagement":int(score),"Date_Creation":dc.isoformat(),"Notes":notes,"Top20":top20}
+
+                            # conserve les champs existants pour ne pas perdre l’audit à l’édition
+                            raw_existing = df_contacts.loc[idx].to_dict()
+                            raw_existing.update(new_row)
+                            raw_existing = stamp_update(raw_existing, st.session_state.get("user", {}))
+
+                            df_contacts.loc[idx] = raw_existing
+                            save_df(df_contacts, PATHS["contacts"])
+                            st.success("Contact mis à jour.")
                 st.markdown("---")
                 with st.expander("➕ Ajouter ce contact à un **nouvel événement**"):
                     with st.form("quick_evt"):
@@ -878,7 +995,10 @@ if page == "Événements":
     filt = st.text_input("Filtre rapide (nom, type, lieu, notes…)", "", key="evt_filter")
     page_size_evt = st.selectbox("Taille de page", [20,50,100,200], index=0, key="pg_evt")
 
-    df_show = df_events.copy()
+    evt_default_cols = E_COLS + [c for c in AUDIT_COLS if c in df_events.columns]
+    # si tu as déjà une logique de colonnes, concatène simplement les AUDIT
+    df_show = df_events[evt_default_cols].copy()
+
     if filt:
         t = filt.lower()
         df_show = df_show[df_show.apply(lambda r: any(t in str(r[c]).lower() for c in ["Nom_Événement","Type","Lieu","Notes"]), axis=1)]
@@ -886,15 +1006,20 @@ if page == "Événements":
     if HAS_AGGRID:
         gb = GridOptionsBuilder.from_dataframe(df_show)
         gb.configure_default_column(filter=True, sortable=True, resizable=True, editable=True)
-        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size_evt)
-        gb.configure_selection("single", use_checkbox=True)
-        go = gb.build()
-        grid = AgGrid(
-            df_show, gridOptions=go, height=520,
-            update_mode=GridUpdateMode.MODEL_CHANGED,
-            data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-            key="evt_grid", allow_unsafe_jscode=True
-        )
+        
+        # --- Si tu laisses l’édition dans AgGrid, ces colonnes audit restent visibles mais il faut éviter de les éditer. Ajoute une configuration de colonne non-éditable :
+        # rendre non-éditables les colonnes d’audit
+            for c in AUDIT_COLS:
+                if c in df_show.columns:
+                    gb.configure_column(c, editable=False)
+
+            gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size_evt)
+            gb.configure_selection("single", use_checkbox=True)
+            go = gb.build()
+            grid = AgGrid(df_show, gridOptions=go, height=520,
+                          update_mode=GridUpdateMode.MODEL_CHANGED,
+                          data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                          key="evt_grid", allow_unsafe_jscode=True)
         # On garde la grille “mass-edit”; le formulaire reste la source de vérité UX pour créer/éditer/dupliquer/supprimer.
         col_apply = st.columns([1])[0]
         if col_apply.button("💾 Appliquer les modifications (grille)", key="evt_apply_grid"):
