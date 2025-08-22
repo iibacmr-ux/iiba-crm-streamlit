@@ -277,6 +277,8 @@ import bcrypt
 USERS_PATH = DATA_DIR / "users.csv"
 USER_COLS = ["user_id", "full_name", "role", "active", "pwd_hash", "must_change_pw", "created_at", "updated_at"]
 
+print(f"Recherche du fichier: {USERS_PATH}")
+
 def _normalize_users_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [c.strip().lower() for c in df.columns]
