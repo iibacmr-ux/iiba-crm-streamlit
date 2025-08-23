@@ -386,7 +386,8 @@ def _safe_rerun():
 
 def login_box():
     st.sidebar.markdown("### 🔐 Connexion")
-    uid = st.sidebar.text_input("Email / User ID", value=st.session_state.get("last_uid",""))
+    # uid = st.sidebar.text_input("Email / User ID", value=st.session_state.get("last_uid",""))
+    uid = st.sidebar.text_input("Email / User ID", value="admin2@iiba.cm")
     pw = st.sidebar.text_input("Mot de passe", type="password") 
     
     if st.sidebar.button("Se connecter", key="btn_login"):
@@ -2745,4 +2746,3 @@ elif page == "Admin":
                     
         except ImportError:
             st.error("Module 'bcrypt' requis. Installez avec: pip install bcrypt")
-
