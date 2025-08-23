@@ -388,7 +388,7 @@ def login_box():
     st.sidebar.markdown("### 🔐 Connexion")
     # uid = st.sidebar.text_input("Email / User ID", value=st.session_state.get("last_uid",""))
     uid = st.sidebar.text_input("Email / User ID", value="admin2@iiba.cm")
-    pw = st.sidebar.text_input("Mot de passe", type="password") 
+    pw = st.sidebar.text_input("Mot de passe", type="password", value="123456") 
     
     if st.sidebar.button("Se connecter", key="btn_login"):
         users_df = _ensure_users_df()
