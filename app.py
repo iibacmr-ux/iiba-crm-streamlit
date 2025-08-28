@@ -19,18 +19,50 @@ if STORAGE_BACKEND == "gsheets":
     from gspread_dataframe import set_with_dataframe, get_as_dataframe
     from google.oauth2.service_account import Credentials
 
-    def _gs_client():
-        info = st.secrets.get("google_service_account")
-        if info is None:
-            st.error("⚠️ Secret 'google_service_account' manquant.")
-            st.stop()
-        if isinstance(info, str):
+    
+def _gs_client():
+    info = st.secrets.get("google_service_account")
+    if info is None:
+        st.error("⚠️ Secret 'google_service_account' manquant dans Streamlit Secrets.")
+        st.stop()
+
+    # Accept either a dict-like TOML table or a JSON string
+    def _to_info(val):
+        if isinstance(val, dict):
+            return dict(val)
+        if isinstance(val, str):
+            s = val.strip()
+            # Try JSON
             import json as _json
-            info = _json.loads(info)
-        scopes = ["https://www.googleapis.com/auth/spreadsheets",
-                  "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(info, scopes=scopes)
-        return gspread.authorize(creds)
+            try:
+                return _json.loads(s)
+            except Exception:
+                # Try Python-literal fallback (in case of accidentally pasted dict-like content)
+                try:
+                    import ast
+                    d = ast.literal_eval(s)
+                    if isinstance(d, dict):
+                        return d
+                except Exception:
+                    pass
+        return None
+
+    info_obj = _to_info(info)
+    if not isinstance(info_obj, dict):
+        st.error("⚠️ Le secret 'google_service_account' n'est pas au bon format. Utilisez soit: "
+                 "1) un bloc JSON entre triples guillemets, soit 2) une table TOML [google_service_account] avec les paires clé=valeur.")
+        st.stop()
+
+    # Normaliser les retours à la ligne de la private_key si collée avec '\n'
+    if "private_key" in info_obj and isinstance(info_obj["private_key"], str) and "\n" in info_obj["private_key"]:
+        info_obj["private_key"] = info_obj["private_key"].replace("\n", "\n").replace("\n", "
+")
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets",
+              "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(info_obj, scopes=scopes)
+    return gspread.authorize(creds)
+
 
     _GC = _gs_client()
 
@@ -2912,3 +2944,100 @@ elif page == "Admin":
         except ImportError:
             st.error("Module 'bcrypt' requis. Installez avec: pip install bcrypt")
 
+
+
+
+# === DIAGNOSTICS SIDEBAR ===
+with st.sidebar.expander("🩺 Diagnostics (Google Sheets)", expanded=False):
+    st.caption("Outil de vérification rapide de la configuration et de l'accès Google Sheets.")
+    st.write(f"**Backend** : `{STORAGE_BACKEND}`")
+    st.write(f"**Spreadsheet** : `{GSHEET_SPREADSHEET}`")
+
+    if STORAGE_BACKEND == "gsheets":
+        try:
+            # Récupérer l'email du service account si disponible
+            _sa = st.secrets.get("google_service_account")
+            _sa_email = None
+            if isinstance(_sa, dict):
+                _sa_email = _sa.get("client_email")
+            elif isinstance(_sa, str):
+                import json as _json, ast
+                try:
+                    _sa_email = _json.loads(_sa).get("client_email")
+                except Exception:
+                    try:
+                        _sa_email = ast.literal_eval(_sa).get("client_email")
+                    except Exception:
+                        _sa_email = None
+            if _sa_email:
+                st.write(f"**Service Account** : `{_sa_email}`")
+
+            # Connexion & liste des onglets
+            sh = _GC.open(GSHEET_SPREADSHEET)
+            ws_list = [w.title for w in sh.worksheets()]
+            st.success(f"Connexion OK. **{len(ws_list)}** onglet(s) détecté(s).")
+            st.write("**Onglets détectés** :", ", ".join(ws_list) if ws_list else "—")
+
+            # Vérification des tables attendues
+            st.markdown("**Vérification des tables attendues**")
+            required_tabs = list({v for v in SHEET_NAME.values()})
+            missing = [t for t in required_tabs if t not in ws_list]
+            if missing:
+                st.warning("Onglets manquants : " + ", ".join(missing))
+                if st.button("🛠️ Créer les onglets manquants"):
+                    for tname in missing:
+                        try:
+                            sh.add_worksheet(title=tname, rows=2, cols=50)
+                        except Exception as _e:
+                            st.error(f"Impossible de créer '{tname}' : {_e}")
+                    st.experimental_rerun()
+            else:
+                st.info("Toutes les tables attendues existent.")
+
+            # Chargement d'un aperçu (premières 5 lignes) via ensure_df_source
+            if st.checkbox("🔎 Afficher un aperçu de chaque table", value=False):
+                import pandas as pd
+                for k, tab in SHEET_NAME.items():
+                    try:
+                        cols = ALL_SCHEMAS.get(k, [])
+                        if not cols and k == "params":  # table parametres simple clé/valeur
+                            cols = ["key", "value"]
+                        df_preview = ensure_df_source(k, cols if cols else [])
+                        st.write(f"**{tab}** — {len(df_preview)} ligne(s)")
+                        st.dataframe(df_preview.head(5), use_container_width=True)
+                    except Exception as _e:
+                        st.error(f"{tab} : {_e}")
+
+            # Test d'écriture optionnel sur 'parametres'
+            st.markdown("---")
+            st.write("**Test d’écriture (sécurisé) sur `parametres`**")
+            if st.button("✍️ Écrire un ping horodaté dans `parametres`"):
+                try:
+                    df_params = ensure_df_source("params", ["key","value"])
+                    from datetime import datetime
+                    ts = datetime.now().isoformat(timespec="seconds")
+                    mask = (df_params["key"] == "diag_ping")
+                    if mask.any():
+                        df_params.loc[mask, "value"] = ts
+                    else:
+                        import pandas as pd
+                        df_params = pd.concat([df_params, pd.DataFrame([{"key":"diag_ping","value":ts}])], ignore_index=True)
+                    save_df_target("params", df_params)
+                    st.success("Ping écrit avec succès.")
+                except Exception as _e:
+                    st.error(f"Échec du test d’écriture : {_e}")
+
+            # Infos etags
+            st.markdown("---")
+            st.write("**État des etags (anti-collisions)**")
+            for k in SHEET_NAME.keys():
+                st.write(f"- `{k}` : `{st.session_state.get(f'etag_{k}', '—')}`")
+
+            if st.button("♻️ Purger les etags mémorisés"):
+                for k in list(SHEET_NAME.keys()):
+                    st.session_state.pop(f"etag_{k}", None)
+                st.success("Etags purgés.")
+        except Exception as e:
+            st.error(f"Diagnostic : {e}")
+    else:
+        st.info("Le backend n’est pas `gsheets`. Basculez `storage_backend` à `gsheets` dans les Secrets pour activer ces tests.")
