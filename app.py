@@ -10,109 +10,50 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# === Storage Backend (CSV or Google Sheets) ===
-STORAGE_BACKEND = st.secrets.get("storage_backend", "csv")  # "csv" or "gsheets"
+
+def to_float_safe(x, default=0.0):
+    try:
+        if x is None:
+            return float(default)
+        if isinstance(x, (int, float)):
+            return float(x)
+        s = str(x).replace(" ", "").replace("\u202f","").strip()
+        if s in ("", "nan", "None", "null", None):
+            return float(default)
+        return float(s)
+    except Exception:
+        return float(default)
+
+def to_int_safe(x, default=0):
+    try:
+        v = to_float_safe(x, default=default)
+        return int(v) if v == v else int(default)
+    except Exception:
+        return int(default)
+
+
+# --- Backend de stockage ---
+STORAGE_BACKEND = st.secrets.get("storage_backend", "csv")
 GSHEET_SPREADSHEET = st.secrets.get("gsheet_spreadsheet", "IIBA CRM DB")
 
+
+# --- Client Google Sheets + helper ws() ---
+GC = None
+def ws(name: str):
+    raise RuntimeError("Backend Google Sheets inactif. Définissez storage_backend='gsheets' dans Secrets.")
+
 if STORAGE_BACKEND == "gsheets":
-    import gspread
-    from gspread_dataframe import set_with_dataframe, get_as_dataframe
-    from google.oauth2.service_account import Credentials
-
-    
-def _gs_client():
-    info = st.secrets.get("google_service_account")
-    if info is None:
-        st.error("⚠️ Secret 'google_service_account' manquant dans Streamlit Secrets.")
-        st.stop()
-
-    # Accept either a dict-like TOML table or a JSON string
-    def _to_info(val):
-        if isinstance(val, dict):
-            return dict(val)
-        if isinstance(val, str):
-            s = val.strip()
-            # Try JSON
-            import json as _json
-            try:
-                return _json.loads(s)
-            except Exception:
-                # Try Python-literal fallback (in case of accidentally pasted dict-like content)
-                try:
-                    import ast
-                    d = ast.literal_eval(s)
-                    if isinstance(d, dict):
-                        return d
-                except Exception:
-                    pass
-        return None
-
-    info_obj = _to_info(info)
-    if not isinstance(info_obj, dict):
-        st.error("⚠️ Le secret 'google_service_account' n'est pas au bon format. Utilisez soit: "
-                 "1) un bloc JSON entre triples guillemets, soit 2) une table TOML [google_service_account] avec les paires clé=valeur.")
-        st.stop()
-
-    # Normaliser les retours à la ligne de la private_key :
-    # - Si la clé privée contient des séquences littérales "\n" mais aucun vrai saut de ligne,
-    #   on convertit ces séquences en vrais retours à la ligne pour Google Credentials.
-    if "private_key" in info_obj and isinstance(info_obj["private_key"], str):
-        pk = info_obj["private_key"]
-        if "\\n" in pk and "\n" not in pk:
-            info_obj["private_key"] = pk.replace("\\n", "\n")
-    
-        scopes = ["https://www.googleapis.com/auth/spreadsheets",
-                  "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(info_obj, scopes=scopes)
-        return gspread.authorize(creds)
-
-
-_GC = _gs_client()
-
-def _ws(name: str):
-        sh = _GC.open(GSHEET_SPREADSHEET)
+    info = read_service_account_secret()
+    GC = get_gspread_client(info)
+    def ws(name: str):
+        sh = GC.open(GSHEET_SPREADSHEET)
         try:
             return sh.worksheet(name)
         except Exception:
-            ws = sh.add_worksheet(title=name, rows=2, cols=50)
-            return ws
+            return sh.add_worksheet(title=name, rows=2, cols=50)
 
-# Map internal keys to Sheet tab names
-SHEET_NAME = {
-"contacts": "contacts",
-"inter": "interactions",
-"events": "evenements",
-"parts": "participations",
-"pay": "paiements",
-"cert": "certifications",
-"entreprises": "entreprises",
-"params": "parametres",
-"users": "users"
-}
-
-def _id_col_for(name: str) -> str:
-    return {
-    "contacts": "ID",
-    "inter": "ID_Interaction",
-    "events": "ID_Événement",
-    "parts": "ID_Participation",
-    "pay": "ID_Paiement",
-    "cert": "ID_Certif",
-    "entreprises": "ID_Entreprise",
-    "users": "user_id"
-    }.get(name, "ID")
-
-import hashlib
-def _compute_etag(df: pd.DataFrame, name: str) -> str:
-    if df is None or df.empty:
-        return "empty"
-    idc = _id_col_for(name)
-    cols = [c for c in [idc, "Updated_At"] if c in df.columns]
-    try:
-        payload = df[cols].astype(str).fillna("").sort_values(by=cols).to_csv(index=False)
-    except Exception:
-        payload = df.astype(str).fillna("").to_csv(index=False)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+from gs_client import get_gspread_client, read_service_account_secret, show_diagnostics_sidebar
+from storage_backend import ensure_df_source, save_df_target, SHEET_NAME
 
 # AgGrid
 try:
@@ -303,77 +244,6 @@ SET = {
 }
 
 # Utils for dataframe loading/saving
-def to_float_safe(x, default=0.0):
-    try:
-        if x is None:
-            return float(default)
-        if isinstance(x, (int, float)):
-            import math
-            return float(default) if (isinstance(x, float) and (x != x)) else float(x)
-        s = str(x).replace(" ", "").replace("\u202f","").strip()
-        if s == "" or s.lower() in ("nan","none","null"):
-            return float(default)
-        return float(s)
-    except Exception:
-        return float(default)
-
-def to_int_safe(x, default=0):
-    try:
-        v = to_float_safe(x, default=default)
-        return int(v) if v == v else int(default)
-    except Exception:
-        return int(default)
-
-
-# --- Unified loaders targeting selected backend ---
-def ensure_df_source(name: str, cols: list) -> pd.DataFrame:
-    full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
-    tab = SHEET_NAME.get(name, name)
-    if STORAGE_BACKEND == "gsheets":
-        ws = _ws(tab)
-        df = get_as_dataframe(ws, evaluate_formulas=True, header=0)
-        if df is None or df.empty:
-            df = pd.DataFrame(columns=full_cols)
-            set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
-        else:
-            for c in full_cols:
-                if c not in df.columns:
-                    df[c] = ""
-            df = df[full_cols]
-        st.session_state[f"etag_{name}"] = _compute_etag(df, name)
-        return df
-    # fallback CSV
-    path = PATHS[name] if name in PATHS else PATHS["contacts"]
-    df = ensure_df(path, cols)
-    st.session_state[f"etag_{name}"] = _compute_etag(df, name)
-    return df
-
-def save_df_target(name: str, df: pd.DataFrame):
-    tab = SHEET_NAME.get(name, name)
-    if STORAGE_BACKEND == "gsheets":
-        ws = _ws(tab)
-        df_remote = get_as_dataframe(ws, evaluate_formulas=True, header=0)
-        if df_remote is None:
-            df_remote = pd.DataFrame(columns=df.columns)
-        expected = st.session_state.get(f"etag_{name}")
-        current = _compute_etag(df_remote, name)
-        if expected and expected != current:
-            st.error(f"Conflit de modification détecté sur '{tab}'. Veuillez recharger la page avant de sauvegarder.")
-            st.stop()
-        set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
-        st.session_state[f"etag_{name}"] = _compute_etag(df, name)
-        return
-    # CSV fallback with best-effort etag
-    path = PATHS[name] if name in PATHS else PATHS["contacts"]
-    expected = st.session_state.get(f"etag_{name}")
-    current_df = ensure_df(path, df.columns.tolist())
-    current = _compute_etag(current_df, name)
-    if expected and expected != current:
-        st.error(f"Conflit de modification détecté sur '{name}'. Veuillez recharger la page avant de sauvegarder.")
-        st.stop()
-    save_df(df, path)
-    st.session_state[f"etag_{name}"] = _compute_etag(df, name)
-
 def ensure_df(path:Path, cols:list)->pd.DataFrame:
     full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
     if path.exists():
@@ -435,13 +305,13 @@ def log_event(kind:str, payload:dict):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 # Load data
-df_contacts = ensure_df_source("contacts", C_COLS)
-df_inter    = ensure_df_source("inter", I_COLS)
-df_events   = ensure_df_source("events", E_COLS)
-df_parts    = ensure_df_source("parts", P_COLS)
-df_pay      = ensure_df_source("pay", PAY_COLS)
-df_cert     = ensure_df_source("cert", CERT_COLS)
-df_entreprises = ensure_df_source("entreprises", ENT_COLS)  # NOUVEAU
+df_contacts = ensure_df_source("contacts", C_COLS, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+df_inter = ensure_df_source("inter", I_COLS, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+df_events = ensure_df_source("events", E_COLS, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+df_parts = ensure_df_source("parts", P_COLS, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+df_pay = ensure_df_source("pay", PAY_COLS, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+df_cert = ensure_df_source("cert", CERT_COLS, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+df_entreprises = ensure_df_source("entreprises", ENT_COLS, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)  # NOUVEAU
 
 if not df_contacts.empty:
     df_contacts["Top20"] = df_contacts["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
@@ -621,6 +491,9 @@ def allow_page(name:str)->bool:
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Aller à", [
     "CRM (Grille centrale)",
+# Diagnostics Sidebar
+show_diagnostics_sidebar(GSHEET_SPREADSHEET, SHEET_NAME)
+
     "Événements", 
     "Entreprises",  # NOUVEAU
     "Rapports",
@@ -834,7 +707,7 @@ if page == "CRM (Grille centrale)":
                             new_id = generate_id("CNT", df_contacts, "ID")
                             clone["ID"] = new_id
                             globals()["df_contacts"] = pd.concat([df_contacts, pd.DataFrame([clone])], ignore_index=True)
-                            save_df_target("contacts", df_contacts)
+                            save_df_target("contacts", df_contacts, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                             st.session_state["selected_contact_id"] = new_id
                             st.success(f"Contact dupliqué sous l'ID {new_id}.")
                             
@@ -883,7 +756,7 @@ if page == "CRM (Grille centrale)":
                         raw_existing.update(new_row)
                         raw_existing = stamp_update(raw_existing, st.session_state.get("user", {}))
                         df_contacts.loc[idx] = raw_existing
-                        save_df_target("contacts", df_contacts)
+                        save_df_target("contacts", df_contacts, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                         st.success("Contact mis à jour.")
                 st.markdown("---")
                 with st.expander("➕ Ajouter ce contact à un **nouvel événement**"):
@@ -902,12 +775,12 @@ if page == "CRM (Grille centrale)":
                                     "Durée_h":"2","Lieu":lieu_ev,"Formateur":"","Objectif":"","Periode":"",
                                     "Cout_Salle":0,"Cout_Formateur":0,"Cout_Logistique":0,"Cout_Pub":0,"Cout_Autres":0,"Cout_Total":0,"Notes":""}
                             globals()["df_events"] = pd.concat([df_events, pd.DataFrame([rowe])], ignore_index=True)
-                            save_df_target("events", df_events)
+                            save_df_target("events", df_events, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                             new_pid = generate_id("PAR", df_parts, "ID_Participation")
                             rowp = {"ID_Participation":new_pid,"ID":sel_id,"ID_Événement":new_eid,"Rôle":role,
                                     "Inscription":"","Arrivée":"","Temps_Present":"","Feedback":"","Note":"","Commentaire":""}
                             globals()["df_parts"] = pd.concat([df_parts, pd.DataFrame([rowp])], ignore_index=True)
-                            save_df_target("parts", df_parts)
+                            save_df_target("parts", df_parts, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                             st.success(f"Événement créé ({new_eid}) et contact inscrit ({new_pid}).")
             else:
                 st.warning("ID introuvable (rafraîchissez la page).")
@@ -963,7 +836,7 @@ if page == "CRM (Grille centrale)":
                                 "Date_Creation": dc_new.isoformat(), "Notes": notes_new, "Top20": top20_new
                             }
                             globals()["df_contacts"] = pd.concat([df_contacts, pd.DataFrame([new_row])], ignore_index=True)
-                            save_df_target("contacts", df_contacts)
+                            save_df_target("contacts", df_contacts, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                             st.session_state["selected_contact_id"] = new_id
                             st.success(f"Contact créé ({new_id}).")
             
@@ -991,7 +864,7 @@ if page == "CRM (Grille centrale)":
                         row = {"ID_Interaction":nid,"ID":sel_id,"Date":dti.isoformat(),"Canal":canal,"Objet":obj,"Résumé":resume,
                                "Résultat":resu,"Prochaine_Action":"","Relance":rel.isoformat() if rel else "","Responsable":resp}
                         globals()["df_inter"] = pd.concat([df_inter, pd.DataFrame([row])], ignore_index=True)
-                        save_df_target("inter", df_inter)
+                        save_df_target("inter", df_inter, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                         st.success(f"Interaction enregistrée ({nid}).")
             with tabs[1]:
                 with st.form("add_part"):
@@ -1008,7 +881,7 @@ if page == "CRM (Grille centrale)":
                             row = {"ID_Participation":nid,"ID":sel_id,"ID_Événement":ide,"Rôle":role,"Inscription":"","Arrivée":"",
                                    "Temps_Present":"","Feedback":fb,"Note":str(note),"Commentaire":""}
                             globals()["df_parts"] = pd.concat([df_parts, pd.DataFrame([row])], ignore_index=True)
-                            save_df_target("parts", df_parts)
+                            save_df_target("parts", df_parts, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                             st.success(f"Participation ajoutée ({nid}).")
             with tabs[2]:
                 with st.form("add_pay"):
@@ -1027,7 +900,7 @@ if page == "CRM (Grille centrale)":
                             row = {"ID_Paiement":nid,"ID":sel_id,"ID_Événement":ide,"Date_Paiement":dtp.isoformat(),"Montant":str(montant),
                                    "Moyen":moyen,"Statut":statut,"Référence":ref,"Notes":"","Relance":""}
                             globals()["df_pay"] = pd.concat([df_pay, pd.DataFrame([row])], ignore_index=True)
-                            save_df_target("pay", df_pay)
+                            save_df_target("pay", df_pay, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                             st.success(f"Paiement enregistré ({nid}).")
             with tabs[3]:
                 with st.form("add_cert"):
@@ -1043,7 +916,7 @@ if page == "CRM (Grille centrale)":
                         row = {"ID_Certif":nid,"ID":sel_id,"Type_Certif":tc,"Date_Examen":dte.isoformat(),"Résultat":res,"Score":str(sc),
                                "Date_Obtention":dto.isoformat() if dto else "","Validité":"","Renouvellement":"","Notes":""}
                         globals()["df_cert"] = pd.concat([df_cert, pd.DataFrame([row])], ignore_index=True)
-                        save_df_target("cert", df_cert)
+                        save_df_target("cert", df_cert, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                         st.success(f"Certification ajoutée ({nid}).")
             with tabs[4]:
                 st.markdown("#### Vue 360°")
@@ -1163,7 +1036,7 @@ elif page == "Événements":
                     "Cout_Pub": c_pub, "Cout_Autres": c_aut, "Cout_Total": 0, "Notes": notes
                 }
                 globals()["df_events"] = pd.concat([df_events, pd.DataFrame([new_row])], ignore_index=True)
-                save_df_target("events", df_events)
+                save_df_target("events", df_events, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                 st.success(f"Événement créé ({new_id}).")
                 st.session_state["selected_event_id"] = new_id
                 st.session_state["event_form_mode"] = "edit"
@@ -1187,7 +1060,7 @@ elif page == "Événements":
                     "Cout_Pub": c_pub, "Cout_Autres": c_aut, "Cout_Total": 0, "Notes": notes
                 }
                 df_events.loc[idx[0]] = rowe
-                save_df_target("events", df_events)
+                save_df_target("events", df_events, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                 st.success(f"Événement {sel_eid} mis à jour.")
 
     st.markdown("---")
@@ -1203,7 +1076,7 @@ elif page == "Événements":
             clone = src.iloc[0].to_dict()
             clone["ID_Événement"] = new_id
             globals()["df_events"] = pd.concat([df_events, pd.DataFrame([clone])], ignore_index=True)
-            save_df_target("events", df_events)
+            save_df_target("events", df_events, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
             st.success(f"Événement dupliqué sous l'ID {new_id}.")
             st.session_state["selected_event_id"] = new_id
             st.session_state["event_form_mode"] = "edit"
@@ -1221,7 +1094,7 @@ elif page == "Événements":
                     st.error("Aucun événement sélectionné.")
                 else:
                     globals()["df_events"] = df_events[df_events["ID_Événement"] != del_id]
-                    save_df_target("events", df_events)
+                    save_df_target("events", df_events, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                     st.success(f"Événement {del_id} supprimé.")
                     st.session_state["selected_event_id"] = ""
                     st.session_state["event_form_mode"] = "create"
@@ -1265,7 +1138,7 @@ elif page == "Événements":
                 if c not in new_df.columns:
                     new_df[c] = ""
             globals()["df_events"] = new_df[E_COLS].copy()
-            save_df_target("events", df_events)
+            save_df_target("events", df_events, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
             st.success("Modifications enregistrées depuis la grille.")
     else:
         st.dataframe(df_show, use_container_width=True)
@@ -1357,38 +1230,39 @@ elif page == "Entreprises":
             pays_ent = c7_ent.selectbox("Pays", SET["pays"],
                                        index=SET["pays"].index(row_init_ent.get("Pays","Cameroun")) if row_init_ent.get("Pays","Cameroun") in SET["pays"] else 0)
 
-            # Contact principal
-            st.subheader("Contact principal")
-            _opts_cp = []
-            _idmap_cp = {}
-            if not df_contacts.empty:
-                _tmp = df_contacts[["ID","Nom","Prénom","Société","Email","Téléphone"]].fillna("")
-                for _, r_ in _tmp.iterrows():
-                    lab = f"{r_['ID']} - {r_['Nom']} {r_['Prénom']} - {r_['Société']}"
-                    _opts_cp.append(lab)
-                    _idmap_cp[lab] = (r_["ID"], r_["Email"], r_["Téléphone"])
-            cur_cp_label = row_init_ent.get("Contact_Principal","")
-            if cur_cp_label and cur_cp_label in df_contacts["ID"].astype(str).values:
-                for lab in _opts_cp:
-                    if lab.startswith(f"{cur_cp_label} -"):
-                        cur_cp_label = lab
-                        break
-            c8_ent, c9_ent, c10_ent = st.columns([2,1,1])
-            sel_label = c8_ent.selectbox(
-                "Sélectionner le contact principal (ID - Nom Prénom - Entreprise)",
-                ["— Aucun —"] + _opts_cp,
-                index=(["— Aucun —"] + _opts_cp).index(cur_cp_label) if cur_cp_label in (["— Aucun —"] + _opts_cp) else 0
-            )
-            if sel_label and sel_label != "— Aucun —":
-                _cp_id, _cp_email, _cp_tel = _idmap_cp[sel_label]
-                contact_principal = _cp_id
-                email_principal = _cp_email
-                tel_principal = _cp_tel
-            else:
-                contact_principal = ""
-                email_principal = ""
-                tel_principal = ""
-            site_web = st.text_input("Site Web", value=row_init_ent.get("Site_Web",""))
+            
+# Contact principal
+st.subheader("Contact principal")
+_opts_cp = []
+_idmap_cp = {}
+if not df_contacts.empty:
+    _tmp = df_contacts[["ID","Nom","Prénom","Société","Email","Téléphone"]].fillna("")
+    for _, r_ in _tmp.iterrows():
+        lab = f"{r_['ID']} - {r_['Nom']} {r_['Prénom']} - {r_['Société']}"
+        _opts_cp.append(lab)
+        _idmap_cp[lab] = (r_["ID"], r_["Email"], r_["Téléphone"])
+cur_cp_label = row_init_ent.get("Contact_Principal","")
+if cur_cp_label and cur_cp_label in df_contacts["ID"].astype(str).values:
+    for lab in _opts_cp:
+        if lab.startswith(f"{cur_cp_label} -"):
+            cur_cp_label = lab
+            break
+c8_ent, c9_ent, c10_ent = st.columns([2,1,1])
+sel_label = c8_ent.selectbox(
+    "Sélectionner le contact principal (ID - Nom Prénom - Entreprise)",
+    ["— Aucun —"] + _opts_cp,
+    index=(["— Aucun —"] + _opts_cp).index(cur_cp_label) if cur_cp_label in (["— Aucun —"] + _opts_cp) else 0
+)
+if sel_label and sel_label != "— Aucun —":
+    _cp_id, _cp_email, _cp_tel = _idmap_cp[sel_label]
+    contact_principal = _cp_id
+    email_principal = _cp_email
+    tel_principal = _cp_tel
+else:
+    contact_principal = ""
+    email_principal = ""
+    tel_principal = ""
+site_web = st.text_input("Site Web", value=row_init_ent.get("Site_Web",""))
 
             # Partenariat
             st.subheader("Partenariat")
@@ -1437,7 +1311,7 @@ elif page == "Entreprises":
                     "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
                 }
                 globals()["df_entreprises"] = pd.concat([df_entreprises, pd.DataFrame([new_row_ent])], ignore_index=True)
-                save_df_target("entreprises", df_entreprises)
+                save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                 st.success(f"Entreprise créée ({new_id_ent}).")
                 st.session_state["selected_entreprise_id"] = new_id_ent
                 st.session_state["entreprise_form_mode"] = "edit"
@@ -1470,7 +1344,7 @@ elif page == "Entreprises":
                     "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
                 }
                 df_entreprises.loc[idx_ent[0]] = rowe_ent
-                save_df_target("entreprises", df_entreprises)
+                save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                 st.success(f"Entreprise {sel_entid} mise à jour.")
 
     st.markdown("---")
@@ -1490,7 +1364,7 @@ elif page == "Entreprises":
             clone_ent["ID_Entreprise"] = new_id_ent
             clone_ent["Nom_Entreprise"] = f"{clone_ent['Nom_Entreprise']} (Copie)"
             globals()["df_entreprises"] = pd.concat([df_entreprises, pd.DataFrame([clone_ent])], ignore_index=True)
-            save_df_target("entreprises", df_entreprises)
+            save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
             st.success(f"Entreprise dupliquée sous l'ID {new_id_ent}.")
             st.session_state["selected_entreprise_id"] = new_id_ent
             st.session_state["entreprise_form_mode"] = "edit"
@@ -1509,7 +1383,7 @@ elif page == "Entreprises":
                     st.error("Aucune entreprise sélectionnée.")
                 else:
                     globals()["df_entreprises"] = df_entreprises[df_entreprises["ID_Entreprise"] != del_id_ent]
-                    save_df_target("entreprises", df_entreprises)
+                    save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
                     st.success(f"Entreprise {del_id_ent} supprimée.")
                     st.session_state["selected_entreprise_id"] = ""
                     st.session_state["entreprise_form_mode"] = "create"
@@ -1565,7 +1439,7 @@ elif page == "Entreprises":
                 if c not in new_df_ent.columns:
                     new_df_ent[c] = ""
             globals()["df_entreprises"] = new_df_ent[ENT_COLS].copy()
-            save_df_target("entreprises", df_entreprises)
+            save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
             st.success("Modifications enregistrées depuis la grille.")
     else:
         st.dataframe(df_show_ent, use_container_width=True)
@@ -2947,100 +2821,3 @@ elif page == "Admin":
         except ImportError:
             st.error("Module 'bcrypt' requis. Installez avec: pip install bcrypt")
 
-
-
-
-# === DIAGNOSTICS SIDEBAR ===
-with st.sidebar.expander("🩺 Diagnostics (Google Sheets)", expanded=False):
-    st.caption("Outil de vérification rapide de la configuration et de l'accès Google Sheets.")
-    st.write(f"**Backend** : `{STORAGE_BACKEND}`")
-    st.write(f"**Spreadsheet** : `{GSHEET_SPREADSHEET}`")
-
-    if STORAGE_BACKEND == "gsheets":
-        try:
-            # Récupérer l'email du service account si disponible
-            _sa = st.secrets.get("google_service_account")
-            _sa_email = None
-            if isinstance(_sa, dict):
-                _sa_email = _sa.get("client_email")
-            elif isinstance(_sa, str):
-                import json as _json, ast
-                try:
-                    _sa_email = _json.loads(_sa).get("client_email")
-                except Exception:
-                    try:
-                        _sa_email = ast.literal_eval(_sa).get("client_email")
-                    except Exception:
-                        _sa_email = None
-            if _sa_email:
-                st.write(f"**Service Account** : `{_sa_email}`")
-
-            # Connexion & liste des onglets
-            sh = _GC.open(GSHEET_SPREADSHEET)
-            ws_list = [w.title for w in sh.worksheets()]
-            st.success(f"Connexion OK. **{len(ws_list)}** onglet(s) détecté(s).")
-            st.write("**Onglets détectés** :", ", ".join(ws_list) if ws_list else "—")
-
-            # Vérification des tables attendues
-            st.markdown("**Vérification des tables attendues**")
-            required_tabs = list({v for v in SHEET_NAME.values()})
-            missing = [t for t in required_tabs if t not in ws_list]
-            if missing:
-                st.warning("Onglets manquants : " + ", ".join(missing))
-                if st.button("🛠️ Créer les onglets manquants"):
-                    for tname in missing:
-                        try:
-                            sh.add_worksheet(title=tname, rows=2, cols=50)
-                        except Exception as _e:
-                            st.error(f"Impossible de créer '{tname}' : {_e}")
-                    st.experimental_rerun()
-            else:
-                st.info("Toutes les tables attendues existent.")
-
-            # Chargement d'un aperçu (premières 5 lignes) via ensure_df_source
-            if st.checkbox("🔎 Afficher un aperçu de chaque table", value=False):
-                import pandas as pd
-                for k, tab in SHEET_NAME.items():
-                    try:
-                        cols = ALL_SCHEMAS.get(k, [])
-                        if not cols and k == "params":  # table parametres simple clé/valeur
-                            cols = ["key", "value"]
-                        df_preview = ensure_df_source(k, cols if cols else [])
-                        st.write(f"**{tab}** — {len(df_preview)} ligne(s)")
-                        st.dataframe(df_preview.head(5), use_container_width=True)
-                    except Exception as _e:
-                        st.error(f"{tab} : {_e}")
-
-            # Test d'écriture optionnel sur 'parametres'
-            st.markdown("---")
-            st.write("**Test d’écriture (sécurisé) sur `parametres`**")
-            if st.button("✍️ Écrire un ping horodaté dans `parametres`"):
-                try:
-                    df_params = ensure_df_source("params", ["key","value"])
-                    from datetime import datetime
-                    ts = datetime.now().isoformat(timespec="seconds")
-                    mask = (df_params["key"] == "diag_ping")
-                    if mask.any():
-                        df_params.loc[mask, "value"] = ts
-                    else:
-                        import pandas as pd
-                        df_params = pd.concat([df_params, pd.DataFrame([{"key":"diag_ping","value":ts}])], ignore_index=True)
-                    save_df_target("params", df_params)
-                    st.success("Ping écrit avec succès.")
-                except Exception as _e:
-                    st.error(f"Échec du test d’écriture : {_e}")
-
-            # Infos etags
-            st.markdown("---")
-            st.write("**État des etags (anti-collisions)**")
-            for k in SHEET_NAME.keys():
-                st.write(f"- `{k}` : `{st.session_state.get(f'etag_{k}', '—')}`")
-
-            if st.button("♻️ Purger les etags mémorisés"):
-                for k in list(SHEET_NAME.keys()):
-                    st.session_state.pop(f"etag_{k}", None)
-                st.success("Etags purgés.")
-        except Exception as e:
-            st.error(f"Diagnostic : {e}")
-    else:
-        st.info("Le backend n’est pas `gsheets`. Basculez `storage_backend` à `gsheets` dans les Secrets pour activer ces tests.")
