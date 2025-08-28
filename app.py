@@ -353,7 +353,64 @@ PARAM_DEFAULTS = {
     "entreprises_employes_seuil_gros":"500",
 }
 
+# === Noms d’onglets Google Sheets / mapping interne ===
+SHEET_NAME = {
+    "contacts": "contacts",
+    "inter": "interactions",
+    "events": "evenements",
+    "parts": "participations",
+    "pay": "paiements",
+    "cert": "certifications",
+    "entreprises": "entreprises",
+    "params": "parametres",
+    "users": "users",
+}
+
 ALL_DEFAULTS = {**PARAM_DEFAULTS, **{f"list_{k}":v for k,v in DEFAULT_LISTS.items()}}
+
+# === ETag logique ===
+def _id_col_for(name: str) -> str:
+    """Colonne ID pivot par table (utilisée par l’ETag)."""
+    return {
+        "contacts": "ID",
+        "inter": "ID_Interaction",
+        "events": "ID_Événement",
+        "parts": "ID_Participation",
+        "pay": "ID_Paiement",
+        "cert": "ID_Certif",
+        "entreprises": "ID_Entreprise",
+        "users": "user_id",
+    }.get(name, "ID")
+
+def _compute_etag(df: "pd.DataFrame", name: str) -> str:
+    """
+    ETag logique basé sur un sous-ensemble stable des colonnes.
+    S’il n’y a pas de 'Updated_At', on se rabat sur l’ensemble du DF en texte.
+    """
+    try:
+        import pandas as pd  # sécurité si l’ordre d'import varie
+    except Exception:
+        # En cas de runtime très dégradé, renvoie un ETag constant mais non optimal
+        return "no-pandas"
+
+    if df is None or getattr(df, "empty", True):
+        return "empty"
+
+    idc = _id_col_for(name)
+    # On privilégie un hash sur (ID, Updated_At) si disponibles
+    cols = [c for c in (idc, "Updated_At") if c in df.columns]
+
+    try:
+        if cols:
+            payload_df = df[cols].astype(str).fillna("")
+            payload = payload_df.sort_values(by=cols).to_csv(index=False)
+        else:
+            payload = df.astype(str).fillna("").to_csv(index=False)
+    except Exception:
+        # Filet de sécurité, au cas où la conversion échoue
+        payload = str(df)
+
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 # === AUDIT / META ===
 def _now_iso():
@@ -494,7 +551,7 @@ def ensure_df_source(name: str, cols: list, paths: dict = None) -> pd.DataFrame:
 
     if backend == "gsheets": 
         tab = SHEET_NAME.get(name, name)
-        wsh = ws(tab)
+        wsh = ws(tab)   # ws(...) doit retourner un Worksheet gspread valide
         df = _get_as_dataframe(wsh, evaluate_formulas=True, header=0)
         if df is None or df.empty:
             df = pd.DataFrame(columns=full_cols)
@@ -829,6 +886,10 @@ def aggregates_for_contacts(today=None):
 
     ag["Proba_conversion"] = ag.apply(proba, axis=1)
     return ag.reset_index(names="ID")
+
+# Sanity checks (optionnel)
+assert callable(_compute_etag), "_compute_etag non défini"
+assert isinstance(SHEET_NAME, dict) and "contacts" in SHEET_NAME, "SHEET_NAME incomplet"
 
 # CRM Grille centrale (CODE EXISTANT CONSERVÉ)
 if page == "CRM (Grille centrale)":
