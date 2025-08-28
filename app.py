@@ -126,3 +126,12 @@ if "auth_user" in st.session_state:
     st.write("🟢 Vous êtes connecté. (Placez ici vos pages CRM : Contacts, Entreprises, Événements, etc.)")
 else:
     st.info("Veuillez vous connecter pour accéder au CRM.")
+
+# --- Liens directs vers les pages (garantis, même si la nav auto est masquée) ---
+st.sidebar.markdown("### 📚 Navigation")
+st.sidebar.page_link("app.py", label="🏠 Accueil")
+st.sidebar.page_link("pages/01_Contacts.py", label="👤 Contacts")
+st.sidebar.page_link("pages/02_Entreprises.py", label="🏢 Entreprises")
+st.sidebar.page_link("pages/03_Evenements.py", label="📅 Événements")
+st.sidebar.page_link("pages/04_Rapports.py", label="📈 Rapports")
+st.sidebar.page_link("pages/00_Admin.py", label="🛠️ Admin")
