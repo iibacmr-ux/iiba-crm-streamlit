@@ -49,26 +49,24 @@ def _gs_client():
 
     info_obj = _to_info(info)
     if not isinstance(info_obj, dict):
-        st.error("⚠️ Le secret 'google_service_account' n'est pas au bon format. Utilisez soit: "
-                 "1) un bloc JSON entre triples guillemets, soit 2) une table TOML [google_service_account] avec les paires clé=valeur.")
+        st.error("⚠️ Le secret 'google_service_account' n'est pas au bon format. "
+                 "Utilisez soit: 1) un bloc JSON entre triples guillemets, soit "
+                 "2) une table TOML [google_service_account] avec les paires clé=valeur.")
         st.stop()
 
-    
-# Normaliser les retours à la ligne de la private_key :
-# - Si la clé privée contient des '\n' littéraux mais pas de vrais sauts de ligne,
-#   on convertit ces séquences en vrais retours à la ligne.
-if "private_key" in info_obj and isinstance(info_obj["private_key"], str):
-    if "\n" in info_obj["private_key"] and "
-" not in info_obj["private_key"]:
-        info_obj["private_key"] = info_obj["private_key"].replace("\n", "
-")
-
-
+    # Normaliser newline: si la clé contient des '\\n' littéraux et aucun vrai saut de ligne
+    if "private_key" in info_obj and isinstance(info_obj["private_key"], str):
+        pk = info_obj["private_key"]
+        if "\\n" in pk and "\\n\\n" not in pk and "\n" not in pk:
+            info_obj["private_key"] = pk.replace("\\n", "\\n").replace("\\n", "\n")
+        elif "\\n" in pk and "\n" not in pk:
+            info_obj["private_key"] = pk.replace("\\n", "\n")
 
     scopes = ["https://www.googleapis.com/auth/spreadsheets",
               "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(info_obj, scopes=scopes)
     return gspread.authorize(creds)
+
 _GC = _gs_client() if STORAGE_BACKEND == "gsheets" else None
 def _ws(name: str):
     """Retourne l'onglet Google Sheets `name` (créé s'il n'existe pas), uniquement si backend gsheets actif."""
