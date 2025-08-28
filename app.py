@@ -182,7 +182,7 @@ GC = None
 # Helper Google Sheets: ouverture d'un onglet par nom, avec fallback ID
 # ---------------------------------------------------------------------
 def ws(name: str):
-    _WS_FUNC = _WS_FUNC
+    _WS_FUNC = ws
     if STORAGE_BACKEND == "gsheets":
         try:
             info = read_service_account_secret()
@@ -487,20 +487,18 @@ def log_event(kind:str, payload:dict):
     with PATHS["logs"].open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-def ensure_df_source(name: str, cols: list, paths: dict = None, ws_func=None) -> pd.DataFrame:
+def ensure_df_source(name: str, cols: list, paths: dict = None) -> pd.DataFrame:
     full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
     backend = st.secrets.get("storage_backend", "csv")
     st.session_state.setdefault(f"etag_{name}", "empty")
 
-    if backend == "gsheets":
-        if ws_func is None:
-            raise RuntimeError("ws_func requis pour backend gsheets")
+    if backend == "gsheets": 
         tab = SHEET_NAME.get(name, name)
-        ws = ws_func(tab)
-        df = _get_as_dataframe(ws, evaluate_formulas=True, header=0)
+        wsh = ws(tab)
+        df = _get_as_dataframe(wsh, evaluate_formulas=True, header=0)
         if df is None or df.empty:
             df = pd.DataFrame(columns=full_cols)
-            _set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
+            _set_with_dataframe(wsh, df, include_index=False, include_column_header=True, resize=True)
         else:
             for c in full_cols:
                 if c not in df.columns:
@@ -528,13 +526,13 @@ def ensure_df_source(name: str, cols: list, paths: dict = None, ws_func=None) ->
     return df
 
 # Load data
-df_contacts = ensure_df_source("contacts", C_COLS, PATHS, _WS_FUNC)
-df_inter = ensure_df_source("inter", I_COLS, PATHS, _WS_FUNC)
-df_events = ensure_df_source("events", E_COLS, PATHS, _WS_FUNC)
-df_parts = ensure_df_source("parts", P_COLS, PATHS, _WS_FUNC)
-df_pay = ensure_df_source("pay", PAY_COLS, PATHS, _WS_FUNC)
-df_cert = ensure_df_source("cert", CERT_COLS, PATHS, _WS_FUNC)
-df_entreprises = ensure_df_source("entreprises", ENT_COLS, PATHS, _WS_FUNC)  # NOUVEAU
+df_contacts = ensure_df_source("contacts", C_COLS, PATHS)
+df_inter = ensure_df_source("inter", I_COLS, PATHS)
+df_events = ensure_df_source("events", E_COLS, PATHS)
+df_parts = ensure_df_source("parts", P_COLS, PATHS)
+df_pay = ensure_df_source("pay", PAY_COLS, PATHS)
+df_cert = ensure_df_source("cert", CERT_COLS, PATHS)
+df_entreprises = ensure_df_source("entreprises", ENT_COLS, PATHS)  # NOUVEAU
 
 if not df_contacts.empty:
     df_contacts["Top20"] = df_contacts["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
