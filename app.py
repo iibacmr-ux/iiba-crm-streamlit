@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from gs_client import get_gspread_client, read_service_account_secret, show_diagnostics_sidebar
-from storage_backend import ensure_df_source, save_df_target, SHEET_NAME
+from storage_backend import save_df_target, SHEET_NAME
 
 # --- Backend de stockage ---
 STORAGE_BACKEND = st.secrets.get("storage_backend", "csv")
@@ -304,6 +304,46 @@ def log_event(kind:str, payload:dict):
     rec = {"ts": datetime.now().isoformat(), "kind": kind, **payload}
     with PATHS["logs"].open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+def ensure_df_source(name: str, cols: list, paths: dict = None, ws_func=None) -> pd.DataFrame:
+    full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
+    backend = st.secrets.get("storage_backend", "csv")
+    st.session_state.setdefault(f"etag_{name}", "empty")
+
+    if backend == "gsheets":
+        if ws_func is None:
+            raise RuntimeError("ws_func requis pour backend gsheets")
+        tab = SHEET_NAME.get(name, name)
+        ws = ws_func(tab)
+        df = _get_as_dataframe(ws, evaluate_formulas=True, header=0)
+        if df is None or df.empty:
+            df = pd.DataFrame(columns=full_cols)
+            _set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
+        else:
+            for c in full_cols:
+                if c not in df.columns:
+                    df[c] = ""
+            df = df[full_cols]
+        st.session_state[f"etag_{name}"] = _compute_etag(df, name)
+        return df
+
+    # CSV fallback
+    if paths is None or name not in paths:
+        raise RuntimeError("PATHS manquant pour CSV backend")
+    path = paths[name]
+    if not path.exists():
+        df = pd.DataFrame(columns=full_cols)
+        df.to_csv(path, index=False, encoding="utf-8")
+    else:
+        try:
+            df = pd.read_csv(path, dtype=str).fillna("")
+        except Exception:
+            df = pd.DataFrame(columns=full_cols)
+    for c in full_cols:
+        if c not in df.columns: df[c] = ""
+    df = df[full_cols]
+    st.session_state[f"etag_{name}"] = _compute_etag(df, name)
+    return df
 
 # Load data
 df_contacts = ensure_df_source("contacts", C_COLS, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
