@@ -306,14 +306,15 @@ def log_event(kind:str, payload:dict):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 # Load data
+ws_func = _GS_CLIENT.get_worksheet if STORAGE_BACKEND=="gsheets" else None
 with st.spinner("🔄 Chargement des données..."):
-    df_contacts = ensure_df_source("contacts", C_COLS, PATHS)
-    df_inter = ensure_df_source("inter", I_COLS, PATHS)
-    df_events = ensure_df_source("events", E_COLS, PATHS)
-    df_parts = ensure_df_source("parts", P_COLS, PATHS)
-    df_pay = ensure_df_source("pay", PAY_COLS, PATHS)
-    df_cert = ensure_df_source("cert", CERT_COLS, PATHS)
-    df_entreprises = ensure_df_source("entreprises", ENT_COLS, PATHS)  # NOUVEAU
+    df_contacts = ensure_df_source("contacts", C_COLS, ws_func)
+    df_inter = ensure_df_source("inter", I_COLS, ws_func)
+    df_events = ensure_df_source("events", E_COLS, ws_func)
+    df_parts = ensure_df_source("parts", P_COLS, ws_func)
+    df_pay = ensure_df_source("pay", PAY_COLS, ws_func)
+    df_cert = ensure_df_source("cert", CERT_COLS, ws_func)
+    df_entreprises = ensure_df_source("entreprises", ENT_COLS, ws_func)  # NOUVEAU
 
 if not df_contacts.empty:
     df_contacts["Top20"] = df_contacts["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
