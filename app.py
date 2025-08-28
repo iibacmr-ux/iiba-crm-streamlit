@@ -1231,266 +1231,264 @@ elif page == "Entreprises":
                                        index=SET["pays"].index(row_init_ent.get("Pays","Cameroun")) if row_init_ent.get("Pays","Cameroun") in SET["pays"] else 0)
 
             
-# Contact principal
-st.subheader("Contact principal")
-_opts_cp = []
-_idmap_cp = {}
-if not df_contacts.empty:
-    _tmp = df_contacts[["ID","Nom","Prénom","Société","Email","Téléphone"]].fillna("")
-    for _, r_ in _tmp.iterrows():
-        lab = f"{r_['ID']} - {r_['Nom']} {r_['Prénom']} - {r_['Société']}"
-        _opts_cp.append(lab)
-        _idmap_cp[lab] = (r_["ID"], r_["Email"], r_["Téléphone"])
-cur_cp_label = row_init_ent.get("Contact_Principal","")
-if cur_cp_label and cur_cp_label in df_contacts["ID"].astype(str).values:
-    for lab in _opts_cp:
-        if lab.startswith(f"{cur_cp_label} -"):
-            cur_cp_label = lab
-            break
-c8_ent, c9_ent, c10_ent = st.columns([2,1,1])
-sel_label = c8_ent.selectbox(
-    "Sélectionner le contact principal (ID - Nom Prénom - Entreprise)",
-    ["— Aucun —"] + _opts_cp,
-    index=(["— Aucun —"] + _opts_cp).index(cur_cp_label) if cur_cp_label in (["— Aucun —"] + _opts_cp) else 0
-)
-if sel_label and sel_label != "— Aucun —":
-    _cp_id, _cp_email, _cp_tel = _idmap_cp[sel_label]
-    contact_principal = _cp_id
-    email_principal = _cp_email
-    tel_principal = _cp_tel
-else:
-    contact_principal = ""
-    email_principal = ""
-    tel_principal = ""
-    site_web = st.text_input("Site Web", value=row_init_ent.get("Site_Web",""))
-
-    # Partenariat
-    st.subheader("Partenariat")
-    c11_ent, c12_ent, c13_ent = st.columns(3)
-    statut_part = c11_ent.selectbox("Statut Partenariat", SET["statuts_partenariat"],
-                                   index=SET["statuts_partenariat"].index(row_init_ent.get("Statut_Partenariat","Prospect")) if row_init_ent.get("Statut_Partenariat","Prospect") in SET["statuts_partenariat"] else 0)
-    type_part = c12_ent.selectbox("Type Partenariat", SET["types_partenariat"],
-                                 index=SET["types_partenariat"].index(row_init_ent.get("Type_Partenariat","Formation")) if row_init_ent.get("Type_Partenariat","Formation") in SET["types_partenariat"] else 0)
-    resp_iiba = c13_ent.selectbox("Responsable IIBA", SET["responsables_iiba"],
-                                 index=SET["responsables_iiba"].index(row_init_ent.get("Responsable_IIBA","Non assigné")) if row_init_ent.get("Responsable_IIBA","Non assigné") in SET["responsables_iiba"] else len(SET["responsables_iiba"])-1)
-
-    # Dates
-    c14_ent, c15_ent = st.columns(2)
-    date_premier_contact = c14_ent.date_input("Date premier contact", 
-                                             value=parse_date(row_init_ent.get("Date_Premier_Contact")) or date.today())
-    date_maj = c15_ent.date_input("Date mise à jour", value=date.today())
-
-    # Notes et opportunités
-    notes_ent = st.text_area("Notes", value=row_init_ent.get("Notes",""))
-    opportunites = st.text_area("Opportunités", value=row_init_ent.get("Opportunites",""))
-
-    # Boutons
-    cL_ent, cM_ent, cR_ent = st.columns([1.2,1.2,2])
-    btn_create_ent = cL_ent.form_submit_button("🆕 Créer l'entreprise", disabled=(mode_ent=="edit"))
-    btn_save_ent = cM_ent.form_submit_button("💾 Enregistrer modifications", disabled=(mode_ent!="edit"))
-
-    # Actions du formulaire
-    if btn_create_ent:
-        if not nom_ent.strip():
-            st.error("Le nom de l'entreprise est obligatoire.")
-            st.stop()
-        if email_principal and not email_ok(email_principal):
-            st.error("Email principal invalide.")
-            st.stop()
-        if tel_principal and not phone_ok(tel_principal):
-            st.error("Téléphone principal invalide.")
-            st.stop()
-
-        new_id_ent = generate_id("ENT", df_entreprises, "ID_Entreprise")
-        new_row_ent = {
-            "ID_Entreprise": new_id_ent, "Nom_Entreprise": nom_ent, "Secteur": secteur_ent, "Taille": taille_ent,
-            "CA_Annuel": ca_annuel, "Nb_Employes": nb_employes, "Ville": ville_ent, "Pays": pays_ent,
-            "Contact_Principal": contact_principal, "Email_Principal": email_principal, "Telephone_Principal": tel_principal,
-            "Site_Web": site_web, "Statut_Partenariat": statut_part, "Type_Partenariat": type_part,
-            "Date_Premier_Contact": date_premier_contact.isoformat(), "Responsable_IIBA": resp_iiba,
-            "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
-        }
-        globals()["df_entreprises"] = pd.concat([df_entreprises, pd.DataFrame([new_row_ent])], ignore_index=True)
-        save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
-        st.success(f"Entreprise créée ({new_id_ent}).")
-        st.session_state["selected_entreprise_id"] = new_id_ent
-        st.session_state["entreprise_form_mode"] = "edit"
-        _safe_rerun()
-
-    if btn_save_ent:
-        if not sel_entid:
-            st.error("Aucune entreprise sélectionnée pour enregistrer des modifications.")
-            st.stop()
-        if not nom_ent.strip():
-            st.error("Le nom de l'entreprise est obligatoire.")
-            st.stop()
-        if email_principal and not email_ok(email_principal):
-            st.error("Email principal invalide.")
-            st.stop()
-        if tel_principal and not phone_ok(tel_principal):
-            st.error("Téléphone principal invalide.")
-            st.stop()
-
-        idx_ent = df_entreprises.index[df_entreprises["ID_Entreprise"] == sel_entid]
-        if len(idx_ent) == 0:
-            st.error("Entreprise introuvable (rafraîchissez).")
-            st.stop()
-        rowe_ent = {
-            "ID_Entreprise": sel_entid, "Nom_Entreprise": nom_ent, "Secteur": secteur_ent, "Taille": taille_ent,
-            "CA_Annuel": ca_annuel, "Nb_Employes": nb_employes, "Ville": ville_ent, "Pays": pays_ent,
-            "Contact_Principal": contact_principal, "Email_Principal": email_principal, "Telephone_Principal": tel_principal,
-            "Site_Web": site_web, "Statut_Partenariat": statut_part, "Type_Partenariat": type_part,
-            "Date_Premier_Contact": date_premier_contact.isoformat(), "Responsable_IIBA": resp_iiba,
-            "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
-        }
-        df_entreprises.loc[idx_ent[0]] = rowe_ent
-        save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
-        st.success(f"Entreprise {sel_entid} mise à jour.")
-
-    st.markdown("---")
-
-    # Actions avancées pour entreprises
-    col_dup_ent, col_del_ent, col_clear_ent = st.columns([1,1,1])
-    
-    if col_dup_ent.button("🧬 Dupliquer l'entreprise sélectionnée", key="ent_dup_btn", 
-                          disabled=(st.session_state["entreprise_form_mode"]!="edit" or not st.session_state["selected_entreprise_id"])):
-        src_id_ent = st.session_state["selected_entreprise_id"]
-        src_ent = df_entreprises[df_entreprises["ID_Entreprise"] == src_id_ent]
-        if src_ent.empty:
-            st.error("Impossible de dupliquer: entreprise introuvable.")
-        else:
-            new_id_ent = generate_id("ENT", df_entreprises, "ID_Entreprise")
-            clone_ent = src_ent.iloc[0].to_dict()
-            clone_ent["ID_Entreprise"] = new_id_ent
-            clone_ent["Nom_Entreprise"] = f"{clone_ent['Nom_Entreprise']} (Copie)"
-            globals()["df_entreprises"] = pd.concat([df_entreprises, pd.DataFrame([clone_ent])], ignore_index=True)
-            save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
-            st.success(f"Entreprise dupliquée sous l'ID {new_id_ent}.")
-            st.session_state["selected_entreprise_id"] = new_id_ent
-            st.session_state["entreprise_form_mode"] = "edit"
-            _safe_rerun()
-
-    with col_del_ent:
-        st.caption("Confirmation suppression")
-        confirm_txt_ent = st.text_input("Tapez SUPPRIME ou DELETE", value="", key="ent_del_confirm")
-        if st.button("🗑️ Supprimer définitivement", key="ent_del_btn", 
-                     disabled=(st.session_state["entreprise_form_mode"]!="edit" or not st.session_state["selected_entreprise_id"])):
-            if confirm_txt_ent.strip().upper() not in ("SUPPRIME", "DELETE"):
-                st.error("Veuillez confirmer en saisissant SUPPRIME ou DELETE.")
+            # Contact principal
+            st.subheader("Contact principal")
+            _opts_cp = []
+            _idmap_cp = {}
+            if not df_contacts.empty:
+                _tmp = df_contacts[["ID","Nom","Prénom","Société","Email","Téléphone"]].fillna("")
+                for _, r_ in _tmp.iterrows():
+                    lab = f"{r_['ID']} - {r_['Nom']} {r_['Prénom']} - {r_['Société']}"
+                    _opts_cp.append(lab)
+                    _idmap_cp[lab] = (r_["ID"], r_["Email"], r_["Téléphone"])
+            cur_cp_label = row_init_ent.get("Contact_Principal","")
+            if cur_cp_label and cur_cp_label in df_contacts["ID"].astype(str).values:
+                for lab in _opts_cp:
+                    if lab.startswith(f"{cur_cp_label} -"):
+                        cur_cp_label = lab
+                        break
+            c8_ent, c9_ent, c10_ent = st.columns([2,1,1])
+            sel_label = c8_ent.selectbox(
+                "Sélectionner le contact principal (ID - Nom Prénom - Entreprise)",
+                ["— Aucun —"] + _opts_cp,
+                index=(["— Aucun —"] + _opts_cp).index(cur_cp_label) if cur_cp_label in (["— Aucun —"] + _opts_cp) else 0
+            )
+            if sel_label and sel_label != "— Aucun —":
+                _cp_id, _cp_email, _cp_tel = _idmap_cp[sel_label]
+                contact_principal = _cp_id
+                email_principal = _cp_email
+                tel_principal = _cp_tel
             else:
-                del_id_ent = st.session_state["selected_entreprise_id"]
-                if not del_id_ent:
-                    st.error("Aucune entreprise sélectionnée.")
-                else:
-                    globals()["df_entreprises"] = df_entreprises[df_entreprises["ID_Entreprise"] != del_id_ent]
+                contact_principal = ""
+                email_principal = ""
+                tel_principal = ""
+                site_web = st.text_input("Site Web", value=row_init_ent.get("Site_Web",""))
+
+                # Partenariat
+                st.subheader("Partenariat")
+                c11_ent, c12_ent, c13_ent = st.columns(3)
+                statut_part = c11_ent.selectbox("Statut Partenariat", SET["statuts_partenariat"],
+                                               index=SET["statuts_partenariat"].index(row_init_ent.get("Statut_Partenariat","Prospect")) if row_init_ent.get("Statut_Partenariat","Prospect") in SET["statuts_partenariat"] else 0)
+                type_part = c12_ent.selectbox("Type Partenariat", SET["types_partenariat"],
+                                             index=SET["types_partenariat"].index(row_init_ent.get("Type_Partenariat","Formation")) if row_init_ent.get("Type_Partenariat","Formation") in SET["types_partenariat"] else 0)
+                resp_iiba = c13_ent.selectbox("Responsable IIBA", SET["responsables_iiba"],
+                                             index=SET["responsables_iiba"].index(row_init_ent.get("Responsable_IIBA","Non assigné")) if row_init_ent.get("Responsable_IIBA","Non assigné") in SET["responsables_iiba"] else len(SET["responsables_iiba"])-1)
+
+                # Dates
+                c14_ent, c15_ent = st.columns(2)
+                date_premier_contact = c14_ent.date_input("Date premier contact", 
+                                                         value=parse_date(row_init_ent.get("Date_Premier_Contact")) or date.today())
+                date_maj = c15_ent.date_input("Date mise à jour", value=date.today())
+
+                # Notes et opportunités
+                notes_ent = st.text_area("Notes", value=row_init_ent.get("Notes",""))
+                opportunites = st.text_area("Opportunités", value=row_init_ent.get("Opportunites",""))
+
+                # Boutons
+                cL_ent, cM_ent, cR_ent = st.columns([1.2,1.2,2])
+                btn_create_ent = cL_ent.form_submit_button("🆕 Créer l'entreprise", disabled=(mode_ent=="edit"))
+                btn_save_ent = cM_ent.form_submit_button("💾 Enregistrer modifications", disabled=(mode_ent!="edit"))
+
+                # Actions du formulaire
+                if btn_create_ent:
+                    if not nom_ent.strip():
+                        st.error("Le nom de l'entreprise est obligatoire.")
+                        st.stop()
+                    if email_principal and not email_ok(email_principal):
+                        st.error("Email principal invalide.")
+                        st.stop()
+                    if tel_principal and not phone_ok(tel_principal):
+                        st.error("Téléphone principal invalide.")
+                        st.stop()
+
+                    new_id_ent = generate_id("ENT", df_entreprises, "ID_Entreprise")
+                    new_row_ent = {
+                        "ID_Entreprise": new_id_ent, "Nom_Entreprise": nom_ent, "Secteur": secteur_ent, "Taille": taille_ent,
+                        "CA_Annuel": ca_annuel, "Nb_Employes": nb_employes, "Ville": ville_ent, "Pays": pays_ent,
+                        "Contact_Principal": contact_principal, "Email_Principal": email_principal, "Telephone_Principal": tel_principal,
+                        "Site_Web": site_web, "Statut_Partenariat": statut_part, "Type_Partenariat": type_part,
+                        "Date_Premier_Contact": date_premier_contact.isoformat(), "Responsable_IIBA": resp_iiba,
+                        "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
+                    }
+                    globals()["df_entreprises"] = pd.concat([df_entreprises, pd.DataFrame([new_row_ent])], ignore_index=True)
                     save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
-                    st.success(f"Entreprise {del_id_ent} supprimée.")
+                    st.success(f"Entreprise créée ({new_id_ent}).")
+                    st.session_state["selected_entreprise_id"] = new_id_ent
+                    st.session_state["entreprise_form_mode"] = "edit"
+                    _safe_rerun()
+
+                if btn_save_ent:
+                    if not sel_entid:
+                        st.error("Aucune entreprise sélectionnée pour enregistrer des modifications.")
+                        st.stop()
+                    if not nom_ent.strip():
+                        st.error("Le nom de l'entreprise est obligatoire.")
+                        st.stop()
+                    if email_principal and not email_ok(email_principal):
+                        st.error("Email principal invalide.")
+                        st.stop()
+                    if tel_principal and not phone_ok(tel_principal):
+                        st.error("Téléphone principal invalide.")
+                        st.stop()
+
+                    idx_ent = df_entreprises.index[df_entreprises["ID_Entreprise"] == sel_entid]
+                    if len(idx_ent) == 0:
+                        st.error("Entreprise introuvable (rafraîchissez).")
+                        st.stop()
+                    rowe_ent = {
+                        "ID_Entreprise": sel_entid, "Nom_Entreprise": nom_ent, "Secteur": secteur_ent, "Taille": taille_ent,
+                        "CA_Annuel": ca_annuel, "Nb_Employes": nb_employes, "Ville": ville_ent, "Pays": pays_ent,
+                        "Contact_Principal": contact_principal, "Email_Principal": email_principal, "Telephone_Principal": tel_principal,
+                        "Site_Web": site_web, "Statut_Partenariat": statut_part, "Type_Partenariat": type_part,
+                        "Date_Premier_Contact": date_premier_contact.isoformat(), "Responsable_IIBA": resp_iiba,
+                        "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
+                    }
+                    df_entreprises.loc[idx_ent[0]] = rowe_ent
+                    save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+                    st.success(f"Entreprise {sel_entid} mise à jour.")
+
+                st.markdown("---")
+
+                # Actions avancées pour entreprises
+                col_dup_ent, col_del_ent, col_clear_ent = st.columns([1,1,1])
+                
+                if col_dup_ent.button("🧬 Dupliquer l'entreprise sélectionnée", key="ent_dup_btn", 
+                                      disabled=(st.session_state["entreprise_form_mode"]!="edit" or not st.session_state["selected_entreprise_id"])):
+                    src_id_ent = st.session_state["selected_entreprise_id"]
+                    src_ent = df_entreprises[df_entreprises["ID_Entreprise"] == src_id_ent]
+                    if src_ent.empty:
+                        st.error("Impossible de dupliquer: entreprise introuvable.")
+                    else:
+                        new_id_ent = generate_id("ENT", df_entreprises, "ID_Entreprise")
+                        clone_ent = src_ent.iloc[0].to_dict()
+                        clone_ent["ID_Entreprise"] = new_id_ent
+                        clone_ent["Nom_Entreprise"] = f"{clone_ent['Nom_Entreprise']} (Copie)"
+                        globals()["df_entreprises"] = pd.concat([df_entreprises, pd.DataFrame([clone_ent])], ignore_index=True)
+                        save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+                        st.success(f"Entreprise dupliquée sous l'ID {new_id_ent}.")
+                        st.session_state["selected_entreprise_id"] = new_id_ent
+                        st.session_state["entreprise_form_mode"] = "edit"
+                        _safe_rerun()
+
+                with col_del_ent:
+                    st.caption("Confirmation suppression")
+                    confirm_txt_ent = st.text_input("Tapez SUPPRIME ou DELETE", value="", key="ent_del_confirm")
+                    if st.button("🗑️ Supprimer définitivement", key="ent_del_btn", 
+                                 disabled=(st.session_state["entreprise_form_mode"]!="edit" or not st.session_state["selected_entreprise_id"])):
+                        if confirm_txt_ent.strip().upper() not in ("SUPPRIME", "DELETE"):
+                            st.error("Veuillez confirmer en saisissant SUPPRIME ou DELETE.")
+                        else:
+                            del_id_ent = st.session_state["selected_entreprise_id"]
+                            if not del_id_ent:
+                                st.error("Aucune entreprise sélectionnée.")
+                            else:
+                                globals()["df_entreprises"] = df_entreprises[df_entreprises["ID_Entreprise"] != del_id_ent]
+                                save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+                                st.success(f"Entreprise {del_id_ent} supprimée.")
+                                st.session_state["selected_entreprise_id"] = ""
+                                st.session_state["entreprise_form_mode"] = "create"
+                                _safe_rerun()
+
+                if col_clear_ent.button("🧹 Vider la sélection", key="ent_clear_btn"):
                     st.session_state["selected_entreprise_id"] = ""
                     st.session_state["entreprise_form_mode"] = "create"
                     _safe_rerun()
 
-    if col_clear_ent.button("🧹 Vider la sélection", key="ent_clear_btn"):
-        st.session_state["selected_entreprise_id"] = ""
-        st.session_state["entreprise_form_mode"] = "create"
-        _safe_rerun()
+                st.markdown("---")
 
-    st.markdown("---")
+                # Grille des entreprises
+                st.subheader("📋 Liste des entreprises")
+                filt_ent = st.text_input("Filtre rapide (nom, secteur, statut…)", "", key="ent_filter")
+                page_size_ent = st.selectbox("Taille de page", [20,50,100,200], index=0, key="pg_ent")
 
-    # Grille des entreprises
-    st.subheader("📋 Liste des entreprises")
-    filt_ent = st.text_input("Filtre rapide (nom, secteur, statut…)", "", key="ent_filter")
-    page_size_ent = st.selectbox("Taille de page", [20,50,100,200], index=0, key="pg_ent")
+                def parse_cols_ent(s, defaults):
+                    cols = [c.strip() for c in str(s).split(",") if c.strip()]
+                    valid = [c for c in cols if c in df_entreprises.columns]
+                    return valid if valid else defaults
 
-    def parse_cols_ent(s, defaults):
-        cols = [c.strip() for c in str(s).split(",") if c.strip()]
-        valid = [c for c in cols if c in df_entreprises.columns]
-        return valid if valid else defaults
+                ent_default_cols = parse_cols_ent(PARAMS.get("grid_entreprises_columns", ""), [
+                    "ID_Entreprise","Nom_Entreprise","Secteur","Taille","Statut_Partenariat",
+                    "Type_Partenariat","Contact_Principal","Email_Principal","Responsable_IIBA","Date_Premier_Contact"
+                ])
+                ent_default_cols += [c for c in AUDIT_COLS if c in df_entreprises.columns]
+                
+                df_show_ent = df_entreprises[ent_default_cols].copy()
 
-    ent_default_cols = parse_cols_ent(PARAMS.get("grid_entreprises_columns", ""), [
-        "ID_Entreprise","Nom_Entreprise","Secteur","Taille","Statut_Partenariat",
-        "Type_Partenariat","Contact_Principal","Email_Principal","Responsable_IIBA","Date_Premier_Contact"
-    ])
-    ent_default_cols += [c for c in AUDIT_COLS if c in df_entreprises.columns]
-    
-    df_show_ent = df_entreprises[ent_default_cols].copy()
+                if filt_ent:
+                    t_ent = filt_ent.lower()
+                    df_show_ent = df_show_ent[df_show_ent.apply(
+                        lambda r: any(t_ent in str(r[c]).lower() for c in ["Nom_Entreprise","Secteur","Statut_Partenariat","Notes"]), axis=1)]
 
-    if filt_ent:
-        t_ent = filt_ent.lower()
-        df_show_ent = df_show_ent[df_show_ent.apply(
-            lambda r: any(t_ent in str(r[c]).lower() for c in ["Nom_Entreprise","Secteur","Statut_Partenariat","Notes"]), axis=1)]
+                if HAS_AGGRID:
+                    gb_ent = GridOptionsBuilder.from_dataframe(df_show_ent)
+                    gb_ent.configure_default_column(filter=True, sortable=True, resizable=True, editable=True)
+                    for c in AUDIT_COLS:
+                        if c in df_show_ent.columns:
+                            gb_ent.configure_column(c, editable=False)
+                    gb_ent.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size_ent)
+                    gb_ent.configure_selection("single", use_checkbox=True)
+                    go_ent = gb_ent.build()
+                    grid_ent = AgGrid(df_show_ent, gridOptions=go_ent, height=520,
+                                      update_mode=GridUpdateMode.MODEL_CHANGED,
+                                      data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                                      key="ent_grid", allow_unsafe_jscode=True)
+                    col_apply_ent = st.columns([1])[0]
+                    if col_apply_ent.button("💾 Appliquer les modifications (grille)", key="ent_apply_grid"):
+                        new_df_ent = pd.DataFrame(grid_ent["data"])
+                        for c in ENT_COLS:
+                            if c not in new_df_ent.columns:
+                                new_df_ent[c] = ""
+                        globals()["df_entreprises"] = new_df_ent[ENT_COLS].copy()
+                        save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+                        st.success("Modifications enregistrées depuis la grille.")
+                else:
+                    st.dataframe(df_show_ent, use_container_width=True)
+                    st.info("Installez `streamlit-aggrid` pour éditer directement dans la grille.")
 
-    if HAS_AGGRID:
-        gb_ent = GridOptionsBuilder.from_dataframe(df_show_ent)
-        gb_ent.configure_default_column(filter=True, sortable=True, resizable=True, editable=True)
-        for c in AUDIT_COLS:
-            if c in df_show_ent.columns:
-                gb_ent.configure_column(c, editable=False)
-        gb_ent.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size_ent)
-        gb_ent.configure_selection("single", use_checkbox=True)
-        go_ent = gb_ent.build()
-        grid_ent = AgGrid(df_show_ent, gridOptions=go_ent, height=520,
-                          update_mode=GridUpdateMode.MODEL_CHANGED,
-                          data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-                          key="ent_grid", allow_unsafe_jscode=True)
-        col_apply_ent = st.columns([1])[0]
-        if col_apply_ent.button("💾 Appliquer les modifications (grille)", key="ent_apply_grid"):
-            new_df_ent = pd.DataFrame(grid_ent["data"])
-            for c in ENT_COLS:
-                if c not in new_df_ent.columns:
-                    new_df_ent[c] = ""
-            globals()["df_entreprises"] = new_df_ent[ENT_COLS].copy()
-            save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
-            st.success("Modifications enregistrées depuis la grille.")
-    else:
-        st.dataframe(df_show_ent, use_container_width=True)
-        st.info("Installez `streamlit-aggrid` pour éditer directement dans la grille.")
-
-    # Statistiques rapides
-    st.markdown("---")
-    st.subheader("📊 Statistiques des entreprises")
-    
-    if not df_entreprises.empty:
-        col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-        
-        total_entreprises = len(df_entreprises)
-        partenaires_actifs = len(df_entreprises[df_entreprises["Statut_Partenariat"].isin(["Partenaire", "Client", "Partenaire Stratégique"])])
-        prospects = len(df_entreprises[df_entreprises["Statut_Partenariat"] == "Prospect"])
-        ca_total_ent = pd.to_numeric(df_entreprises["CA_Annuel"], errors="coerce").fillna(0).sum()
-        
-        col_stat1.metric("🏢 Total Entreprises", total_entreprises)
-        col_stat2.metric("🤝 Partenaires Actifs", partenaires_actifs)
-        col_stat3.metric("🎯 Prospects", prospects)
-        col_stat4.metric("💰 CA Cumulé", f"{ca_total_ent/1e9:.1f}B FCFA")
-        
-        # Graphiques si Altair disponible
-        if alt:
-            col_chart1, col_chart2 = st.columns(2)
-            
-            with col_chart1:
-                statut_counts = df_entreprises["Statut_Partenariat"].value_counts().reset_index()
-                statut_counts.columns = ["Statut", "Count"]
-                chart_statut = alt.Chart(statut_counts).mark_bar().encode(
-                    x=alt.X("Count:Q", title="Nombre"),
-                    y=alt.Y("Statut:N", title="Statut Partenariat"),
-                    color=alt.Color("Statut:N", legend=None)
-                ).properties(height=250, title="Répartition par statut")
-                st.altair_chart(chart_statut, use_container_width=True)
-            
-            with col_chart2:
-                secteur_counts = df_entreprises["Secteur"].value_counts().reset_index()
-                secteur_counts.columns = ["Secteur", "Count"]
-                chart_secteur = alt.Chart(secteur_counts).mark_arc().encode(
-                    theta=alt.Theta("Count:Q"),
-                    color=alt.Color("Secteur:N"),
-                    tooltip=["Secteur", "Count"]
-                ).properties(height=250, title="Répartition par secteur")
-                st.altair_chart(chart_secteur, use_container_width=True)
-    else:
-        st.info("Aucune entreprise enregistrée.")
+                # Statistiques rapides
+                st.markdown("---")
+                st.subheader("📊 Statistiques des entreprises")
+                
+                if not df_entreprises.empty:
+                    col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+                    
+                    total_entreprises = len(df_entreprises)
+                    partenaires_actifs = len(df_entreprises[df_entreprises["Statut_Partenariat"].isin(["Partenaire", "Client", "Partenaire Stratégique"])])
+                    prospects = len(df_entreprises[df_entreprises["Statut_Partenariat"] == "Prospect"])
+                    ca_total_ent = pd.to_numeric(df_entreprises["CA_Annuel"], errors="coerce").fillna(0).sum()
+                    
+                    col_stat1.metric("🏢 Total Entreprises", total_entreprises)
+                    col_stat2.metric("🤝 Partenaires Actifs", partenaires_actifs)
+                    col_stat3.metric("🎯 Prospects", prospects)
+                    col_stat4.metric("💰 CA Cumulé", f"{ca_total_ent/1e9:.1f}B FCFA")
+                    
+                    # Graphiques si Altair disponible
+                    if alt:
+                        col_chart1, col_chart2 = st.columns(2)
+                        
+                        with col_chart1:
+                            statut_counts = df_entreprises["Statut_Partenariat"].value_counts().reset_index()
+                            statut_counts.columns = ["Statut", "Count"]
+                            chart_statut = alt.Chart(statut_counts).mark_bar().encode(
+                                x=alt.X("Count:Q", title="Nombre"),
+                                y=alt.Y("Statut:N", title="Statut Partenariat"),
+                                color=alt.Color("Statut:N", legend=None)
+                            ).properties(height=250, title="Répartition par statut")
+                            st.altair_chart(chart_statut, use_container_width=True)
+                        
+                        with col_chart2:
+                            secteur_counts = df_entreprises["Secteur"].value_counts().reset_index()
+                            secteur_counts.columns = ["Secteur", "Count"]
+                            chart_secteur = alt.Chart(secteur_counts).mark_arc().encode(
+                                theta=alt.Theta("Count:Q"),
+                                color=alt.Color("Secteur:N"),
+                                tooltip=["Secteur", "Count"]
+                            ).properties(height=250, title="Répartition par secteur")
+                            st.altair_chart(chart_secteur, use_container_width=True)
+                else:
+                    st.info("Aucune entreprise enregistrée.")
 
 # PAGE RAPPORTS (CODE EXISTANT CONSERVÉ - partie simplifiée)
-
-
 elif page == "Rapports":
     st.title("📑 Rapports & KPI — IIBA Cameroun")
 
