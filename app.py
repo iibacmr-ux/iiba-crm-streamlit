@@ -182,29 +182,40 @@ GC = None
 # Helper Google Sheets: ouverture d'un onglet par nom, avec fallback ID
 # ---------------------------------------------------------------------
 def ws(name: str):
-    _WS_FUNC = ws
-    if STORAGE_BACKEND == "gsheets":
-        try:
-            info = read_service_account_secret()
-            GC = get_gspread_client(info)
-        except Exception as e:
-            st.error(f"Initialisation Google Sheets échouée : {e}")
-            st.stop()
+    """Retourne un gspread.Worksheet pour l’onglet 'name'.
+    Préférence à open_by_key (ID) ; fallback open(titre).
+    Crée la feuille si manquante.
+    """
+    sid = (st.secrets.get("gsheet_spreadsheet_id") or "").strip()
+    sname = (st.secrets.get("gsheet_spreadsheet") or "").strip()
 
-        if GC is None:
-            raise RuntimeError("Backend Google Sheets inactif (GC=None)")
+    try:
+        sh = None
+        if sid:
+            st.sidebar.write(f"🔑 Ouverture par ID… ({sid[:6]}…)")
+            sh = GC.open_by_key(sid)
+        elif sname:
+            st.sidebar.write(f"📄 Ouverture par titre… ({sname})")
+            sh = GC.open(sname)
+        else:
+            raise RuntimeError("Aucun 'gsheet_spreadsheet_id' ni 'gsheet_spreadsheet' dans secrets.")
+
         try:
-            if 'GSHEET_SPREADSHEET_ID' in globals() and str(GSHEET_SPREADSHEET_ID or '').strip():
-                sh = GC.open_by_key(GSHEET_SPREADSHEET_ID)
-            else:
-                sh = GC.open(GSHEET_SPREADSHEET)
-        except Exception as _e:
-            raise RuntimeError(f"Impossible d'ouvrir le Google Sheet: {_e}")
-        try:
-            return sh.worksheet(name)
-        except Exception:
-            # création si l'onglet n'existe pas
-            return sh.add_worksheet(title=name, rows=2, cols=50)
+            w = sh.worksheet(name)
+        except gspread.WorksheetNotFound:
+            st.sidebar.warning(f"Feuille « {name} » absente → création…")
+            sh.add_worksheet(title=name, rows=2000, cols=50)
+            w = sh.worksheet(name)
+
+        return w
+
+    except Exception as _e:
+        # Log verbeux dans la sidebar pour diagnostic
+        st.sidebar.error("❌ Ouverture Google Sheet échouée")
+        st.sidebar.code(str(_e))
+        # Remontez l’erreur pour stopper proprement
+        raise RuntimeError(f"Impossible d'ouvrir le Google Sheet: {_e}")
+
 
 # Utilitaire pour éviter le ternaire inline fragile dans les appels
 
