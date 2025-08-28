@@ -26,7 +26,6 @@ except Exception:
 import openpyxl
 
 st.set_page_config(page_title="IIBA Cameroun — CRM", page_icon="📊", layout="wide")
-st.toast("Mode sans authentification activé", icon="🔓")
 
 # ----------- Paths et schémas ----------------
 if "DATA_DIR" not in globals() or DATA_DIR is None:
@@ -273,10 +272,7 @@ if not df_contacts.empty:
     df_contacts["Top20"] = df_contacts["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
 
 # === AUTH MINIMAL ===
-try:
-    import bcrypt
-except Exception:
-    bcrypt = None
+import bcrypt
 
 USERS_PATH = DATA_DIR / "users.csv"
 USER_COLS = ["user_id", "full_name", "role", "active", "pwd_hash", "must_change_pw", "created_at", "updated_at"]
@@ -341,8 +337,7 @@ def _ensure_users_df() -> pd.DataFrame:
     return dfu
 
 # --- PATCH: forcer l'activation de admin@iiba.cm au démarrage ---
-def # _force_activate_admin()  # disabled in no-auth build
-:
+def _force_activate_admin():
     dfu = _ensure_users_df()
     dfu = _normalize_users_df(dfu)
 
@@ -374,7 +369,8 @@ def # _force_activate_admin()  # disabled in no-auth build
         dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
 
 # appelez-le une fois au chargement (avant login_box())
-# _force_activate_admin()  # disabled in no-auth build
+_force_activate_admin()
+
 def _check_password(clear_pw: str, pwd_hash: str) -> bool:
     try:
         return bcrypt.checkpw(clear_pw.encode("utf-8"), pwd_hash.encode("utf-8"))
@@ -389,12 +385,56 @@ def _safe_rerun():
         _st.experimental_rerun()
 
 def login_box():
-    # No-op in no-auth build
-    st.sidebar.info("Auth désactivée — accès public.")
+    st.sidebar.markdown("### 🔐 Connexion")
+    # uid = st.sidebar.text_input("Email / User ID", value=st.session_state.get("last_uid",""))
+    uid = st.sidebar.text_input("Email / User ID", value="admin2@iiba.cm")
+    pw = st.sidebar.text_input("Mot de passe", type="password", value="123456") 
+    
+    if st.sidebar.button("Se connecter", key="btn_login"):
+        users_df = _ensure_users_df()
+        users_df = _normalize_users_df(users_df)
+        m = (users_df["user_id"].astype(str).str.strip().str.lower() == str(uid).strip().lower()) 
+        
+        # st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "user_id"]}")  # print 
+        # st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "updated_at"]}")  # print 
+        # st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "active"]}")  # print  
+        # st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "role"]}")  # print  
+        # st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "pwd_hash"]}")  # print pwd_hash.encode("utf-8")
+        # st.sidebar.error(f"login_box: user_id : {users_df.loc[m, "pwd_hash"].encode("utf-8")}")  # print pwd_hash.encode("utf-8")
+
+        if not m.any():
+            st.sidebar.error("Utilisateur introuvable.")
+            return
+        row = users_df[m].iloc[0]
+        if not bool(row["active"]):
+            st.sidebar.error("Compte inactif. Contactez un administrateur.")
+            return
+        if not _check_password(pw, row["pwd_hash"]): 
+            st.sidebar.error("Mot de passe incorrect.")
+            return
+
+        st.session_state["auth_user_id"] = row["user_id"]
+        st.session_state["auth_role"] = row["role"]
+        st.session_state["auth_full_name"] = row["full_name"]
+        st.session_state["last_uid"] = uid
+        st.session_state["user"] = {"UserID": row["user_id"], "Role": row["role"]}
+
+        if bool(row.get("must_change_pw", False)):
+            st.session_state["force_change_pw"] = True
+        else:
+            st.session_state["force_change_pw"] = False
+        _safe_rerun()
+
+    if "auth_user_id" in st.session_state:
+        st.sidebar.success(f"Connecté : {st.session_state['auth_full_name']} ({st.session_state['auth_role']})")
+        if st.sidebar.button("Se déconnecter", key="btn_logout"):
+            for k in ["auth_user_id","auth_role","auth_full_name","force_change_pw","user"]:
+                st.session_state.pop(k, None)
+            _safe_rerun()
 
 if "user" not in st.session_state:
-    st.session_state["user"] = {"UserID": "public@iiba.cm", "Role": "admin", "FullName": "Accès public"}
-    st.sidebar.info("🔓 Mode sans authentification (public = administrateur).")
+    login_box()
+    st.stop()
 
 ROLE = st.session_state["user"]["Role"]
 def allow_page(name:str)->bool:
@@ -412,8 +452,9 @@ page = st.sidebar.radio("Aller à", [
     "Admin"
 ], index=0)
 
-# Accès public à toutes les pages (no-auth)
-pass
+if not allow_page(page):
+    st.error("⛔ Accès refusé. Demandez un rôle 'admin' à un membre du comité.")
+    st.stop()
 
 this_year = datetime.now().year
 annee = st.sidebar.selectbox("Année", ["Toutes"]+[str(this_year-1),str(this_year),str(this_year+1)], index=1)
@@ -2645,17 +2686,14 @@ elif page == "Admin":
 
     # GESTION DES UTILISATEURS (simplifié)
     st.markdown("---")
-    st.header("👤 Gestion des utilisateurs (désactivée en mode sans authentification)")
+    st.header("👤 Gestion des utilisateurs")
     
     current_user = st.session_state.get("user", {})
-    if True:
-        st.warning("Ce module est désactivé car l’authentification est supprimée dans cette build.")
+    if current_user.get("Role") != "admin":
+        st.warning("Accès réservé aux administrateurs.")
     else:
         try:
-            try:
-    import bcrypt
-except Exception:
-    bcrypt = None
+            import bcrypt
             
             def _save_users_df(dfu: pd.DataFrame):
                 out = dfu.copy()
@@ -2708,4 +2746,6 @@ except Exception:
                     
         except ImportError:
             st.error("Module 'bcrypt' requis. Installez avec: pip install bcrypt")
+
+
 
