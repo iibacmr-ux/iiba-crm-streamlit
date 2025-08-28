@@ -182,30 +182,29 @@ GC = None
 # Helper Google Sheets: ouverture d'un onglet par nom, avec fallback ID
 # ---------------------------------------------------------------------
 def ws(name: str):
+    _WS_FUNC = _WS_FUNC
+    if STORAGE_BACKEND == "gsheets":
+        try:
+            info = read_service_account_secret()
+            GC = get_gspread_client(info)
+        except Exception as e:
+            st.error(f"Initialisation Google Sheets échouée : {e}")
+            st.stop()
 
-_WS_FUNC = _WS_FUNC
-if STORAGE_BACKEND == "gsheets":
-    try:
-        info = read_service_account_secret()
-        GC = get_gspread_client(info)
-    except Exception as e:
-        st.error(f"Initialisation Google Sheets échouée : {e}")
-        st.stop()
-
-    if GC is None:
-        raise RuntimeError("Backend Google Sheets inactif (GC=None)")
-    try:
-        if 'GSHEET_SPREADSHEET_ID' in globals() and str(GSHEET_SPREADSHEET_ID or '').strip():
-            sh = GC.open_by_key(GSHEET_SPREADSHEET_ID)
-        else:
-            sh = GC.open(GSHEET_SPREADSHEET)
-    except Exception as _e:
-        raise RuntimeError(f"Impossible d'ouvrir le Google Sheet: {_e}")
-    try:
-        return sh.worksheet(name)
-    except Exception:
-        # création si l'onglet n'existe pas
-        return sh.add_worksheet(title=name, rows=2, cols=50)
+        if GC is None:
+            raise RuntimeError("Backend Google Sheets inactif (GC=None)")
+        try:
+            if 'GSHEET_SPREADSHEET_ID' in globals() and str(GSHEET_SPREADSHEET_ID or '').strip():
+                sh = GC.open_by_key(GSHEET_SPREADSHEET_ID)
+            else:
+                sh = GC.open(GSHEET_SPREADSHEET)
+        except Exception as _e:
+            raise RuntimeError(f"Impossible d'ouvrir le Google Sheet: {_e}")
+        try:
+            return sh.worksheet(name)
+        except Exception:
+            # création si l'onglet n'existe pas
+            return sh.add_worksheet(title=name, rows=2, cols=50)
 
 # Utilitaire pour éviter le ternaire inline fragile dans les appels
 
