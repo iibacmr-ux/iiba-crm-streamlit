@@ -33,6 +33,199 @@ except Exception:
     def _get_as_dataframe(*args, **kwargs):  # type: ignore
         raise RuntimeError("gspread indisponible (backend gsheets non utilisable)")
 
+
+# === AUDIT / META ===
+AUDIT_COLS = ["Created_At", "Created_By", "Updated_At", "Updated_By"]
+
+# === Noms d’onglets Google Sheets / mapping interne ===
+SHEET_NAME = {
+    "contacts": "contacts",
+    "inter": "interactions",
+    "events": "evenements",
+    "parts": "participations",
+    "pay": "paiements",
+    "cert": "certifications",
+    "entreprises": "entreprises",
+    "params": "parametres",
+    "users": "users",
+}
+
+
+# === ETag logique ===
+def _id_col_for(name: str) -> str:
+    """Colonne ID pivot par table (utilisée par l’ETag)."""
+    return {
+        "contacts": "ID",
+        "inter": "ID_Interaction",
+        "events": "ID_Événement",
+        "parts": "ID_Participation",
+        "pay": "ID_Paiement",
+        "cert": "ID_Certif",
+        "entreprises": "ID_Entreprise",
+        "users": "user_id",
+    }.get(name, "ID")
+
+
+def _compute_etag(df: "pd.DataFrame", name: str) -> str:
+    """
+    ETag logique basé sur un sous-ensemble stable des colonnes.
+    S’il n’y a pas de 'Updated_At', on se rabat sur l’ensemble du DF en texte.
+    """
+    try:
+        import pandas as pd  # sécurité si l’ordre d'import varie
+    except Exception:
+        # En cas de runtime très dégradé, renvoie un ETag constant mais non optimal
+        return "no-pandas"
+
+    if df is None or getattr(df, "empty", True):
+        return "empty"
+
+    idc = _id_col_for(name)
+    # On privilégie un hash sur (ID, Updated_At) si disponibles
+    cols = [c for c in (idc, "Updated_At") if c in df.columns]
+
+    try:
+        if cols:
+            payload_df = df[cols].astype(str).fillna("")
+            payload = payload_df.sort_values(by=cols).to_csv(index=False)
+        else:
+            payload = df.astype(str).fillna("").to_csv(index=False)
+    except Exception:
+        # Filet de sécurité, au cas où la conversion échoue
+        payload = str(df)
+
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def ensure_df_source(name: str, cols: list, paths: dict = None) -> pd.DataFrame:
+    full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
+    backend = st.secrets.get("storage_backend", "csv")
+    st.session_state.setdefault(f"etag_{name}", "empty")
+
+    if backend == "gsheets": 
+        tab = SHEET_NAME.get(name, name)
+        wsh = ws(tab)   # ws(...) doit retourner un Worksheet gspread valide
+        df = _get_as_dataframe(wsh, evaluate_formulas=True, header=0)
+        if df is None or df.empty:
+            df = pd.DataFrame(columns=full_cols)
+            _set_with_dataframe(wsh, df, include_index=False, include_column_header=True, resize=True)
+        else:
+            for c in full_cols:
+                if c not in df.columns:
+                    df[c] = ""
+            df = df[full_cols]
+        st.session_state[f"etag_{name}"] = _compute_etag(df, name)
+        return df
+
+    # CSV fallback
+    if paths is None or name not in paths:
+        raise RuntimeError("PATHS manquant pour CSV backend")
+    path = paths[name]
+    if not path.exists():
+        df = pd.DataFrame(columns=full_cols)
+        df.to_csv(path, index=False, encoding="utf-8")
+    else:
+        try:
+            df = pd.read_csv(path, dtype=str).fillna("")
+        except Exception:
+            df = pd.DataFrame(columns=full_cols)
+    for c in full_cols:
+        if c not in df.columns: df[c] = ""
+    df = df[full_cols]
+    st.session_state[f"etag_{name}"] = _compute_etag(df, name)
+    return df
+
+def save_df_target(name: str, df: pd.DataFrame, paths: dict | None = None, ws_func=None):
+    """Sauvegarde DataFrame vers GSheets (verrou optimiste) ou CSV."""
+    backend = st.secrets.get("storage_backend", "csv")
+    if backend == "gsheets":
+        if ws_func is None:
+            raise RuntimeError("ws_func requis pour backend gsheets")
+        tab = SHEET_NAME.get(name, name)
+        ws = ws_func(tab)
+        df_remote = _get_as_dataframe(ws, evaluate_formulas=True, header=0) or pd.DataFrame(columns=df.columns)
+        expected = st.session_state.get(f"etag_{name}")
+        current = _compute_etag(df_remote, name)
+        if expected and expected != current:
+            st.error(f"Conflit de modification détecté sur '{tab}'. Veuillez recharger la page.")
+            st.stop()
+        _set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
+        st.session_state[f"etag_{name}"] = _compute_etag(df, name)
+        return
+
+    # CSV
+    if paths is None or name not in paths:
+        raise RuntimeError("PATHS manquant pour CSV backend")
+    path: Path = paths[name]
+    try:
+        cur = pd.read_csv(path, dtype=str).fillna("")
+    except Exception:
+        cur = pd.DataFrame(columns=df.columns)
+    expected = st.session_state.get(f"etag_{name}")
+    current = _compute_etag(cur, name)
+    if expected and expected != current:
+        st.error(f"Conflit de modification détecté sur '{name}'. Veuillez recharger la page.")
+        st.stop()
+    df.to_csv(path, index=False, encoding="utf-8")
+    st.session_state[f"etag_{name}"] = _compute_etag(df, name)
+
+# ---------------------------------------------------------------------
+# Helper Google Sheets: ouverture d'un onglet par nom, avec fallback ID
+# ---------------------------------------------------------------------
+def ws(name: str):
+    """Retourne un gspread.Worksheet pour l’onglet 'name'.
+    Préférence à open_by_key (ID) ; fallback open(titre).
+    Crée la feuille si manquante.
+    """
+    sid = (st.secrets.get("gsheet_spreadsheet_id") or "").strip()
+    sname = (st.secrets.get("gsheet_spreadsheet") or "").strip()
+    if gspread is None:
+        raise RuntimeError("gspread non disponible (dépendances manquantes)")
+        
+    try:
+        sh = None
+        if sid:
+            st.sidebar.write(f"🔑 Ouverture par ID… ({sid[:6]}…)")
+            sh = GC.open_by_key(sid)
+        elif sname:
+            st.sidebar.write(f"📄 Ouverture par titre… ({sname})")
+            sh = GC.open(sname)
+        else:
+            raise RuntimeError("Aucun 'gsheet_spreadsheet_id' ni 'gsheet_spreadsheet' dans secrets.")
+
+        try:
+            w = sh.worksheet(name)
+        except gspread.WorksheetNotFound:
+            st.sidebar.warning(f"Feuille « {name} » absente → création…")
+            sh.add_worksheet(title=name, rows=2000, cols=50)
+            w = sh.worksheet(name)
+
+        return w
+
+    except Exception as _e:
+        # Log verbeux dans la sidebar pour diagnostic
+        st.sidebar.error("❌ Ouverture Google Sheet échouée")
+        st.sidebar.code(str(_e))
+        # Remontez l’erreur pour stopper proprement
+        raise RuntimeError(f"Impossible d'ouvrir le Google Sheet: {_e}")
+
+
+# --- Test ETag autonome (placer AVANT toute initialisation de données) ---
+# Si l’ETag s’affiche sans erreur, le problème de hashlib est réglé
+if st.sidebar.checkbox("🧪 Test ETag rapide", value=False):
+    import pandas as pd
+    # Mini DataFrame pour tester l’empreinte
+    _df_test = pd.DataFrame({
+        "ID": [1, 2],
+        "Updated_At": ["2025-01-01 10:00:00", "2025-01-02 12:34:00"]
+    })
+    st.sidebar.write("ETag calculé:", _compute_etag(_df_test, "contacts"))
+    st.info("Test ETag exécuté sans accès Google Sheets.")
+    st.stop()  # <-- Empêche toute exécution ultérieure (dont ws(...))
+    
+
+
+
 def _as_mapping(obj):
     try:
         from collections.abc import Mapping as _Mapping
@@ -178,49 +371,8 @@ GSHEET_SPREADSHEET_ID = st.secrets.get("gsheet_spreadsheet_id", "").strip() if "
 # --- Client Google Sheets ---
 GC = None
 
-# ---------------------------------------------------------------------
-# Helper Google Sheets: ouverture d'un onglet par nom, avec fallback ID
-# ---------------------------------------------------------------------
-def ws(name: str):
-    """Retourne un gspread.Worksheet pour l’onglet 'name'.
-    Préférence à open_by_key (ID) ; fallback open(titre).
-    Crée la feuille si manquante.
-    """
-    sid = (st.secrets.get("gsheet_spreadsheet_id") or "").strip()
-    sname = (st.secrets.get("gsheet_spreadsheet") or "").strip()
 
-    try:
-        sh = None
-        if sid:
-            st.sidebar.write(f"🔑 Ouverture par ID… ({sid[:6]}…)")
-            sh = GC.open_by_key(sid)
-        elif sname:
-            st.sidebar.write(f"📄 Ouverture par titre… ({sname})")
-            sh = GC.open(sname)
-        else:
-            raise RuntimeError("Aucun 'gsheet_spreadsheet_id' ni 'gsheet_spreadsheet' dans secrets.")
-
-        try:
-            w = sh.worksheet(name)
-        except gspread.WorksheetNotFound:
-            st.sidebar.warning(f"Feuille « {name} » absente → création…")
-            sh.add_worksheet(title=name, rows=2000, cols=50)
-            w = sh.worksheet(name)
-
-        return w
-
-    except Exception as _e:
-        # Log verbeux dans la sidebar pour diagnostic
-        st.sidebar.error("❌ Ouverture Google Sheet échouée")
-        st.sidebar.code(str(_e))
-        # Remontez l’erreur pour stopper proprement
-        raise RuntimeError(f"Impossible d'ouvrir le Google Sheet: {_e}")
-
-
-# Utilitaire pour éviter le ternaire inline fragile dans les appels
-
-
-
+# Utilitaire pour éviter le ternaire inline fragile dans les appels 
 def to_float_safe(x, default=0.0):
     try:
         if x is None:
@@ -240,11 +392,6 @@ def to_int_safe(x, default=0):
         return int(v) if v == v else int(default)
     except Exception:
         return int(default)
-
-# --- Backend de stockage ---
-STORAGE_BACKEND = st.secrets.get("storage_backend", "csv")
-GSHEET_SPREADSHEET = st.secrets.get("gsheet_spreadsheet", "IIBA CRM DB")
-
 
 # --- Client Google Sheets + helper ws() ---
 
@@ -301,8 +448,6 @@ ENT_COLS = ["ID_Entreprise","Nom_Entreprise","Secteur","Taille","CA_Annuel","Nb_
            "Contact_Principal","Email_Principal","Telephone_Principal","Site_Web","Statut_Partenariat",
            "Type_Partenariat","Date_Premier_Contact","Responsable_IIBA","Notes","Opportunites","Date_Maj"]
 
-# === AUDIT / META ===
-AUDIT_COLS = ["Created_At", "Created_By", "Updated_At", "Updated_By"]
 
 ALL_SCHEMAS = {
     "contacts": C_COLS, "interactions": I_COLS, "evenements": E_COLS,
@@ -367,18 +512,6 @@ PARAM_DEFAULTS = {
     "entreprises_employes_seuil_gros":"500",
 }
 
-# === Noms d’onglets Google Sheets / mapping interne ===
-SHEET_NAME = {
-    "contacts": "contacts",
-    "inter": "interactions",
-    "events": "evenements",
-    "parts": "participations",
-    "pay": "paiements",
-    "cert": "certifications",
-    "entreprises": "entreprises",
-    "params": "parametres",
-    "users": "users",
-}
 
 ALL_DEFAULTS = {**PARAM_DEFAULTS, **{f"list_{k}":v for k,v in DEFAULT_LISTS.items()}}
 
@@ -449,9 +582,9 @@ def authenticate_user(email: str, password: str, df_users: "pd.DataFrame"):
 
 # Authentification (exemple d’usage) :
 if "auth_user" not in st.session_state:
-    em = st.text_input("Email", value="", key="login_email")
+    em = st.text_input("Email", value="admin2@iiba.cmX", key="login_email")
     pw = st.text_input("Mot de passe", value="", type="password", key="login_pwd")
-    if st.button("Se connecter"):
+    if st.button("Se connecter - Authentification"):
         u = authenticate_user(em, pw, df_users)
         if u:
             st.session_state["auth_user"] = u
@@ -462,49 +595,16 @@ if "auth_user" not in st.session_state:
 else:
     st.sidebar.success(f"Connecté : {st.session_state['auth_user'].get('email')}")
 
-# === ETag logique ===
-def _id_col_for(name: str) -> str:
-    """Colonne ID pivot par table (utilisée par l’ETag)."""
-    return {
-        "contacts": "ID",
-        "inter": "ID_Interaction",
-        "events": "ID_Événement",
-        "parts": "ID_Participation",
-        "pay": "ID_Paiement",
-        "cert": "ID_Certif",
-        "entreprises": "ID_Entreprise",
-        "users": "user_id",
-    }.get(name, "ID")
+# === Cache de chargement ===
+@st.cache_data(show_spinner=False)
+def load_df(name: str, cols: list) -> pd.DataFrame:
+    return ensure_df_source(name, cols, PATHS, WS_FUNC)
 
-def _compute_etag(df: "pd.DataFrame", name: str) -> str:
-    """
-    ETag logique basé sur un sous-ensemble stable des colonnes.
-    S’il n’y a pas de 'Updated_At', on se rabat sur l’ensemble du DF en texte.
-    """
-    try:
-        import pandas as pd  # sécurité si l’ordre d'import varie
-    except Exception:
-        # En cas de runtime très dégradé, renvoie un ETag constant mais non optimal
-        return "no-pandas"
-
-    if df is None or getattr(df, "empty", True):
-        return "empty"
-
-    idc = _id_col_for(name)
-    # On privilégie un hash sur (ID, Updated_At) si disponibles
-    cols = [c for c in (idc, "Updated_At") if c in df.columns]
-
-    try:
-        if cols:
-            payload_df = df[cols].astype(str).fillna("")
-            payload = payload_df.sort_values(by=cols).to_csv(index=False)
-        else:
-            payload = df.astype(str).fillna("").to_csv(index=False)
-    except Exception:
-        # Filet de sécurité, au cas où la conversion échoue
-        payload = str(df)
-
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+# Chargement + semis + sauvegarde + mise en session
+df_users = load_df("users", U_COLS)
+df_users = ensure_default_users(df_users)
+save_df_target("users", df_users, PATHS, WS_FUNC)
+st.session_state["df_users"] = df_users
 
 # === AUDIT / META ===
 def _now_iso():
@@ -638,58 +738,6 @@ def log_event(kind:str, payload:dict):
     with PATHS["logs"].open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-def ensure_df_source(name: str, cols: list, paths: dict = None) -> pd.DataFrame:
-    full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
-    backend = st.secrets.get("storage_backend", "csv")
-    st.session_state.setdefault(f"etag_{name}", "empty")
-
-    if backend == "gsheets": 
-        tab = SHEET_NAME.get(name, name)
-        wsh = ws(tab)   # ws(...) doit retourner un Worksheet gspread valide
-        df = _get_as_dataframe(wsh, evaluate_formulas=True, header=0)
-        if df is None or df.empty:
-            df = pd.DataFrame(columns=full_cols)
-            _set_with_dataframe(wsh, df, include_index=False, include_column_header=True, resize=True)
-        else:
-            for c in full_cols:
-                if c not in df.columns:
-                    df[c] = ""
-            df = df[full_cols]
-        st.session_state[f"etag_{name}"] = _compute_etag(df, name)
-        return df
-
-    # CSV fallback
-    if paths is None or name not in paths:
-        raise RuntimeError("PATHS manquant pour CSV backend")
-    path = paths[name]
-    if not path.exists():
-        df = pd.DataFrame(columns=full_cols)
-        df.to_csv(path, index=False, encoding="utf-8")
-    else:
-        try:
-            df = pd.read_csv(path, dtype=str).fillna("")
-        except Exception:
-            df = pd.DataFrame(columns=full_cols)
-    for c in full_cols:
-        if c not in df.columns: df[c] = ""
-    df = df[full_cols]
-    st.session_state[f"etag_{name}"] = _compute_etag(df, name)
-    return df
-
-
-# --- Test ETag autonome (placer AVANT toute initialisation de données) ---
-# Si l’ETag s’affiche sans erreur, le problème de hashlib est réglé
-if st.sidebar.checkbox("🧪 Test ETag rapide", value=False):
-    import pandas as pd
-    # Mini DataFrame pour tester l’empreinte
-    _df_test = pd.DataFrame({
-        "ID": [1, 2],
-        "Updated_At": ["2025-01-01 10:00:00", "2025-01-02 12:34:00"]
-    })
-    st.sidebar.write("ETag calculé:", _compute_etag(_df_test, "contacts"))
-    st.info("Test ETag exécuté sans accès Google Sheets.")
-    st.stop()  # <-- Empêche toute exécution ultérieure (dont ws(...))
-    
 
 
 # Chargement des USERS
@@ -831,7 +879,7 @@ def login_box():
     uid = st.sidebar.text_input("Email / User ID", value="admin2@iiba.cm")
     pw = st.sidebar.text_input("Mot de passe", type="password", value="123456") 
     
-    if st.sidebar.button("Se connecter", key="btn_login"):
+    if st.sidebar.button("Se connecter - login_box", key="btn_login"):
         users_df = _ensure_users_df()
         users_df = _normalize_users_df(users_df)
         m = (users_df["user_id"].astype(str).str.strip().str.lower() == str(uid).strip().lower()) 
