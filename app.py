@@ -127,11 +127,15 @@ if "auth_user" in st.session_state:
 else:
     st.info("Veuillez vous connecter pour accéder au CRM.")
 
-# --- Liens directs vers les pages (garantis, même si la nav auto est masquée) ---
-st.sidebar.markdown("### 📚 Navigation")
-st.sidebar.page_link("app.py", label="🏠 Accueil")
-st.sidebar.page_link("pages/01_Contacts.py", label="👤 Contacts")
-st.sidebar.page_link("pages/02_Entreprises.py", label="🏢 Entreprises")
-st.sidebar.page_link("pages/03_Evenements.py", label="📅 Événements")
-st.sidebar.page_link("pages/04_Rapports.py", label="📈 Rapports")
-st.sidebar.page_link("pages/00_Admin.py", label="🛠️ Admin")
+st.sidebar.markdown("## Navigation")
+NAV = {
+    "🏠 Accueil": "app.py",
+    "👥 Contacts": "pages/01_Contacts.py",
+    "🏢 Entreprises": "pages/02_Entreprises.py",
+    "📅 Événements": "pages/03_Evenements.py",
+    "📈 Rapports": "pages/04_Rapports.py",
+    "🛠 Admin": "pages/00_Admin.py",
+}
+for label, target in NAV.items():
+    if st.sidebar.button(label, use_container_width=True, key=f"nav_{label}"):
+        st.switch_page(target)  # <- pas de “url_pathname”, très robuste
