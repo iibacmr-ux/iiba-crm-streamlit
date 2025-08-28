@@ -9,6 +9,9 @@ import unicodedata
 import numpy as np
 import pandas as pd
 import streamlit as st
+from gs_client import get_gspread_client, read_service_account_secret, show_diagnostics_sidebar
+from storage_backend import ensure_df_source, save_df_target, SHEET_NAME
+
 
 
 def to_float_safe(x, default=0.0):
@@ -51,9 +54,6 @@ if STORAGE_BACKEND == "gsheets":
             return sh.worksheet(name)
         except Exception:
             return sh.add_worksheet(title=name, rows=2, cols=50)
-
-from gs_client import get_gspread_client, read_service_account_secret, show_diagnostics_sidebar
-from storage_backend import ensure_df_source, save_df_target, SHEET_NAME
 
 # AgGrid
 try:
