@@ -28,15 +28,8 @@ def _gs_client():
 
     # Accept either a dict-like TOML table or a JSON string
     def _to_info(val):
-        from collections.abc import Mapping
-        if isinstance(val, Mapping) or hasattr(val, "keys"):
-            try:
-                return dict(val)
-            except Exception:
-                try:
-                    return {k: val[k] for k in val.keys()}
-                except Exception:
-                    pass
+        if isinstance(val, dict):
+            return dict(val)
         if isinstance(val, str):
             s = val.strip()
             # Try JSON
@@ -56,35 +49,33 @@ def _gs_client():
 
     info_obj = _to_info(info)
     if not isinstance(info_obj, dict):
-        st.error("⚠️ Le secret 'google_service_account' n'est pas au bon format. "
-                 "Utilisez soit: 1) un bloc JSON entre triples guillemets, soit "
-                 "2) une table TOML [google_service_account] avec les paires clé=valeur.")
+        st.error("⚠️ Le secret 'google_service_account' n'est pas au bon format. Utilisez soit: "
+                 "1) un bloc JSON entre triples guillemets, soit 2) une table TOML [google_service_account] avec les paires clé=valeur.")
         st.stop()
 
-    # Normaliser newline: si la clé contient des '\\n' littéraux et aucun vrai saut de ligne
-    if "private_key" in info_obj and isinstance(info_obj["private_key"], str):
-        pk = info_obj["private_key"]
-        if isinstance(pk, str) and "\n" in pk and "
-" not in pk:
-            info_obj["private_key"] = pk.replace("\n", "
-")
+# Normaliser les retours à la ligne de la private_key :
+# - Si la clé privée contient des séquences littérales "\n" mais aucun vrai saut de ligne,
+#   on convertit ces séquences en vrais retours à la ligne pour Google Credentials.
+if "private_key" in info_obj and isinstance(info_obj["private_key"], str):
+    pk = info_obj["private_key"]
+    if "\\n" in pk and "\n" not in pk:
+        info_obj["private_key"] = pk.replace("\\n", "\n")
 
     scopes = ["https://www.googleapis.com/auth/spreadsheets",
               "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(info_obj, scopes=scopes)
     return gspread.authorize(creds)
 
-_GC = _gs_client() if STORAGE_BACKEND == "gsheets" else None
-def _ws(name: str):
-    """Retourne l'onglet Google Sheets `name` (créé s'il n'existe pas), uniquement si backend gsheets actif."""
-    if STORAGE_BACKEND != "gsheets":
-        raise RuntimeError("Backend Google Sheets inactif. Définissez storage_backend='gsheets' dans les Secrets.")
-    sh = _GC.open(GSHEET_SPREADSHEET)
-    try:
-        return sh.worksheet(name)
-    except Exception:
-        ws = sh.add_worksheet(title=name, rows=2, cols=50)
-        return ws
+
+    _GC = _gs_client()
+
+    def _ws(name: str):
+        sh = _GC.open(GSHEET_SPREADSHEET)
+        try:
+            return sh.worksheet(name)
+        except Exception:
+            ws = sh.add_worksheet(title=name, rows=2, cols=50)
+            return ws
 
 # Map internal keys to Sheet tab names
 SHEET_NAME = {
@@ -3053,119 +3044,3 @@ with st.sidebar.expander("🩺 Diagnostics (Google Sheets)", expanded=False):
             st.error(f"Diagnostic : {e}")
     else:
         st.info("Le backend n’est pas `gsheets`. Basculez `storage_backend` à `gsheets` dans les Secrets pour activer ces tests.")
-
-
-
-# === DIAGNOSTICS SIDEBAR ===
-with st.sidebar.expander("🩺 Diagnostics (Google Sheets)", expanded=False):
-    st.caption("Vérification de la configuration Google Sheets, *avec parsing verbeux des secrets*.")
-    st.write(f"**Backend** : `{STORAGE_BACKEND}`")
-    st.write(f"**Spreadsheet** : `{GSHEET_SPREADSHEET}`")
-
-    # --- Section 1: Parsing verbeux du secret google_service_account ---
-    st.markdown("**1) Analyse détaillée du secret `google_service_account`**")
-    if "google_service_account" not in st.secrets:
-        st.error("Secret `google_service_account` absent dans les Secrets Streamlit.")
-    else:
-        raw = st.secrets.get("google_service_account")
-        typ = type(raw).__name__
-        st.write(f"- Type brut dans Secrets : `{typ}`")
-
-        # Aperçu sécurisé (tronqué) de la source (sans clés sensibles)
-        try:
-            preview = str(raw)
-            # masquage grossier
-            preview = preview.replace("private_key", "private_key(…masqué…)")
-            st.code(preview[:800] + (" …" if len(preview) > 800 else ""), language="text")
-        except Exception as e:
-            st.warning(f"Impossible d'afficher un aperçu du secret: {e}")
-
-        # Tentatives de parsing
-        parsed = None
-        parse_msgs = []
-        if isinstance(raw, dict):
-            parsed = dict(raw)
-            parse_msgs.append("✅ Déjà un dictionnaire (TOML table).")
-        else:
-            s = str(raw).strip()
-            # 1) JSON
-            try:
-                import json as _json
-                parsed = _json.loads(s)
-                parse_msgs.append("✅ JSON valide.")
-            except Exception as e:
-                parse_msgs.append(f"❌ JSON invalide: {e}")
-            # 2) ast.literal_eval (fallback dict-like)
-            if not isinstance(parsed, dict):
-                try:
-                    import ast
-                    d = ast.literal_eval(s)
-                    if isinstance(d, dict):
-                        parsed = d
-                        parse_msgs.append("✅ `ast.literal_eval` ok (format type dict Python).")
-                    else:
-                        parse_msgs.append("❌ `ast.literal_eval` n'a pas retourné un dict.")
-                except Exception as e:
-                    parse_msgs.append(f"❌ `ast.literal_eval` échec: {e}")
-
-        for msg in parse_msgs:
-            st.write("- " + msg)
-
-        if not isinstance(parsed, dict):
-            st.error("Échec parsing : le secret n'est pas un dictionnaire exploitable.")
-        else:
-            # Vérification des clés essentielles
-            needed = ["type","project_id","private_key_id","private_key","client_email","client_id","token_uri"]
-            missing = [k for k in needed if k not in parsed]
-            if missing:
-                st.warning("Clés manquantes dans le secret: " + ", ".join(missing))
-            else:
-                st.success("Clés essentielles présentes dans le secret.")
-
-            # Analyse de la private_key
-            pk = parsed.get("private_key","")
-            has_literal_n = "\\n" in pk if isinstance(pk, str) else False
-            has_real_n = "\n" in pk if isinstance(pk, str) else False
-            st.write(f"- `private_key` longueur: {len(pk) if isinstance(pk, str) else '—'}")
-            st.write(f"- Contient **séquences** `\\n` : {has_literal_n}")
-            st.write(f"- Contient **vrais** retours ligne `\\n` : {has_real_n}")
-            if isinstance(pk, str) and has_literal_n and not has_real_n:
-                st.info("Conversion recommandée: remplacer les séquences `\\n` par de vrais sauts de ligne (gérée automatiquement au runtime).")
-
-    # --- Section 2: Connexion et onglets ---
-    st.markdown("---")
-    st.markdown("**2) Connexion Google Sheets & onglets**")
-    if STORAGE_BACKEND == "gsheets":
-        try:
-            sh = _GC.open(GSHEET_SPREADSHEET)
-            ws_list = [w.title for w in sh.worksheets()]
-            st.success(f"Connexion OK. **{len(ws_list)}** onglet(s) détecté(s).")
-            st.write("**Onglets détectés** :", ", ".join(ws_list) if ws_list else "—")
-
-            required_tabs = list({v for v in SHEET_NAME.values()})
-            missing = [t for t in required_tabs if t not in ws_list]
-            if missing:
-                st.warning("Onglets manquants : " + ", ".join(missing))
-                if st.button("🛠️ Créer les onglets manquants"):
-                    for tname in missing:
-                        try:
-                            sh.add_worksheet(title=tname, rows=2, cols=50)
-                        except Exception as _e:
-                            st.error(f"Impossible de créer '{tname}' : {_e}")
-                    st.experimental_rerun()
-            else:
-                st.info("Toutes les tables attendues existent.")
-        except Exception as e:
-            st.error(f"Connexion échouée : {e}")
-    else:
-        st.info("Le backend n’est pas `gsheets`. Définissez `storage_backend='gsheets'` dans les Secrets.")
-
-    # --- Section 3: Etags (anti-collisions) ---
-    st.markdown("---")
-    st.markdown("**3) État des etags (anti-collisions)**")
-    for k in SHEET_NAME.keys():
-        st.write(f"- `{k}` : `{st.session_state.get(f'etag_{k}', '—')}`")
-    if st.button("♻️ Purger les etags"):
-        for k in list(SHEET_NAME.keys()):
-            st.session_state.pop(f"etag_{k}", None)
-        st.success("Etags purgés.")
