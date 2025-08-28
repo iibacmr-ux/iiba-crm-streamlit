@@ -40,8 +40,7 @@ def ws(name: str):
         return sh.add_worksheet(title=name, rows=2, cols=50)
 
 # Utilitaire pour éviter le ternaire inline fragile dans les appels
-_WS_FUNC = _WS_FUNC
-
+_WS_FUNC = ws if STORAGE_BACKEND == "gsheets" else None
 if STORAGE_BACKEND == "gsheets":
     try:
         info = read_service_account_secret()
@@ -2882,5 +2881,4 @@ elif page == "Admin":
                     
         except ImportError:
             st.error("Module 'bcrypt' requis. Installez avec: pip install bcrypt")
-
 
