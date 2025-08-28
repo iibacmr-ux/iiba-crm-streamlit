@@ -241,19 +241,6 @@ def to_int_safe(x, default=0):
     except Exception:
         return int(default)
 
-# --- Test ETag autonome (placer AVANT toute initialisation de données) ---
-if st.sidebar.checkbox("🧪 Test ETag rapide", value=False):
-    import pandas as pd
-    # Mini DataFrame pour tester l’empreinte
-    _df_test = pd.DataFrame({
-        "ID": [1, 2],
-        "Updated_At": ["2025-01-01 10:00:00", "2025-01-02 12:34:00"]
-    })
-    st.sidebar.write("ETag calculé:", _compute_etag(_df_test, "contacts"))
-    st.info("Test ETag exécuté sans accès Google Sheets.")
-    st.stop()  # <-- Empêche toute exécution ultérieure (dont ws(...))
-    
-
 # --- Backend de stockage ---
 STORAGE_BACKEND = st.secrets.get("storage_backend", "csv")
 GSHEET_SPREADSHEET = st.secrets.get("gsheet_spreadsheet", "IIBA CRM DB")
@@ -459,13 +446,6 @@ def authenticate_user(email: str, password: str, df_users: "pd.DataFrame"):
     if row.get("password_hash","") != hp:
         return None
     return row.to_dict()
-
-# Chargement des USERS
-df_users = ensure_df_source("users", U_COLS, PATHS, ws if st.secrets.get("storage_backend","csv")=="gsheets" else None)
-# Semis si nécessaire
-df_users = ensure_default_users(df_users)
-# Sauvegarde (pour persister le semis)
-save_df_target("users", df_users, PATHS, ws if st.secrets.get("storage_backend","csv")=="gsheets" else None)
 
 # Authentification (exemple d’usage) :
 if "auth_user" not in st.session_state:
@@ -702,6 +682,30 @@ if st.sidebar.checkbox("🧪 Test ETag rapide", value=False):
     _df_test = pd.DataFrame({"ID":[1,2], "Updated_At":["2025-01-01","2025-01-02"]})
     st.sidebar.write("ETag:", _compute_etag(_df_test, "contacts"))
     
+
+
+# --- Test ETag autonome (placer AVANT toute initialisation de données) ---
+if st.sidebar.checkbox("🧪 Test ETag rapide", value=False):
+    import pandas as pd
+    # Mini DataFrame pour tester l’empreinte
+    _df_test = pd.DataFrame({
+        "ID": [1, 2],
+        "Updated_At": ["2025-01-01 10:00:00", "2025-01-02 12:34:00"]
+    })
+    st.sidebar.write("ETag calculé:", _compute_etag(_df_test, "contacts"))
+    st.info("Test ETag exécuté sans accès Google Sheets.")
+    st.stop()  # <-- Empêche toute exécution ultérieure (dont ws(...))
+    
+
+
+# Chargement des USERS
+df_users = ensure_df_source("users", U_COLS, PATHS, ws if st.secrets.get("storage_backend","csv")=="gsheets" else None)
+# Semis si nécessaire
+df_users = ensure_default_users(df_users)
+# Sauvegarde (pour persister le semis)
+save_df_target("users", df_users, PATHS, ws if st.secrets.get("storage_backend","csv")=="gsheets" else None)
+
+
 # Load data
 df_contacts = ensure_df_source("contacts", C_COLS, PATHS)
 df_inter = ensure_df_source("inter", I_COLS, PATHS)
