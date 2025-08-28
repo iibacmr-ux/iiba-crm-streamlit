@@ -53,23 +53,23 @@ def _gs_client():
                  "1) un bloc JSON entre triples guillemets, soit 2) une table TOML [google_service_account] avec les paires clé=valeur.")
         st.stop()
 
-# Normaliser les retours à la ligne de la private_key :
-# - Si la clé privée contient des séquences littérales "\n" mais aucun vrai saut de ligne,
-#   on convertit ces séquences en vrais retours à la ligne pour Google Credentials.
-if "private_key" in info_obj and isinstance(info_obj["private_key"], str):
-    pk = info_obj["private_key"]
-    if "\\n" in pk and "\n" not in pk:
-        info_obj["private_key"] = pk.replace("\\n", "\n")
+    # Normaliser les retours à la ligne de la private_key :
+    # - Si la clé privée contient des séquences littérales "\n" mais aucun vrai saut de ligne,
+    #   on convertit ces séquences en vrais retours à la ligne pour Google Credentials.
+    if "private_key" in info_obj and isinstance(info_obj["private_key"], str):
+        pk = info_obj["private_key"]
+        if "\\n" in pk and "\n" not in pk:
+            info_obj["private_key"] = pk.replace("\\n", "\n")
+    
+        scopes = ["https://www.googleapis.com/auth/spreadsheets",
+                  "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(info_obj, scopes=scopes)
+        return gspread.authorize(creds)
 
-    scopes = ["https://www.googleapis.com/auth/spreadsheets",
-              "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(info_obj, scopes=scopes)
-    return gspread.authorize(creds)
 
+_GC = _gs_client()
 
-    _GC = _gs_client()
-
-    def _ws(name: str):
+def _ws(name: str):
         sh = _GC.open(GSHEET_SPREADSHEET)
         try:
             return sh.worksheet(name)
@@ -79,27 +79,27 @@ if "private_key" in info_obj and isinstance(info_obj["private_key"], str):
 
 # Map internal keys to Sheet tab names
 SHEET_NAME = {
-    "contacts": "contacts",
-    "inter": "interactions",
-    "events": "evenements",
-    "parts": "participations",
-    "pay": "paiements",
-    "cert": "certifications",
-    "entreprises": "entreprises",
-    "params": "parametres",
-    "users": "users"
+"contacts": "contacts",
+"inter": "interactions",
+"events": "evenements",
+"parts": "participations",
+"pay": "paiements",
+"cert": "certifications",
+"entreprises": "entreprises",
+"params": "parametres",
+"users": "users"
 }
 
 def _id_col_for(name: str) -> str:
     return {
-        "contacts": "ID",
-        "inter": "ID_Interaction",
-        "events": "ID_Événement",
-        "parts": "ID_Participation",
-        "pay": "ID_Paiement",
-        "cert": "ID_Certif",
-        "entreprises": "ID_Entreprise",
-        "users": "user_id"
+    "contacts": "ID",
+    "inter": "ID_Interaction",
+    "events": "ID_Événement",
+    "parts": "ID_Participation",
+    "pay": "ID_Paiement",
+    "cert": "ID_Certif",
+    "entreprises": "ID_Entreprise",
+    "users": "user_id"
     }.get(name, "ID")
 
 import hashlib
