@@ -230,6 +230,18 @@ def to_int_safe(x, default=0):
     except Exception:
         return int(default)
 
+# --- Test ETag autonome (placer AVANT toute initialisation de données) ---
+if st.sidebar.checkbox("🧪 Test ETag rapide", value=False):
+    import pandas as pd
+    # Mini DataFrame pour tester l’empreinte
+    _df_test = pd.DataFrame({
+        "ID": [1, 2],
+        "Updated_At": ["2025-01-01 10:00:00", "2025-01-02 12:34:00"]
+    })
+    st.sidebar.write("ETag calculé:", _compute_etag(_df_test, "contacts"))
+    st.info("Test ETag exécuté sans accès Google Sheets.")
+    st.stop()  # <-- Empêche toute exécution ultérieure (dont ws(...))
+    
 
 # --- Backend de stockage ---
 STORAGE_BACKEND = st.secrets.get("storage_backend", "csv")
@@ -281,6 +293,10 @@ E_COLS = ["ID_Événement","Nom_Événement","Type","Date","Durée_h","Lieu","Fo
 P_COLS = ["ID_Participation","ID","ID_Événement","Rôle","Inscription","Arrivée","Temps_Present","Feedback","Note","Commentaire"]
 PAY_COLS = ["ID_Paiement","ID","ID_Événement","Date_Paiement","Montant","Moyen","Statut","Référence","Notes","Relance"]
 CERT_COLS = ["ID_Certif","ID","Type_Certif","Date_Examen","Résultat","Score","Date_Obtention","Validité","Renouvellement","Notes"]
+
+# Users
+U_COLS = ["user_id","email","password_hash","role","is_active","display_name",
+          "Created_At","Created_By","Updated_At","Updated_By"]
 
 # NOUVEAU: Schéma pour les entreprises
 ENT_COLS = ["ID_Entreprise","Nom_Entreprise","Secteur","Taille","CA_Annuel","Nb_Employes","Ville","Pays",
@@ -367,6 +383,93 @@ SHEET_NAME = {
 }
 
 ALL_DEFAULTS = {**PARAM_DEFAULTS, **{f"list_{k}":v for k,v in DEFAULT_LISTS.items()}}
+
+# Semer l’utilisateur admin2@iiba.cm (123456)
+def _hash_pwd(p: str) -> str:
+    """Hash simple (SHA256 + sel fixe). Pour prod, préférez bcrypt/argon2."""
+    salt = "iiba-cmr::"   # sel minimal pour démo
+    return hashlib.sha256((salt + str(p)).encode("utf-8")).hexdigest()
+
+def ensure_default_users(df_users: "pd.DataFrame") -> "pd.DataFrame":
+    import pandas as pd
+    from datetime import datetime
+    # Colonnes garanties
+    for c in U_COLS:
+        if c not in df_users.columns:
+            df_users[c] = ""
+
+    # Normalisation emails
+    emails = df_users["email"].fillna("").str.lower().tolist()
+
+    seed = []
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    # admin2@iiba.cm / 123456
+    if "admin2@iiba.cm" not in emails:
+        seed.append({
+            "user_id": f"U{int(datetime.utcnow().timestamp())}01",
+            "email": "admin2@iiba.cm",
+            "password_hash": _hash_pwd("123456"),
+            "role": "admin",
+            "is_active": "1",
+            "display_name": "Admin 2",
+            "Created_At": ts, "Created_By": "seed", "Updated_At": ts, "Updated_By": "seed",
+        })
+
+    # (optionnel) admin@iiba.cm / admin
+    if "admin@iiba.cm" not in emails:
+        seed.append({
+            "user_id": f"U{int(datetime.utcnow().timestamp())}02",
+            "email": "admin@iiba.cm",
+            "password_hash": _hash_pwd("admin"),
+            "role": "admin",
+            "is_active": "1",
+            "display_name": "Admin",
+            "Created_At": ts, "Created_By": "seed", "Updated_At": ts, "Updated_By": "seed",
+        })
+
+    if seed:
+        df_users = pd.concat([df_users, pd.DataFrame(seed)], ignore_index=True)
+
+    # Keep only expected columns & order
+    df_users = df_users[[c for c in U_COLS]]
+    return df_users
+
+def authenticate_user(email: str, password: str, df_users: "pd.DataFrame"):
+    """Retourne un dict utilisateur si OK, sinon None."""
+    em = (email or "").strip().lower()
+    hp = _hash_pwd(password or "")
+    row = df_users[df_users["email"].fillna("").str.lower() == em]
+    if row.empty:
+        return None
+    row = row.iloc[0]
+    if str(row.get("is_active","1")) not in ("1","true","True"):
+        return None
+    if row.get("password_hash","") != hp:
+        return None
+    return row.to_dict()
+
+# Chargement des USERS
+df_users = ensure_df_source("users", U_COLS, PATHS, ws if st.secrets.get("storage_backend","csv")=="gsheets" else None)
+# Semis si nécessaire
+df_users = ensure_default_users(df_users)
+# Sauvegarde (pour persister le semis)
+save_df_target("users", df_users, PATHS, ws if st.secrets.get("storage_backend","csv")=="gsheets" else None)
+
+# Authentification (exemple d’usage) :
+if "auth_user" not in st.session_state:
+    em = st.text_input("Email", value="", key="login_email")
+    pw = st.text_input("Mot de passe", value="", type="password", key="login_pwd")
+    if st.button("Se connecter"):
+        u = authenticate_user(em, pw, df_users)
+        if u:
+            st.session_state["auth_user"] = u
+            st.success(f"Bienvenue, {u.get('display_name','')} !")
+            st.experimental_rerun()
+        else:
+            st.error("Utilisateur introuvable ou mot de passe incorrect.")
+else:
+    st.sidebar.success(f"Connecté : {st.session_state['auth_user'].get('email')}")
 
 # === ETag logique ===
 def _id_col_for(name: str) -> str:
