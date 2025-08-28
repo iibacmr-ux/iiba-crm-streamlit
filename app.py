@@ -492,13 +492,13 @@ st.sidebar.title("Navigation")
 page = st.sidebar.radio("Aller à", [
     "CRM (Grille centrale)",
 # Diagnostics Sidebar
-show_diagnostics_sidebar(GSHEET_SPREADSHEET, SHEET_NAME)
 
     "Événements", 
     "Entreprises",  # NOUVEAU
     "Rapports",
     "Admin"
 ], index=0)
+show_diagnostics_sidebar(GSHEET_SPREADSHEET, SHEET_NAME)
 
 if not allow_page(page):
     st.error("⛔ Accès refusé. Demandez un rôle 'admin' à un membre du comité.")
