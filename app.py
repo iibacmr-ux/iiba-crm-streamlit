@@ -9,6 +9,21 @@ import unicodedata
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+# --- Backend de stockage ---
+STORAGE_BACKEND = st.secrets.get("storage_backend", "csv")
+GSHEET_SPREADSHEET = st.secrets.get("gsheet_spreadsheet", "IIBA CRM DB")
+GSHEET_SPREADSHEET_ID = st.secrets.get("gsheet_spreadsheet_id", "").strip() if "gsheet_spreadsheet_id" in st.secrets else ""
+
+# --- Client Google Sheets ---
+GC = None
+if STORAGE_BACKEND == "gsheets":
+    try:
+        info = read_service_account_secret()
+        GC = get_gspread_client(info)
+    except Exception as e:
+        st.error(f"Initialisation Google Sheets échouée : {e}")
+        st.stop()
 from gs_client import get_gspread_client, read_service_account_secret, show_diagnostics_sidebar
 from storage_backend import ensure_df_source, save_df_target, SHEET_NAME
 
@@ -40,69 +55,6 @@ GSHEET_SPREADSHEET = st.secrets.get("gsheet_spreadsheet", "IIBA CRM DB")
 
 
 # --- Client Google Sheets + helper ws() ---
-GC = None
-def ws(name: str):
-    """
-    Retourne un worksheet Google Sheets intitulé `name`.
-    Utilise `GSHEET_SPREADSHEET_ID` si fourni (plus fiable), sinon `GSHEET_SPREADSHEET` (par titre).
-
-# --- Client Google Sheets ---
-GC = None
-if STORAGE_BACKEND == "gsheets":
-    try:
-        info = read_service_account_secret()
-        GC = get_gspread_client(info)
-    except Exception as e:
-        st.error(f"Initialisation Google Sheets échouée : {e}")
-        st.stop()
-    Affiche des messages utiles si l'accès est refusé ou si le fichier est introuvable.
-    """
-    import gspread
-    from gspread.exceptions import APIError, SpreadsheetNotFound
-
-    if GC is None:
-        st.error("Client Google Sheets non initialisé.")
-        st.stop()
-
-    # Ouvrir le spreadsheet en priorité par ID si fourni (évite la recherche Drive sensible aux partages)
-    try:
-        if GSHEET_SPREADSHEET_ID:
-            sh = GC.open_by_key(GSHEET_SPREADSHEET_ID)
-        else:
-            sh = GC.open(GSHEET_SPREADSHEET)
-    except SpreadsheetNotFound:
-        st.error(f"Spreadsheet introuvable. Vérifiez le nom `{GSHEET_SPREADSHEET}` ou renseignez `gsheet_spreadsheet_id` dans les Secrets.")
-        st.info("Aide : Ouvrez votre Google Sheet → URL forme `https://docs.google.com/spreadsheets/d/<ID>/edit` → prenez la partie `<ID>` et placez-la dans `gsheet_spreadsheet_id`.")
-        st.stop()
-    except APIError as e:
-        st.error(f"Google APIError lors de l'ouverture du spreadsheet : {e}")
-        st.info("Causes courantes : 1) Le spreadsheet n'est pas partagé en **Editor** avec l'email du Service Account ; 2) Le nom est erroné ; 3) Le Drive de l'organisation bloque la recherche par titre.")
-        st.info("Solutions : Partagez le fichier avec le service account, ou fournissez `gsheet_spreadsheet_id` dans les Secrets pour ouvrir par ID.")
-        st.stop()
-    except Exception as e:
-        st.error(f"Impossible d'ouvrir le spreadsheet : {e}")
-        st.stop()
-
-    # Récupérer/Créer l'onglet
-    try:
-        return sh.worksheet(name)
-    except Exception:
-        try:
-            return sh.add_worksheet(title=name, rows=2, cols=50)
-        except Exception as e:
-            st.error(f"Impossible de créer l'onglet '{name}' : {e}")
-            st.stop()
-
-if STORAGE_BACKEND == "gsheets":
-    info = read_service_account_secret()
-    GC = get_gspread_client(info)
-    def ws(name: str):
-        sh = GC.open(GSHEET_SPREADSHEET)
-        try:
-            return sh.worksheet(name)
-        except Exception:
-            return sh.add_worksheet(title=name, rows=2, cols=50)
-
 
 # AgGrid
 try:
