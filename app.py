@@ -9,6 +9,8 @@ import unicodedata
 import numpy as np
 import pandas as pd
 import streamlit as st
+from gs_client import get_gspread_client, read_service_account_secret, show_diagnostics_sidebar
+from storage_backend import ensure_df_source, save_df_target, SHEET_NAME
 
 # --- Backend de stockage ---
 STORAGE_BACKEND = st.secrets.get("storage_backend", "csv")
@@ -24,8 +26,6 @@ if STORAGE_BACKEND == "gsheets":
     except Exception as e:
         st.error(f"Initialisation Google Sheets échouée : {e}")
         st.stop()
-from gs_client import get_gspread_client, read_service_account_secret, show_diagnostics_sidebar
-from storage_backend import ensure_df_source, save_df_target, SHEET_NAME
 
 
 def to_float_safe(x, default=0.0):
