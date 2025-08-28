@@ -2,3 +2,6 @@ streamlit-aggrid
 openpyxl
 plotly
 bcrypt
+gspread
+gspread-dataframe
+google-auth
