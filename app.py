@@ -306,8 +306,11 @@ def log_event(kind:str, payload:dict):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 # juste avant
-ws = GC.get_worksheet if STORAGE_BACKEND=="gsheets" else None
-
+if STORAGE_BACKEND == "gsheets":
+    ws = GC.get_worksheet
+else:
+    ws = None
+    
 # Load data
 df_contacts = ensure_df_source("contacts", C_COLS, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
 df_inter = ensure_df_source("inter", I_COLS, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
