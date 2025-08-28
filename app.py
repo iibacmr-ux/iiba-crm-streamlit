@@ -1262,90 +1262,90 @@ else:
     contact_principal = ""
     email_principal = ""
     tel_principal = ""
-site_web = st.text_input("Site Web", value=row_init_ent.get("Site_Web",""))
+    site_web = st.text_input("Site Web", value=row_init_ent.get("Site_Web",""))
 
-            # Partenariat
-            st.subheader("Partenariat")
-            c11_ent, c12_ent, c13_ent = st.columns(3)
-            statut_part = c11_ent.selectbox("Statut Partenariat", SET["statuts_partenariat"],
-                                           index=SET["statuts_partenariat"].index(row_init_ent.get("Statut_Partenariat","Prospect")) if row_init_ent.get("Statut_Partenariat","Prospect") in SET["statuts_partenariat"] else 0)
-            type_part = c12_ent.selectbox("Type Partenariat", SET["types_partenariat"],
-                                         index=SET["types_partenariat"].index(row_init_ent.get("Type_Partenariat","Formation")) if row_init_ent.get("Type_Partenariat","Formation") in SET["types_partenariat"] else 0)
-            resp_iiba = c13_ent.selectbox("Responsable IIBA", SET["responsables_iiba"],
-                                         index=SET["responsables_iiba"].index(row_init_ent.get("Responsable_IIBA","Non assigné")) if row_init_ent.get("Responsable_IIBA","Non assigné") in SET["responsables_iiba"] else len(SET["responsables_iiba"])-1)
+    # Partenariat
+    st.subheader("Partenariat")
+    c11_ent, c12_ent, c13_ent = st.columns(3)
+    statut_part = c11_ent.selectbox("Statut Partenariat", SET["statuts_partenariat"],
+                                   index=SET["statuts_partenariat"].index(row_init_ent.get("Statut_Partenariat","Prospect")) if row_init_ent.get("Statut_Partenariat","Prospect") in SET["statuts_partenariat"] else 0)
+    type_part = c12_ent.selectbox("Type Partenariat", SET["types_partenariat"],
+                                 index=SET["types_partenariat"].index(row_init_ent.get("Type_Partenariat","Formation")) if row_init_ent.get("Type_Partenariat","Formation") in SET["types_partenariat"] else 0)
+    resp_iiba = c13_ent.selectbox("Responsable IIBA", SET["responsables_iiba"],
+                                 index=SET["responsables_iiba"].index(row_init_ent.get("Responsable_IIBA","Non assigné")) if row_init_ent.get("Responsable_IIBA","Non assigné") in SET["responsables_iiba"] else len(SET["responsables_iiba"])-1)
 
-            # Dates
-            c14_ent, c15_ent = st.columns(2)
-            date_premier_contact = c14_ent.date_input("Date premier contact", 
-                                                     value=parse_date(row_init_ent.get("Date_Premier_Contact")) or date.today())
-            date_maj = c15_ent.date_input("Date mise à jour", value=date.today())
+    # Dates
+    c14_ent, c15_ent = st.columns(2)
+    date_premier_contact = c14_ent.date_input("Date premier contact", 
+                                             value=parse_date(row_init_ent.get("Date_Premier_Contact")) or date.today())
+    date_maj = c15_ent.date_input("Date mise à jour", value=date.today())
 
-            # Notes et opportunités
-            notes_ent = st.text_area("Notes", value=row_init_ent.get("Notes",""))
-            opportunites = st.text_area("Opportunités", value=row_init_ent.get("Opportunites",""))
+    # Notes et opportunités
+    notes_ent = st.text_area("Notes", value=row_init_ent.get("Notes",""))
+    opportunites = st.text_area("Opportunités", value=row_init_ent.get("Opportunites",""))
 
-            # Boutons
-            cL_ent, cM_ent, cR_ent = st.columns([1.2,1.2,2])
-            btn_create_ent = cL_ent.form_submit_button("🆕 Créer l'entreprise", disabled=(mode_ent=="edit"))
-            btn_save_ent = cM_ent.form_submit_button("💾 Enregistrer modifications", disabled=(mode_ent!="edit"))
+    # Boutons
+    cL_ent, cM_ent, cR_ent = st.columns([1.2,1.2,2])
+    btn_create_ent = cL_ent.form_submit_button("🆕 Créer l'entreprise", disabled=(mode_ent=="edit"))
+    btn_save_ent = cM_ent.form_submit_button("💾 Enregistrer modifications", disabled=(mode_ent!="edit"))
 
-            # Actions du formulaire
-            if btn_create_ent:
-                if not nom_ent.strip():
-                    st.error("Le nom de l'entreprise est obligatoire.")
-                    st.stop()
-                if email_principal and not email_ok(email_principal):
-                    st.error("Email principal invalide.")
-                    st.stop()
-                if tel_principal and not phone_ok(tel_principal):
-                    st.error("Téléphone principal invalide.")
-                    st.stop()
+    # Actions du formulaire
+    if btn_create_ent:
+        if not nom_ent.strip():
+            st.error("Le nom de l'entreprise est obligatoire.")
+            st.stop()
+        if email_principal and not email_ok(email_principal):
+            st.error("Email principal invalide.")
+            st.stop()
+        if tel_principal and not phone_ok(tel_principal):
+            st.error("Téléphone principal invalide.")
+            st.stop()
 
-                new_id_ent = generate_id("ENT", df_entreprises, "ID_Entreprise")
-                new_row_ent = {
-                    "ID_Entreprise": new_id_ent, "Nom_Entreprise": nom_ent, "Secteur": secteur_ent, "Taille": taille_ent,
-                    "CA_Annuel": ca_annuel, "Nb_Employes": nb_employes, "Ville": ville_ent, "Pays": pays_ent,
-                    "Contact_Principal": contact_principal, "Email_Principal": email_principal, "Telephone_Principal": tel_principal,
-                    "Site_Web": site_web, "Statut_Partenariat": statut_part, "Type_Partenariat": type_part,
-                    "Date_Premier_Contact": date_premier_contact.isoformat(), "Responsable_IIBA": resp_iiba,
-                    "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
-                }
-                globals()["df_entreprises"] = pd.concat([df_entreprises, pd.DataFrame([new_row_ent])], ignore_index=True)
-                save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
-                st.success(f"Entreprise créée ({new_id_ent}).")
-                st.session_state["selected_entreprise_id"] = new_id_ent
-                st.session_state["entreprise_form_mode"] = "edit"
-                _safe_rerun()
+        new_id_ent = generate_id("ENT", df_entreprises, "ID_Entreprise")
+        new_row_ent = {
+            "ID_Entreprise": new_id_ent, "Nom_Entreprise": nom_ent, "Secteur": secteur_ent, "Taille": taille_ent,
+            "CA_Annuel": ca_annuel, "Nb_Employes": nb_employes, "Ville": ville_ent, "Pays": pays_ent,
+            "Contact_Principal": contact_principal, "Email_Principal": email_principal, "Telephone_Principal": tel_principal,
+            "Site_Web": site_web, "Statut_Partenariat": statut_part, "Type_Partenariat": type_part,
+            "Date_Premier_Contact": date_premier_contact.isoformat(), "Responsable_IIBA": resp_iiba,
+            "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
+        }
+        globals()["df_entreprises"] = pd.concat([df_entreprises, pd.DataFrame([new_row_ent])], ignore_index=True)
+        save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+        st.success(f"Entreprise créée ({new_id_ent}).")
+        st.session_state["selected_entreprise_id"] = new_id_ent
+        st.session_state["entreprise_form_mode"] = "edit"
+        _safe_rerun()
 
-            if btn_save_ent:
-                if not sel_entid:
-                    st.error("Aucune entreprise sélectionnée pour enregistrer des modifications.")
-                    st.stop()
-                if not nom_ent.strip():
-                    st.error("Le nom de l'entreprise est obligatoire.")
-                    st.stop()
-                if email_principal and not email_ok(email_principal):
-                    st.error("Email principal invalide.")
-                    st.stop()
-                if tel_principal and not phone_ok(tel_principal):
-                    st.error("Téléphone principal invalide.")
-                    st.stop()
+    if btn_save_ent:
+        if not sel_entid:
+            st.error("Aucune entreprise sélectionnée pour enregistrer des modifications.")
+            st.stop()
+        if not nom_ent.strip():
+            st.error("Le nom de l'entreprise est obligatoire.")
+            st.stop()
+        if email_principal and not email_ok(email_principal):
+            st.error("Email principal invalide.")
+            st.stop()
+        if tel_principal and not phone_ok(tel_principal):
+            st.error("Téléphone principal invalide.")
+            st.stop()
 
-                idx_ent = df_entreprises.index[df_entreprises["ID_Entreprise"] == sel_entid]
-                if len(idx_ent) == 0:
-                    st.error("Entreprise introuvable (rafraîchissez).")
-                    st.stop()
-                rowe_ent = {
-                    "ID_Entreprise": sel_entid, "Nom_Entreprise": nom_ent, "Secteur": secteur_ent, "Taille": taille_ent,
-                    "CA_Annuel": ca_annuel, "Nb_Employes": nb_employes, "Ville": ville_ent, "Pays": pays_ent,
-                    "Contact_Principal": contact_principal, "Email_Principal": email_principal, "Telephone_Principal": tel_principal,
-                    "Site_Web": site_web, "Statut_Partenariat": statut_part, "Type_Partenariat": type_part,
-                    "Date_Premier_Contact": date_premier_contact.isoformat(), "Responsable_IIBA": resp_iiba,
-                    "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
-                }
-                df_entreprises.loc[idx_ent[0]] = rowe_ent
-                save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
-                st.success(f"Entreprise {sel_entid} mise à jour.")
+        idx_ent = df_entreprises.index[df_entreprises["ID_Entreprise"] == sel_entid]
+        if len(idx_ent) == 0:
+            st.error("Entreprise introuvable (rafraîchissez).")
+            st.stop()
+        rowe_ent = {
+            "ID_Entreprise": sel_entid, "Nom_Entreprise": nom_ent, "Secteur": secteur_ent, "Taille": taille_ent,
+            "CA_Annuel": ca_annuel, "Nb_Employes": nb_employes, "Ville": ville_ent, "Pays": pays_ent,
+            "Contact_Principal": contact_principal, "Email_Principal": email_principal, "Telephone_Principal": tel_principal,
+            "Site_Web": site_web, "Statut_Partenariat": statut_part, "Type_Partenariat": type_part,
+            "Date_Premier_Contact": date_premier_contact.isoformat(), "Responsable_IIBA": resp_iiba,
+            "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
+        }
+        df_entreprises.loc[idx_ent[0]] = rowe_ent
+        save_df_target("entreprises", df_entreprises, PATHS, ws if STORAGE_BACKEND=="gsheets" else None)
+        st.success(f"Entreprise {sel_entid} mise à jour.")
 
     st.markdown("---")
 
@@ -2820,4 +2820,5 @@ elif page == "Admin":
                     
         except ImportError:
             st.error("Module 'bcrypt' requis. Installez avec: pip install bcrypt")
+
 
