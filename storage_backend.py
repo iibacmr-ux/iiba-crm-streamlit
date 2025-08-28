@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import hashlib as _hashlib
- 
+
 
 # ============================================================================
 # Helpers Google Sheets (secrets + client + diagnostics) — inlined
