@@ -182,7 +182,7 @@ GC = None
 # Helper Google Sheets: ouverture d'un onglet par nom, avec fallback ID
 # ---------------------------------------------------------------------
 def ws(name: str):
-    _WS_FUNC = _WS_FUNC
+    _WS_FUNC = ws
     if STORAGE_BACKEND == "gsheets":
         try:
             info = read_service_account_secret()
