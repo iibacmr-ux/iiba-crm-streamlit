@@ -526,13 +526,13 @@ def ensure_df_source(name: str, cols: list, paths: dict = None) -> pd.DataFrame:
     return df
 
 # Load data
-df_contacts = ensure_df_source("contacts", C_COLS, PATHS, _WS_FUNC)
-df_inter = ensure_df_source("inter", I_COLS, PATHS, _WS_FUNC)
-df_events = ensure_df_source("events", E_COLS, PATHS, _WS_FUNC)
-df_parts = ensure_df_source("parts", P_COLS, PATHS, _WS_FUNC)
-df_pay = ensure_df_source("pay", PAY_COLS, PATHS, _WS_FUNC)
-df_cert = ensure_df_source("cert", CERT_COLS, PATHS, _WS_FUNC)
-df_entreprises = ensure_df_source("entreprises", ENT_COLS, PATHS, _WS_FUNC)  # NOUVEAU
+df_contacts = ensure_df_source("contacts", C_COLS, PATHS)
+df_inter = ensure_df_source("inter", I_COLS, PATHS)
+df_events = ensure_df_source("events", E_COLS, PATHS)
+df_parts = ensure_df_source("parts", P_COLS, PATHS)
+df_pay = ensure_df_source("pay", PAY_COLS, PATHS)
+df_cert = ensure_df_source("cert", CERT_COLS, PATHS)
+df_entreprises = ensure_df_source("entreprises", ENT_COLS, PATHS)  # NOUVEAU
 
 if not df_contacts.empty:
     df_contacts["Top20"] = df_contacts["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
