@@ -676,15 +676,9 @@ def ensure_df_source(name: str, cols: list, paths: dict = None) -> pd.DataFrame:
     st.session_state[f"etag_{name}"] = _compute_etag(df, name)
     return df
 
-# Si l’ETag s’affiche sans erreur, le problème de hashlib est réglé
-if st.sidebar.checkbox("🧪 Test ETag rapide", value=False):
-    import pandas as pd
-    _df_test = pd.DataFrame({"ID":[1,2], "Updated_At":["2025-01-01","2025-01-02"]})
-    st.sidebar.write("ETag:", _compute_etag(_df_test, "contacts"))
-    
-
 
 # --- Test ETag autonome (placer AVANT toute initialisation de données) ---
+# Si l’ETag s’affiche sans erreur, le problème de hashlib est réglé
 if st.sidebar.checkbox("🧪 Test ETag rapide", value=False):
     import pandas as pd
     # Mini DataFrame pour tester l’empreinte
