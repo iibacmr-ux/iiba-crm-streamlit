@@ -127,15 +127,17 @@ if "auth_user" in st.session_state:
 else:
     st.info("Veuillez vous connecter pour accéder au CRM.")
 
-st.sidebar.markdown("## Navigation")
-NAV = {
-    "🏠 Accueil": "app.py",
-    "👥 Contacts": "pages/01_Contacts.py",
-    "🏢 Entreprises": "pages/02_Entreprises.py",
-    "📅 Événements": "pages/03_Evenements.py",
-    "📈 Rapports": "pages/04_Rapports.py",
-    "🛠 Admin": "pages/00_Admin.py",
-}
-for label, target in NAV.items():
-    if st.sidebar.button(label, use_container_width=True, key=f"nav_{label}"):
-        st.switch_page(target)  # <- pas de “url_pathname”, très robuste
+# Dans app.py, après la partie Connexion (et PAS dans un form)
+st.sidebar.markdown("### 📚 Navigation")
+LINKS = [
+    ("👤 Contacts",      "pages/01_Contacts.py"),
+    ("🏢 Entreprises",   "pages/02_Entreprises.py"),
+    ("📅 Événements",    "pages/03_Evenements.py"),
+    ("📈 Rapports",      "pages/04_Rapports.py"),
+    ("🛠️ Admin",        "pages/00_Admin.py"),
+]
+for label, page in LINKS:
+    try:
+        st.sidebar.page_link(page, label=label)
+    except Exception as e:
+        st.sidebar.caption(f"⚠️ {label} indisponible : {e}")
