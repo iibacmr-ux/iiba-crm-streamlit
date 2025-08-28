@@ -13,6 +13,43 @@ import streamlit as st
 # === Storage Backend (CSV or Google Sheets) ===
 STORAGE_BACKEND = st.secrets.get("storage_backend", "csv")  # "csv" or "gsheets"
 GSHEET_SPREADSHEET = st.secrets.get("gsheet_spreadsheet", "IIBA CRM DB")
+# Map internal table keys to Google Sheet tab names (francophone)
+SHEET_NAME = {
+    "contacts": "contacts",
+    "inter": "interactions",
+    "events": "evenements",
+    "parts": "participations",
+    "pay": "paiements",
+    "cert": "certifications",
+    "entreprises": "entreprises",
+    "params": "parametres",
+    "users": "users"
+}
+
+def _id_col_for(name: str) -> str:
+    return {
+        "contacts": "ID",
+        "inter": "ID_Interaction",
+        "events": "ID_Événement",
+        "parts": "ID_Participation",
+        "pay": "ID_Paiement",
+        "cert": "ID_Certif",
+        "entreprises": "ID_Entreprise",
+        "users": "user_id"
+    }.get(name, "ID")
+
+import hashlib
+def _compute_etag(df: pd.DataFrame, name: str) -> str:
+    if df is None or df.empty:
+        return "empty"
+    idc = _id_col_for(name)
+    cols = [c for c in [idc, "Updated_At"] if c in df.columns]
+    try:
+        payload = df[cols].astype(str).fillna("").sort_values(by=cols).to_csv(index=False)
+    except Exception:
+        payload = df.astype(str).fillna("").to_csv(index=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 
 if STORAGE_BACKEND == "gsheets":
     import gspread
@@ -230,12 +267,34 @@ SET = {
 }
 
 # Utils for dataframe loading/saving
+def to_float_safe(x, default=0.0):
+    try:
+        if x is None:
+            return float(default)
+        if isinstance(x, (int, float)):
+            import math
+            return float(default) if (isinstance(x, float) and (x != x)) else float(x)
+        s = str(x).replace(" ", "").replace("\u202f","").strip()
+        if s == "" or s.lower() in ("nan","none","null"):
+            return float(default)
+        return float(s)
+    except Exception:
+        return float(default)
+
+def to_int_safe(x, default=0):
+    try:
+        v = to_float_safe(x, default=default)
+        return int(v) if v == v else int(default)  # v==v filters NaN
+    except Exception:
+        return int(default)
+
 
 # --- Unified loaders targeting selected backend ---
 def ensure_df_source(name: str, cols: list) -> pd.DataFrame:
     full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
+    tab = SHEET_NAME.get(name, name)
     if STORAGE_BACKEND == "gsheets":
-        ws = _ws(name)
+        ws = _ws(tab)
         df = get_as_dataframe(ws, evaluate_formulas=True, header=0)
         if df is None or df.empty:
             df = pd.DataFrame(columns=full_cols)
@@ -245,19 +304,43 @@ def ensure_df_source(name: str, cols: list) -> pd.DataFrame:
                 if c not in df.columns:
                     df[c] = ""
             df = df[full_cols]
+        # store etag in session for optimistic locking
+        st.session_state[f"etag_{name}"] = _compute_etag(df, name)
         return df
     # fallback CSV
     path = PATHS["contacts"] if name not in PATHS else PATHS[name]
-    return ensure_df(path, cols)
+    df = ensure_df(path, cols)
+    st.session_state[f"etag_{name}"] = _compute_etag(df, name)
+    return df
 
 def save_df_target(name: str, df: pd.DataFrame):
+    # optimistic locking: compare stored etag with remote etag just before saving
+    tab = SHEET_NAME.get(name, name)
     if STORAGE_BACKEND == "gsheets":
-        ws = _ws(name)
+        ws = _ws(tab)
+        df_remote = get_as_dataframe(ws, evaluate_formulas=True, header=0)
+        if df_remote is None:
+            df_remote = pd.DataFrame(columns=df.columns)
+        expected = st.session_state.get(f"etag_{name}")
+        current = _compute_etag(df_remote, name)
+        if expected and expected != current:
+            st.error(f"Conflit de modification détecté sur '{tab}'. Veuillez recharger la page avant de sauvegarder.")
+            st.stop()
         set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
+        # update etag after successful save
+        st.session_state[f"etag_{name}"] = _compute_etag(df, name)
         return
-    # fallback CSV
+    # CSV fallback
     path = PATHS["contacts"] if name not in PATHS else PATHS[name]
+    # Compare etag (best-effort) for CSV too
+    expected = st.session_state.get(f"etag_{name}")
+    current_df = ensure_df(path, df.columns.tolist())
+    current = _compute_etag(current_df, name)
+    if expected and expected != current:
+        st.error(f"Conflit de modification détecté sur '{name}'. Veuillez recharger la page avant de sauvegarder.")
+        st.stop()
     save_df(df, path)
+    st.session_state[f"etag_{name}"] = _compute_etag(df, name)
 
 def ensure_df(path:Path, cols:list)->pd.DataFrame:
     full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
@@ -321,11 +404,11 @@ def log_event(kind:str, payload:dict):
 
 # Load data
 df_contacts = ensure_df_source("contacts", C_COLS)
-df_inter    = ensure_df_source("inter", I_COLS)
-df_events   = ensure_df_source("events", E_COLS)
-df_parts    = ensure_df_source("parts", P_COLS)
-df_pay      = ensure_df_source("pay", PAY_COLS)
-df_cert     = ensure_df_source("cert", CERT_COLS)
+df_inter    = ensure_df_source("interactions", I_COLS)
+df_events   = ensure_df_source("evenements", E_COLS)
+df_parts    = ensure_df_source("participations", P_COLS)
+df_pay      = ensure_df_source("paiements", PAY_COLS)
+df_cert     = ensure_df_source("certifications", CERT_COLS)
 df_entreprises = ensure_df_source("entreprises", ENT_COLS)  # NOUVEAU
 
 if not df_contacts.empty:
@@ -1271,10 +1354,38 @@ elif page == "Entreprises":
 
             # Contact principal
             st.subheader("Contact principal")
-            c8_ent, c9_ent, c10_ent = st.columns(3)
-            contact_principal = c8_ent.text_input("Nom du contact", value=row_init_ent.get("Contact_Principal",""))
-            email_principal = c9_ent.text_input("Email", value=row_init_ent.get("Email_Principal",""))
-            tel_principal = c10_ent.text_input("Téléphone", value=row_init_ent.get("Telephone_Principal",""))
+            # Build options from contacts: "ID - Nom Prénom - Société"
+            _opts_cp = []
+            _idmap_cp = {}
+            if not df_contacts.empty:
+                _tmp = df_contacts[["ID","Nom","Prénom","Société","Email","Téléphone"]].fillna("")
+                for _, r_ in _tmp.iterrows():
+                    lab = f"{r_['ID']} - {r_['Nom']} {r_['Prénom']} - {r_['Société']}"
+                    _opts_cp.append(lab)
+                    _idmap_cp[lab] = (r_["ID"], r_["Email"], r_["Téléphone"])
+            cur_cp_label = row_init_ent.get("Contact_Principal","")
+            # If store is ID, pre-select matching label
+            if cur_cp_label and cur_cp_label in df_contacts["ID"].astype(str).values:
+                # find first label with this ID
+                for lab in _opts_cp:
+                    if lab.startswith(f"{cur_cp_label} -"):
+                        cur_cp_label = lab
+                        break
+            c8_ent, c9_ent, c10_ent = st.columns([2,1,1])
+            sel_label = c8_ent.selectbox(
+                "Sélectionner le contact principal (ID - Nom Prénom - Entreprise)",
+                ["— Aucun —"] + _opts_cp,
+                index=(["— Aucun —"] + _opts_cp).index(cur_cp_label) if cur_cp_label in (["— Aucun —"] + _opts_cp) else 0
+            )
+            if sel_label and sel_label != "— Aucun —":
+                _cp_id, _cp_email, _cp_tel = _idmap_cp[sel_label]
+                contact_principal = _cp_id  # stocker l'ID
+                email_principal = _cp_email
+                tel_principal = _cp_tel
+            else:
+                contact_principal = ""
+                email_principal = ""
+                tel_principal = ""
             site_web = st.text_input("Site Web", value=row_init_ent.get("Site_Web",""))
 
             # Partenariat
@@ -1468,7 +1579,7 @@ elif page == "Entreprises":
         total_entreprises = len(df_entreprises)
         partenaires_actifs = len(df_entreprises[df_entreprises["Statut_Partenariat"].isin(["Partenaire", "Client", "Partenaire Stratégique"])])
         prospects = len(df_entreprises[df_entreprises["Statut_Partenariat"] == "Prospect"])
-        ca_total_ent = df_entreprises["CA_Annuel"].astype(str).str.replace("", "0").astype(float).sum()
+        ca_total_ent = pd.to_numeric(df_entreprises["CA_Annuel"], errors="coerce").fillna(0).sum()
         
         col_stat1.metric("🏢 Total Entreprises", total_entreprises)
         col_stat2.metric("🤝 Partenaires Actifs", partenaires_actifs)
