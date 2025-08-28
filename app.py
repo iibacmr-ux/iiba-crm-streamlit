@@ -9,8 +9,166 @@ import unicodedata
 import numpy as np
 import pandas as pd
 import streamlit as st
-from gs_client import get_gspread_client, read_service_account_secret, show_diagnostics_sidebar
-from storage_backend import save_df_target, SHEET_NAME
+import hashlib as _hashlib
+
+
+# ============================================================================
+# Helpers Google Sheets (secrets + client + diagnostics) — inlined
+# ============================================================================
+import json as _json
+import ast as _ast
+
+try:
+    from google.oauth2.service_account import Credentials as _Credentials
+    import gspread as _gspread
+    from gspread.exceptions import APIError, SpreadsheetNotFound
+    from gspread_dataframe import set_with_dataframe as _set_with_dataframe, get_as_dataframe as _get_as_dataframe
+except Exception:
+    _Credentials = None
+    _gspread = None
+    APIError = Exception
+    SpreadsheetNotFound = Exception
+    def _set_with_dataframe(*args, **kwargs):  # type: ignore
+        raise RuntimeError("gspread indisponible (backend gsheets non utilisable)")
+    def _get_as_dataframe(*args, **kwargs):  # type: ignore
+        raise RuntimeError("gspread indisponible (backend gsheets non utilisable)")
+
+def _as_mapping(obj):
+    try:
+        from collections.abc import Mapping as _Mapping
+    except Exception:
+        _Mapping = dict
+    if isinstance(obj, _Mapping):
+        return obj
+    if hasattr(obj, "keys") and hasattr(obj, "__getitem__"):
+        return obj
+    return None
+
+def _parse_secret_value(val):
+    m = _as_mapping(val)
+    if m is not None:
+        try:
+            return dict(m)
+        except Exception:
+            try:
+                return {k: m[k] for k in m.keys()}
+            except Exception:
+                return None
+    if isinstance(val, str):
+        s = val.strip()
+        try:
+            return _json.loads(s)
+        except Exception:
+            try:
+                d = _ast.literal_eval(s)
+                if isinstance(d, dict):
+                    return d
+            except Exception:
+                pass
+    return None
+
+def _normalize_private_key(info: dict) -> dict:
+    pk = info.get("private_key")
+    if isinstance(pk, str) and "\\n" in pk and "\n" not in pk:
+        info["private_key"] = pk.replace("\\n", "\n")
+    return info
+
+def read_service_account_secret(secret_key: str = "google_service_account", secrets=None) -> dict:
+    if secrets is None:
+        secrets = st.secrets
+    try:
+        keys = list(secrets.keys())
+    except Exception:
+        keys = []
+    if secret_key not in keys:
+        raise ValueError(f"Clé '{secret_key}' absente dans Secrets. Clés disponibles: {', '.join(keys) or 'aucune'}.")
+    raw = secrets[secret_key]
+    info = _parse_secret_value(raw)
+    if not isinstance(info, dict):
+        raise ValueError(
+            "Le secret 'google_service_account' n'est pas un dictionnaire exploitable. "
+            "Utilisez soit: 1) un bloc JSON entre triples guillemets, soit 2) une table TOML [google_service_account]."
+        )
+    info = _normalize_private_key(info)
+    required = ["type", "project_id", "private_key_id", "private_key", "client_email", "client_id", "token_uri"]
+    missing = [k for k in required if k not in info or not info[k]]
+    if missing:
+        raise ValueError("Champs manquants dans le secret: " + ", ".join(missing))
+    return info
+
+def get_gspread_client(info: dict = None):
+    if info is None:
+        info = read_service_account_secret()
+    if _Credentials is None or _gspread is None:
+        raise RuntimeError("google-auth/gspread indisponibles dans l'environnement.")
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds = _Credentials.from_service_account_info(info, scopes=scopes)
+    return _gspread.authorize(creds)
+
+def show_diagnostics_sidebar(spreadsheet_name: str, sheet_map: dict):
+    with st.sidebar.expander("🩺 Diagnostics (Google Sheets)", expanded=False):
+        st.caption("Vérification détaillée de la configuration et accès Google Sheets.")
+        backend = st.secrets.get("storage_backend", "csv")
+        st.write(f"**Backend** : `{backend}`")
+        st.write(f"**Spreadsheet (nom)** : `{spreasheet_name if spreadsheet_name else '—'}`")
+        ss_id = st.secrets.get("gsheet_spreadsheet_id", "").strip() if "gsheet_spreadsheet_id" in st.secrets else ""
+        st.write(f"**Spreadsheet (ID)** : `{ss_id or '—'}`")
+
+        st.markdown("**1) Analyse du secret `google_service_account`**")
+        try:
+            try:
+                all_keys = list(st.secrets.keys())
+            except Exception:
+                all_keys = []
+            st.write(f"- Clés en Secrets : {', '.join(all_keys) or '—'}")
+            raw = st.secrets.get("google_service_account", None)
+            st.write(f"- Type brut: `{type(raw).__name__}`")
+            if raw is not None:
+                preview = str(raw).replace("private_key", "private_key(…masqué…)")
+                st.code(preview[:900] + (' …' if len(preview) > 900 else ''), language="text")
+            info = read_service_account_secret()
+            pk = info.get("private_key", "")
+            st.success("Secret parsé ✅")
+            st.write(f"- `private_key` longueur: {len(pk) if isinstance(pk, str) else '—'}")
+        except Exception as e:
+            st.error(f"Parsing secret: {e}")
+            return
+
+        st.markdown("---")
+        st.markdown("**2) Connexion Google Sheets & onglets**")
+        try:
+            gc = get_gspread_client(info)
+            if ss_id:
+                try:
+                    sh = gc.open_by_key(ss_id)
+                except APIError as e:
+                    msg = str(e).lower()
+                    if "not supported for this document" in msg or "operation is not supported" in msg:
+                        st.warning("L’ID fourni n’est pas un Google Sheet natif. Fallback par titre si disponible.")
+                        sh = gc.open(spreadsheet_name)
+                    else:
+                        raise
+            else:
+                sh = gc.open(spreadsheet_name)
+
+            ws_list = [w.title for w in sh.worksheets()]
+            st.success(f"Connexion OK. **{len(ws_list)}** onglet(s).")
+            st.write("**Onglets détectés** :", ", ".join(ws_list) or "—")
+            required_tabs = list({v for v in sheet_map.values()})
+            missing = [t for t in required_tabs if t not in ws_list]
+            if missing:
+                st.warning("Onglets manquants : " + ", ".join(missing))
+                if st.button("🛠️ Créer les onglets manquants"):
+                    for t in missing:
+                        try:
+                            sh.add_worksheet(title=t, rows=2, cols=50)
+                        except Exception as _e:
+                            st.error(f"Impossible de créer '{t}' : {_e}")
+                    st.experimental_rerun()
+            else:
+                st.info("Toutes les tables attendues existent.")
+        except Exception as e:
+            st.error(f"Connexion échouée: {e}")
 
 # --- Backend de stockage ---
 STORAGE_BACKEND = st.secrets.get("storage_backend", "csv")
@@ -24,6 +182,16 @@ GC = None
 # Helper Google Sheets: ouverture d'un onglet par nom, avec fallback ID
 # ---------------------------------------------------------------------
 def ws(name: str):
+
+_WS_FUNC = _WS_FUNC
+if STORAGE_BACKEND == "gsheets":
+    try:
+        info = read_service_account_secret()
+        GC = get_gspread_client(info)
+    except Exception as e:
+        st.error(f"Initialisation Google Sheets échouée : {e}")
+        st.stop()
+
     if GC is None:
         raise RuntimeError("Backend Google Sheets inactif (GC=None)")
     try:
@@ -40,14 +208,7 @@ def ws(name: str):
         return sh.add_worksheet(title=name, rows=2, cols=50)
 
 # Utilitaire pour éviter le ternaire inline fragile dans les appels
-_WS_FUNC = ws if STORAGE_BACKEND == "gsheets" else None
-if STORAGE_BACKEND == "gsheets":
-    try:
-        info = read_service_account_secret()
-        GC = get_gspread_client(info)
-    except Exception as e:
-        st.error(f"Initialisation Google Sheets échouée : {e}")
-        st.stop()
+
 
 
 def to_float_safe(x, default=0.0):
