@@ -10,6 +10,37 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# === Storage Backend (CSV or Google Sheets) ===
+STORAGE_BACKEND = st.secrets.get("storage_backend", "csv")  # "csv" or "gsheets"
+GSHEET_SPREADSHEET = st.secrets.get("gsheet_spreadsheet", "IIBA CRM DB")
+
+if STORAGE_BACKEND == "gsheets":
+    import gspread
+    from gspread_dataframe import set_with_dataframe, get_as_dataframe
+    from google.oauth2.service_account import Credentials
+
+    def _gs_client():
+        info = st.secrets.get("google_service_account")
+        if info is None:
+            st.stop()
+        if isinstance(info, str):
+            import json as _json
+            info = _json.loads(info)
+        scopes = ["https://www.googleapis.com/auth/spreadsheets",
+                  "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+        return gspread.authorize(creds)
+
+    _GC = _gs_client()
+
+    def _ws(name: str):
+        sh = _GC.open(GSHEET_SPREADSHEET)
+        try:
+            return sh.worksheet(name)
+        except Exception:
+            ws = sh.add_worksheet(title=name, rows=2, cols=50)
+            return ws
+
 # AgGrid
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
@@ -166,7 +197,7 @@ def load_params()->dict:
 
 def save_params(d:dict):
     rows = [{"key":k,"value":str(v)} for k,v in d.items()]
-    pd.DataFrame(rows).to_csv(PATHS["params"], index=False, encoding="utf-8")
+    save_df_target("params", pd.DataFrame(rows))
 
 PARAMS = load_params()
 
@@ -199,6 +230,35 @@ SET = {
 }
 
 # Utils for dataframe loading/saving
+
+# --- Unified loaders targeting selected backend ---
+def ensure_df_source(name: str, cols: list) -> pd.DataFrame:
+    full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
+    if STORAGE_BACKEND == "gsheets":
+        ws = _ws(name)
+        df = get_as_dataframe(ws, evaluate_formulas=True, header=0)
+        if df is None or df.empty:
+            df = pd.DataFrame(columns=full_cols)
+            set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
+        else:
+            for c in full_cols:
+                if c not in df.columns:
+                    df[c] = ""
+            df = df[full_cols]
+        return df
+    # fallback CSV
+    path = PATHS["contacts"] if name not in PATHS else PATHS[name]
+    return ensure_df(path, cols)
+
+def save_df_target(name: str, df: pd.DataFrame):
+    if STORAGE_BACKEND == "gsheets":
+        ws = _ws(name)
+        set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
+        return
+    # fallback CSV
+    path = PATHS["contacts"] if name not in PATHS else PATHS[name]
+    save_df(df, path)
+
 def ensure_df(path:Path, cols:list)->pd.DataFrame:
     full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
     if path.exists():
@@ -260,13 +320,13 @@ def log_event(kind:str, payload:dict):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 # Load data
-df_contacts = ensure_df(PATHS["contacts"], C_COLS)
-df_inter    = ensure_df(PATHS["inter"], I_COLS)
-df_events   = ensure_df(PATHS["events"], E_COLS)
-df_parts    = ensure_df(PATHS["parts"], P_COLS)
-df_pay      = ensure_df(PATHS["pay"], PAY_COLS)
-df_cert     = ensure_df(PATHS["cert"], CERT_COLS)
-df_entreprises = ensure_df(PATHS["entreprises"], ENT_COLS)  # NOUVEAU
+df_contacts = ensure_df_source("contacts", C_COLS)
+df_inter    = ensure_df_source("inter", I_COLS)
+df_events   = ensure_df_source("events", E_COLS)
+df_parts    = ensure_df_source("parts", P_COLS)
+df_pay      = ensure_df_source("pay", PAY_COLS)
+df_cert     = ensure_df_source("cert", CERT_COLS)
+df_entreprises = ensure_df_source("entreprises", ENT_COLS)  # NOUVEAU
 
 if not df_contacts.empty:
     df_contacts["Top20"] = df_contacts["Société"].fillna("").apply(lambda x: x in SET["entreprises_cibles"])
@@ -274,7 +334,7 @@ if not df_contacts.empty:
 # === AUTH MINIMAL ===
 import bcrypt
 
-USERS_PATH = DATA_DIR / "users.csv"
+USERS_PATH = PATHS["logs"]  # dummy when gsheets
 USER_COLS = ["user_id", "full_name", "role", "active", "pwd_hash", "must_change_pw", "created_at", "updated_at"]
 
 def _normalize_users_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -299,6 +359,27 @@ def _normalize_users_df(df: pd.DataFrame) -> pd.DataFrame:
     return df[USER_COLS].copy()
 
 def _ensure_users_df() -> pd.DataFrame:
+    if STORAGE_BACKEND == "gsheets":
+        try:
+            dfu = ensure_df_source("users", USER_COLS)
+        except Exception:
+            dfu = pd.DataFrame(columns=USER_COLS)
+        if dfu.empty:
+            default_pw = "admin123"
+            row = {
+                "user_id": "admin@iiba.cm",
+                "full_name": "Admin IIBA Cameroun",
+                "role": "admin",
+                "active": True,
+                "pwd_hash": bcrypt.hashpw(default_pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
+                "must_change_pw": True,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
+            save_df_target("users", dfu)
+        return _normalize_users_df(dfu)
+    # CSV fallback (original)
     if not USERS_PATH.exists():
         dfu = pd.DataFrame(columns=USER_COLS)
         default_pw = "admin123"
@@ -315,6 +396,12 @@ def _ensure_users_df() -> pd.DataFrame:
         dfu = pd.concat([dfu, pd.DataFrame([row])], ignore_index=True)
         dfu.to_csv(USERS_PATH, index=False, encoding="utf-8")
         return dfu
+    try:
+        raw = pd.read_csv(USERS_PATH, dtype=str).fillna("")
+    except Exception:
+        raw = pd.DataFrame(columns=USER_COLS)
+    dfu = _normalize_users_df(raw)
+    return dfu
     try:
         raw = pd.read_csv(USERS_PATH, dtype=str).fillna("")
     except Exception:
@@ -659,7 +746,7 @@ if page == "CRM (Grille centrale)":
                             new_id = generate_id("CNT", df_contacts, "ID")
                             clone["ID"] = new_id
                             globals()["df_contacts"] = pd.concat([df_contacts, pd.DataFrame([clone])], ignore_index=True)
-                            save_df(df_contacts, PATHS["contacts"])
+                            save_df_target("\2", \1)
                             st.session_state["selected_contact_id"] = new_id
                             st.success(f"Contact dupliqué sous l'ID {new_id}.")
                             
@@ -708,7 +795,7 @@ if page == "CRM (Grille centrale)":
                         raw_existing.update(new_row)
                         raw_existing = stamp_update(raw_existing, st.session_state.get("user", {}))
                         df_contacts.loc[idx] = raw_existing
-                        save_df(df_contacts, PATHS["contacts"])
+                        save_df_target("\2", \1)
                         st.success("Contact mis à jour.")
                 st.markdown("---")
                 with st.expander("➕ Ajouter ce contact à un **nouvel événement**"):
@@ -727,12 +814,12 @@ if page == "CRM (Grille centrale)":
                                     "Durée_h":"2","Lieu":lieu_ev,"Formateur":"","Objectif":"","Periode":"",
                                     "Cout_Salle":0,"Cout_Formateur":0,"Cout_Logistique":0,"Cout_Pub":0,"Cout_Autres":0,"Cout_Total":0,"Notes":""}
                             globals()["df_events"] = pd.concat([df_events, pd.DataFrame([rowe])], ignore_index=True)
-                            save_df(df_events, PATHS["events"])
+                            save_df_target("\2", \1)
                             new_pid = generate_id("PAR", df_parts, "ID_Participation")
                             rowp = {"ID_Participation":new_pid,"ID":sel_id,"ID_Événement":new_eid,"Rôle":role,
                                     "Inscription":"","Arrivée":"","Temps_Present":"","Feedback":"","Note":"","Commentaire":""}
                             globals()["df_parts"] = pd.concat([df_parts, pd.DataFrame([rowp])], ignore_index=True)
-                            save_df(df_parts, PATHS["parts"])
+                            save_df_target("\2", \1)
                             st.success(f"Événement créé ({new_eid}) et contact inscrit ({new_pid}).")
             else:
                 st.warning("ID introuvable (rafraîchissez la page).")
@@ -788,7 +875,7 @@ if page == "CRM (Grille centrale)":
                                 "Date_Creation": dc_new.isoformat(), "Notes": notes_new, "Top20": top20_new
                             }
                             globals()["df_contacts"] = pd.concat([df_contacts, pd.DataFrame([new_row])], ignore_index=True)
-                            save_df(df_contacts, PATHS["contacts"])
+                            save_df_target("\2", \1)
                             st.session_state["selected_contact_id"] = new_id
                             st.success(f"Contact créé ({new_id}).")
             
@@ -816,7 +903,7 @@ if page == "CRM (Grille centrale)":
                         row = {"ID_Interaction":nid,"ID":sel_id,"Date":dti.isoformat(),"Canal":canal,"Objet":obj,"Résumé":resume,
                                "Résultat":resu,"Prochaine_Action":"","Relance":rel.isoformat() if rel else "","Responsable":resp}
                         globals()["df_inter"] = pd.concat([df_inter, pd.DataFrame([row])], ignore_index=True)
-                        save_df(df_inter, PATHS["inter"])
+                        save_df_target("\2", \1)
                         st.success(f"Interaction enregistrée ({nid}).")
             with tabs[1]:
                 with st.form("add_part"):
@@ -833,7 +920,7 @@ if page == "CRM (Grille centrale)":
                             row = {"ID_Participation":nid,"ID":sel_id,"ID_Événement":ide,"Rôle":role,"Inscription":"","Arrivée":"",
                                    "Temps_Present":"","Feedback":fb,"Note":str(note),"Commentaire":""}
                             globals()["df_parts"] = pd.concat([df_parts, pd.DataFrame([row])], ignore_index=True)
-                            save_df(df_parts, PATHS["parts"])
+                            save_df_target("\2", \1)
                             st.success(f"Participation ajoutée ({nid}).")
             with tabs[2]:
                 with st.form("add_pay"):
@@ -852,7 +939,7 @@ if page == "CRM (Grille centrale)":
                             row = {"ID_Paiement":nid,"ID":sel_id,"ID_Événement":ide,"Date_Paiement":dtp.isoformat(),"Montant":str(montant),
                                    "Moyen":moyen,"Statut":statut,"Référence":ref,"Notes":"","Relance":""}
                             globals()["df_pay"] = pd.concat([df_pay, pd.DataFrame([row])], ignore_index=True)
-                            save_df(df_pay, PATHS["pay"])
+                            save_df_target("\2", \1)
                             st.success(f"Paiement enregistré ({nid}).")
             with tabs[3]:
                 with st.form("add_cert"):
@@ -868,7 +955,7 @@ if page == "CRM (Grille centrale)":
                         row = {"ID_Certif":nid,"ID":sel_id,"Type_Certif":tc,"Date_Examen":dte.isoformat(),"Résultat":res,"Score":str(sc),
                                "Date_Obtention":dto.isoformat() if dto else "","Validité":"","Renouvellement":"","Notes":""}
                         globals()["df_cert"] = pd.concat([df_cert, pd.DataFrame([row])], ignore_index=True)
-                        save_df(df_cert, PATHS["cert"])
+                        save_df_target("\2", \1)
                         st.success(f"Certification ajoutée ({nid}).")
             with tabs[4]:
                 st.markdown("#### Vue 360°")
@@ -988,7 +1075,7 @@ elif page == "Événements":
                     "Cout_Pub": c_pub, "Cout_Autres": c_aut, "Cout_Total": 0, "Notes": notes
                 }
                 globals()["df_events"] = pd.concat([df_events, pd.DataFrame([new_row])], ignore_index=True)
-                save_df(df_events, PATHS["events"])
+                save_df_target("\2", \1)
                 st.success(f"Événement créé ({new_id}).")
                 st.session_state["selected_event_id"] = new_id
                 st.session_state["event_form_mode"] = "edit"
@@ -1012,7 +1099,7 @@ elif page == "Événements":
                     "Cout_Pub": c_pub, "Cout_Autres": c_aut, "Cout_Total": 0, "Notes": notes
                 }
                 df_events.loc[idx[0]] = rowe
-                save_df(df_events, PATHS["events"])
+                save_df_target("\2", \1)
                 st.success(f"Événement {sel_eid} mis à jour.")
 
     st.markdown("---")
@@ -1028,7 +1115,7 @@ elif page == "Événements":
             clone = src.iloc[0].to_dict()
             clone["ID_Événement"] = new_id
             globals()["df_events"] = pd.concat([df_events, pd.DataFrame([clone])], ignore_index=True)
-            save_df(df_events, PATHS["events"])
+            save_df_target("\2", \1)
             st.success(f"Événement dupliqué sous l'ID {new_id}.")
             st.session_state["selected_event_id"] = new_id
             st.session_state["event_form_mode"] = "edit"
@@ -1046,7 +1133,7 @@ elif page == "Événements":
                     st.error("Aucun événement sélectionné.")
                 else:
                     globals()["df_events"] = df_events[df_events["ID_Événement"] != del_id]
-                    save_df(df_events, PATHS["events"])
+                    save_df_target("\2", \1)
                     st.success(f"Événement {del_id} supprimé.")
                     st.session_state["selected_event_id"] = ""
                     st.session_state["event_form_mode"] = "create"
@@ -1090,7 +1177,7 @@ elif page == "Événements":
                 if c not in new_df.columns:
                     new_df[c] = ""
             globals()["df_events"] = new_df[E_COLS].copy()
-            save_df(df_events, PATHS["events"])
+            save_df_target("\2", \1)
             st.success("Modifications enregistrées depuis la grille.")
     else:
         st.dataframe(df_show, use_container_width=True)
@@ -1237,7 +1324,7 @@ elif page == "Entreprises":
                     "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
                 }
                 globals()["df_entreprises"] = pd.concat([df_entreprises, pd.DataFrame([new_row_ent])], ignore_index=True)
-                save_df(df_entreprises, PATHS["entreprises"])
+                save_df_target("\2", \1)
                 st.success(f"Entreprise créée ({new_id_ent}).")
                 st.session_state["selected_entreprise_id"] = new_id_ent
                 st.session_state["entreprise_form_mode"] = "edit"
@@ -1270,7 +1357,7 @@ elif page == "Entreprises":
                     "Notes": notes_ent, "Opportunites": opportunites, "Date_Maj": date_maj.isoformat()
                 }
                 df_entreprises.loc[idx_ent[0]] = rowe_ent
-                save_df(df_entreprises, PATHS["entreprises"])
+                save_df_target("\2", \1)
                 st.success(f"Entreprise {sel_entid} mise à jour.")
 
     st.markdown("---")
@@ -1290,7 +1377,7 @@ elif page == "Entreprises":
             clone_ent["ID_Entreprise"] = new_id_ent
             clone_ent["Nom_Entreprise"] = f"{clone_ent['Nom_Entreprise']} (Copie)"
             globals()["df_entreprises"] = pd.concat([df_entreprises, pd.DataFrame([clone_ent])], ignore_index=True)
-            save_df(df_entreprises, PATHS["entreprises"])
+            save_df_target("\2", \1)
             st.success(f"Entreprise dupliquée sous l'ID {new_id_ent}.")
             st.session_state["selected_entreprise_id"] = new_id_ent
             st.session_state["entreprise_form_mode"] = "edit"
@@ -1309,7 +1396,7 @@ elif page == "Entreprises":
                     st.error("Aucune entreprise sélectionnée.")
                 else:
                     globals()["df_entreprises"] = df_entreprises[df_entreprises["ID_Entreprise"] != del_id_ent]
-                    save_df(df_entreprises, PATHS["entreprises"])
+                    save_df_target("\2", \1)
                     st.success(f"Entreprise {del_id_ent} supprimée.")
                     st.session_state["selected_entreprise_id"] = ""
                     st.session_state["entreprise_form_mode"] = "create"
@@ -1365,7 +1452,7 @@ elif page == "Entreprises":
                 if c not in new_df_ent.columns:
                     new_df_ent[c] = ""
             globals()["df_entreprises"] = new_df_ent[ENT_COLS].copy()
-            save_df(df_entreprises, PATHS["entreprises"])
+            save_df_target("\2", \1)
             st.success("Modifications enregistrées depuis la grille.")
     else:
         st.dataframe(df_show_ent, use_container_width=True)
@@ -2746,6 +2833,4 @@ elif page == "Admin":
                     
         except ImportError:
             st.error("Module 'bcrypt' requis. Installez avec: pip install bcrypt")
-
-
 
