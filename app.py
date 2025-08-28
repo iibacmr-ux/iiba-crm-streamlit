@@ -182,7 +182,7 @@ GC = None
 # Helper Google Sheets: ouverture d'un onglet par nom, avec fallback ID
 # ---------------------------------------------------------------------
 def ws(name: str):
-    _WS_FUNC = ws
+    _WS_FUNC = _WS_FUNC
     if STORAGE_BACKEND == "gsheets":
         try:
             info = read_service_account_secret()
@@ -3041,5 +3041,4 @@ elif page == "Admin":
                     
         except ImportError:
             st.error("Module 'bcrypt' requis. Installez avec: pip install bcrypt")
-
 
