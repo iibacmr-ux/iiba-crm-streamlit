@@ -28,8 +28,15 @@ def _gs_client():
 
     # Accept either a dict-like TOML table or a JSON string
     def _to_info(val):
-        if isinstance(val, dict):
-            return dict(val)
+        from collections.abc import Mapping
+        if isinstance(val, Mapping) or hasattr(val, "keys"):
+            try:
+                return dict(val)
+            except Exception:
+                try:
+                    return {k: val[k] for k in val.keys()}
+                except Exception:
+                    pass
         if isinstance(val, str):
             s = val.strip()
             # Try JSON
@@ -57,10 +64,10 @@ def _gs_client():
     # Normaliser newline: si la clé contient des '\\n' littéraux et aucun vrai saut de ligne
     if "private_key" in info_obj and isinstance(info_obj["private_key"], str):
         pk = info_obj["private_key"]
-        if "\\n" in pk and "\\n\\n" not in pk and "\n" not in pk:
-            info_obj["private_key"] = pk.replace("\\n", "\\n").replace("\\n", "\n")
-        elif "\\n" in pk and "\n" not in pk:
-            info_obj["private_key"] = pk.replace("\\n", "\n")
+        if isinstance(pk, str) and "\n" in pk and "
+" not in pk:
+            info_obj["private_key"] = pk.replace("\n", "
+")
 
     scopes = ["https://www.googleapis.com/auth/spreadsheets",
               "https://www.googleapis.com/auth/drive"]
