@@ -487,20 +487,18 @@ def log_event(kind:str, payload:dict):
     with PATHS["logs"].open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-def ensure_df_source(name: str, cols: list, paths: dict = None, ws_func=None) -> pd.DataFrame:
+def ensure_df_source(name: str, cols: list, paths: dict = None) -> pd.DataFrame:
     full_cols = cols + [c for c in AUDIT_COLS if c not in cols]
     backend = st.secrets.get("storage_backend", "csv")
     st.session_state.setdefault(f"etag_{name}", "empty")
 
-    if backend == "gsheets":
-        if ws_func is None:
-            raise RuntimeError("ws_func requis pour backend gsheets")
+    if backend == "gsheets": 
         tab = SHEET_NAME.get(name, name)
-        ws = ws_func(tab)
-        df = _get_as_dataframe(ws, evaluate_formulas=True, header=0)
+        wsh = ws(tab)
+        df = _get_as_dataframe(wsh, evaluate_formulas=True, header=0)
         if df is None or df.empty:
             df = pd.DataFrame(columns=full_cols)
-            _set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
+            _set_with_dataframe(wsh, df, include_index=False, include_column_header=True, resize=True)
         else:
             for c in full_cols:
                 if c not in df.columns:
