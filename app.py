@@ -353,6 +353,19 @@ PARAM_DEFAULTS = {
     "entreprises_employes_seuil_gros":"500",
 }
 
+# === Noms d’onglets Google Sheets / mapping interne ===
+SHEET_NAME = {
+    "contacts": "contacts",
+    "inter": "interactions",
+    "events": "evenements",
+    "parts": "participations",
+    "pay": "paiements",
+    "cert": "certifications",
+    "entreprises": "entreprises",
+    "params": "parametres",
+    "users": "users",
+}
+
 ALL_DEFAULTS = {**PARAM_DEFAULTS, **{f"list_{k}":v for k,v in DEFAULT_LISTS.items()}}
 
 # === AUDIT / META ===
