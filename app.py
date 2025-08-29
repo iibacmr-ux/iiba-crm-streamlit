@@ -165,8 +165,7 @@ if st.button("Se connecter", key="btn_login"):
 # ---------- Navigation pages ----------
 st.sidebar.markdown("### 📚 Navigation")
 LINKS = [
-    ("🛠️ Admin",        "pages/00_Admin.py"),
-    ("👤 Contacts",      "pages/01_Contacts.py"),
+    ("🛠️ Admin",        "pages/00_Admin.py"), 
     ("📋 CRM (Contacts)", "pages/01_CRM.py"),
     ("🏢 Entreprises",   "pages/02_Entreprises.py"),
     ("📅 Événements",    "pages/03_Evenements.py"),
