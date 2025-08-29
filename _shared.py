@@ -1,548 +1,768 @@
-
-# _shared.py — Helpers communs (cache TTL + filtres globaux + fallback CSV)
-# ----------------------------------------------------------------------------
-# Objectifs
-# - Réduire les erreurs 429 côté Google Sheets en privilégiant la lecture
-#   cache-only pour l'affichage (TTL configuré), et en réservant les lectures
-#   "fraîches" aux opérations d'écriture via ensure_df_source() dans les pages.
-# - Centraliser le filtre global (année / mois) et son panneau UI.
-# - Fournir utilitaires génériques (generate_id, to_int_safe, etc.).
-# ----------------------------------------------------------------------------
-
+# pages/01_CRM.py — CRM (Grille centrale) IIBA Cameroun
 from __future__ import annotations
-import re
-from pathlib import Path
-from datetime import datetime
-from typing import Dict, List, Tuple, Optional
 
+import io
+from datetime import date, datetime, timedelta
 import pandas as pd
 import streamlit as st
-from typing import Callable
+from storage_backend import ensure_df_source
 
-# ==== Backend helpers (importés si dispo, sinon fallback CSV) =================
+# --- AgGrid (pagination + filtres avancés)
 try:
-    from storage_backend import ensure_df_source, save_df_target  # noqa: F401
+    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
+    HAS_AGGRID = True
 except Exception:
-    def ensure_df_source(name: str, cols: list, paths: Dict[str, Path]=None, ws_func=None) -> pd.DataFrame:  # type: ignore
-        p = (paths or PATHS)[name]
-        p = Path(p)
-        if p.exists():
-            try:
-                df = pd.read_csv(p, dtype=str).fillna("")
-            except Exception:
-                df = pd.DataFrame(columns=cols)
-        else:
-            df = pd.DataFrame(columns=cols)
-        for c in cols:
-            if c not in df.columns:
-                df[c] = ""
-        return df[cols]
+    HAS_AGGRID = False
 
-# ==== Répertoire local CSV (fallback / dev local) ============================
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+# --- Modules internes : robustes aux hot-reload
+import importlib
 
-# ==== Mapping des chemins CSV par table ======================================
-PATHS: Dict[str, Path] = {
-    "contacts": DATA_DIR / "contacts.csv",
-    "interactions": DATA_DIR / "interactions.csv",
-    "evenements": DATA_DIR / "evenements.csv",
-    "participations": DATA_DIR / "participations.csv",
-    "paiements": DATA_DIR / "paiements.csv",
-    "certifications": DATA_DIR / "certifications.csv",
-    "entreprises": DATA_DIR / "entreprises.csv",
-    "parametres": DATA_DIR / "parametres.csv",
-    "users": DATA_DIR / "users.csv",
-    "entreprise_participations": DATA_DIR / "entreprise_participations.csv",
-}
+# _shared : fonctions communes (global filter, load/save, id, params, sets…)
+try:
+    SH = importlib.import_module("_shared")
+    SH = importlib.reload(SH)
+except Exception as e:
+    st.error(f"Échec import _shared : {e}")
+    SH = None
 
-# ==== Schémas de colonnes minimaux (ajustez au besoin) =======================
-C_COLS = ["ID","Nom","Prénom","Genre","Titre","Société","Secteur","Email","Téléphone",
-          "LinkedIn","Ville","Pays","Type","Source","Statut","Score_Engagement","Notes",
-          "Top20","Date_Creation","Created_At","Created_By","Updated_At","Updated_By"]
+# Imports
+from _shared import (
+    PATHS, C_COLS, I_COLS, PART_COLS, PAY_COLS, CERT_COLS, E_COLS,
+    load_all_tables, get_global_filters, apply_global_filters,
+    generate_id, to_int_safe, PARAMS, get_param_list, make_event_label_map,
+    enrich_with_event_cols, atomic_upsert, atomic_append_row
+)
 
-I_COLS = ["ID_Interaction","ID","Date","Canal","Objet","Résumé","Résultat",
-          "Prochaine_Action","Relance","Responsable","Created_At","Created_By","Updated_At","Updated_By"]
 
-E_COLS = ["ID_Événement","Nom_Événement","Type","Date","Lieu","Cout_Salle","Cout_Formateur","Cout_Logistique",
-          "Cout_Pub","Cout_Autres","Cout_Total","Created_At","Created_By","Updated_At","Updated_By"]
+# storage_backend : sauvegarde avec verrou optimiste (CSV ou GSheets)
+try:
+    SB = importlib.import_module("storage_backend")
+    SB = importlib.reload(SB)
+except Exception as e:
+    st.error(f"Échec import storage_backend : {e}")
+    SB = None
 
-PART_COLS = ["ID_Participation","ID","ID_Événement","Rôle","Feedback","Note","Commentaire",
-             "Created_At","Created_By","Updated_At","Updated_By"]
+# Aliases/fallbacks (on évite les plantages si une API manque)
+def _get(name, default=None):
+    return getattr(SH, name, default) if SH else default
 
-PAY_COLS = ["ID_Paiement","ID","ID_Événement","Date_Paiement","Montant","Moyen","Statut",
-            "Référence","Commentaire","Created_At","Created_By","Updated_At","Updated_By"]
+load_all_tables             = _get("load_all_tables",            lambda: {})
+apply_global_filters        = _get("apply_global_filters",       lambda df, *_: df)
+generate_id                 = _get("generate_id",                lambda p, df, col, w=3: f"{p}_{str(len(df)+1).zfill(w)}")
+PARAMS                      = _get("PARAMS",                     {})
+SET                         = _get("SET",                        { "types_contact": [], "canaux": [], "resultats_inter": [], "moyens_paiement": [], "statuts_paiement": [], "types_certif": [] })
+AUDIT_COLS                  = _get("AUDIT_COLS",                 ["Created_At","Created_By","Updated_At","Updated_By"])
+parse_date                  = _get("parse_date",                 lambda s: None)
+email_ok                    = _get("email_ok",                   lambda s: True)
+phone_ok                    = _get("phone_ok",                   lambda s: True)
 
-CERT_COLS = ["ID_Certif","ID","Type_Certif","Date_Examen","Résultat","Score","Date_Obtention","Commentaire",
-             "Created_At","Created_By","Updated_At","Updated_By"]
+save_df_target = getattr(SB, "save_df_target", None)  # peut être None si import raté
 
-ENT_COLS = ["ID_Entreprise","Nom_Entreprise","Secteur","Adresse","Ville","Pays",
-            "Site_Web","Email","Téléphone","Contact_Principal_ID","CA_Annuel","Nb_Employés",
-            "Notes","Created_At","Created_By","Updated_At","Updated_By"]
+# WS_FUNC pour GSheets (optionnel). S’il n’existe pas et que backend=gsheets, storage_backend lèvera un message clair.
+WS_FUNC = st.session_state.get("WS_FUNC", None)
 
-PARAM_COLS = ["clé","valeur"]
-U_COLS = ["user_id","email","password_hash","role","is_active","display_name",
-          "Created_At","Created_By","Updated_At","Updated_By"]
+# =============== Helpers de la page ===============
 
-EP_COLS = ["ID_EntPart","ID_Entreprise","ID_Événement","Type_Lien","Nb_Employés","Sponsoring_FCFA",
-           "Commentaire","Created_At","Created_By","Updated_At","Updated_By"]
-
-# ==== Paramètres courants (alimentés depuis parametres) ======================
-PARAMS: Dict[str, object] = {}
-
-# --- plus bas dans _shared.py (après PARAMS = {...})
-def get_param_list(key: str, default: str = "") -> list[str]:
-    """
-    Lit une liste d’options depuis PARAMS[key] (séparateur virgule, point-virgule
-    ou saut de ligne). Renvoie une liste nettoyée, sans doublons.
-    """
-    raw = str(st.session_state.get("PARAMS", {}).get(key, default) or "").strip()
-    if not raw:
-        return []
-    # Accepte , ; ou \n
-    parts = [p.strip() for p in re.split(r"[,\n;]", raw) if p.strip()]
-    # déduplique en conservant l’ordre
-    seen, out = set(), []
-    for x in parts:
-        if x not in seen:
-            out.append(x); seen.add(x)
-    return out
-    
-# ==== Utilitaires ============================================================
-
-def make_event_label_map(df_events: pd.DataFrame) -> dict[str, str]:
-    """
-    Construit un mapping {label -> ID_Événement} avec label = "ID — Nom — Date — Lieu".
-    """
-    if df_events is None or df_events.empty:
-        return {}
-    tmp = df_events.copy()
-    for c in ["ID_Événement","Nom_Événement","Date","Lieu"]:
-        if c not in tmp.columns:
-            tmp[c] = ""
-    def _lab(r):
-        d = str(r.get("Date","")).strip()
-        return f"{r.get('ID_Événement','').strip()} — {r.get('Nom_Événement','').strip()} — {d} — {r.get('Lieu','').strip()}"
-    labels = tmp.apply(_lab, axis=1)
-    ids = tmp["ID_Événement"].astype(str).str.strip()
-    return dict(zip(labels.tolist(), ids.tolist()))
-
-def enrich_with_event_cols(df_sub: pd.DataFrame, df_events: pd.DataFrame, id_col_evt: str = "ID_Événement") -> pd.DataFrame:
-    """
-    Ajoute colonnes Nom_Événement, Type, Lieu, Date à une sous-table liée aux événements.
-    """
-    if df_sub is None or df_sub.empty:
-        return df_sub
-    if df_events is None or df_events.empty or id_col_evt not in df_sub.columns:
-        for c in ["Nom_Événement","Type","Lieu","Date"]:
-            if c not in df_sub.columns: df_sub[c] = ""
-        return df_sub
-    ev = df_events.set_index("ID_Événement")
-    out = df_sub.copy()
-    out["Nom_Événement"] = out[id_col_evt].map(ev["Nom_Événement"]) if "Nom_Événement" in ev.columns else ""
-    out["Type"]          = out[id_col_evt].map(ev["Type"])           if "Type" in ev.columns          else ""
-    out["Lieu"]          = out[id_col_evt].map(ev["Lieu"])           if "Lieu" in ev.columns          else ""
-    out["Date"]          = out[id_col_evt].map(ev["Date"])           if "Date" in ev.columns          else ""
-    return out
-
-def _utc_now_str() -> str:
+def _now_iso():
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-def stamp_create(row: dict, user_email: str = "system") -> dict:
+def _stamp_create(row: dict, user: dict | None):
+    """Ajoute les colonnes d’audit lors d’une création."""
     row = dict(row)
-    row["Created_At"] = row.get("Created_At") or _utc_now_str()
-    row["Created_By"] = row.get("Created_By") or user_email
-    row["Updated_At"] = row.get("Updated_At") or row["Created_At"]
-    row["Updated_By"] = row.get("Updated_By") or row["Created_By"]
+    now = _now_iso()
+    uid = (user or {}).get("UserID", "system")
+    row.setdefault("Created_At", now)
+    row.setdefault("Created_By", uid)
+    row["Updated_At"] = row.get("Updated_At", now)
+    row["Updated_By"] = row.get("Updated_By", uid)
     return row
 
-def atomic_upsert(
-    name: str,
-    cols: list[str],
-    key_col: str,
-    row_data: dict,
-    user_email: str = "system",
-    ws_func=None,
-    paths: dict[str, Path] | None = None,
-) -> tuple[pd.DataFrame, bool]:
-    """
-    UPSERT atomique (insert si nouveau, update si existant) sur la table `name`.
-    Relecture *fraîche* via ensure_df_source -> mutation -> save_df_target.
-    Renvoie (df_apres, created_bool).
-    """
-    paths = paths or PATHS
-    # relecture fraîche (actualise l'ETag attendu)
-    df = ensure_df_source(name, cols, paths, ws_func).copy()
-    # garanties colonnes
-    for c in cols:
-        if c not in df.columns: df[c] = ""
-    df = df[cols]
+def _stamp_update(row: dict, user: dict | None):
+    """Met à jour Updated_* lors d’une édition."""
+    row = dict(row)
+    row["Updated_At"] = _now_iso()
+    row["Updated_By"] = (user or {}).get("UserID", "system")
+    return row
 
-    key_val = str(row_data.get(key_col,"")).strip()
-    if not key_val:
-        raise ValueError(f"{key_col} manquant pour upsert sur {name}")
-
-    idx = df.index[df[key_col].astype(str).str.strip() == key_val].tolist()
-    created = False
-    if idx:
-        # UPDATE
-        row = df.loc[idx[0]].to_dict()
-        row.update(row_data)
-        row = stamp_update(row, user_email)
-        df.loc[idx[0]] = [row.get(c,"") for c in cols]
+def _statusbar(df: pd.DataFrame, context: str):
+    """Status bar agrégée (compteurs, sommes)."""
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"{context} — lignes", len(df))
+    if {"CA_réglé","Impayé"}.issubset(df.columns):
+        ca = pd.to_numeric(df["CA_réglé"], errors="coerce").fillna(0).sum()
+        imp = pd.to_numeric(df["Impayé"], errors="coerce").fillna(0).sum()
+        c2.metric("💰 CA réglé (grid)", f"{int(ca):,} FCFA".replace(",", " "))
+        c3.metric("❌ Impayés (grid)", f"{int(imp):,} FCFA".replace(",", " "))
     else:
-        # INSERT
-        row = {c:"" for c in cols}
-        row.update(row_data)
-        row = stamp_create(row, user_email)
-        created = True
-        df = pd.concat([df, pd.DataFrame([row])[cols]], ignore_index=True)
+        c2.metric("—", "—")
+        c3.metric("—", "—")
+    c4.metric("Horodatage", _now_iso())
 
-    save_df_target(name, df, paths, ws_func)  # pas de conflit : ETag cohérent
-    return df, created
+def _aggrid(df: pd.DataFrame, page_size=20, key="grid", side_bar=True, single_select=True, style_cols: dict | None=None):
+    """AgGrid générique avec pagination + filtres + sélection simple."""
+    if not HAS_AGGRID:
+        st.info("Installez `streamlit-aggrid` pour la pagination et les filtres avancés.")
+        st.dataframe(df, use_container_width=True)
+        return {"selected_rows": []}
+
+    gob = GridOptionsBuilder.from_dataframe(df)
+    gob.configure_default_column(filter=True, sortable=True, resizable=True)
+    gob.configure_pagination(paginationAutoPageSize=False, paginationPageSize=page_size)
+    gob.configure_selection("single" if single_select else "multiple", use_checkbox=single_select)
+    if side_bar:
+        gob.configure_side_bar()
+
+    if style_cols:
+        for col, js in style_cols.items():
+            gob.configure_column(col, cellStyle=js)
+
+    grid = AgGrid(
+        df,
+        gridOptions=gob.build(),
+        height=520,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+        key=key,
+        allow_unsafe_jscode=True
+    )
+    return grid
+
+def _contact_display_label(row: pd.Series) -> str:
+    return f"{row.get('ID','')} — {row.get('Prénom','')} {row.get('Nom','')} — {row.get('Société','')}"
+
+def _ensure_cols(df: pd.DataFrame, want: list[str]) -> pd.DataFrame:
+    df = df.copy()
+    for c in want:
+        if c not in df.columns:
+            df[c] = ""
+    return df
+
+# =============== UI/UX de la page ===============
+
+st.title("👥 CRM — Grille centrale (Contacts)")
+
+# Afficher (si dispo) le panneau de filtre global côté CRM (utile car chaque page Streamlit est indépendante)
+if hasattr(SH, "render_global_filter_panel"):
+    try:
+        dfs_for_filters = load_all_tables()
+        SH.render_global_filter_panel(dfs_for_filters)
+    except Exception as e:
+        st.sidebar.warning(f"Filtre global indisponible : {e}")
+
+# Auth requise 
+user = st.session_state.get("auth_user") or st.session_state.get("user")
+st.session_state["user"] = user
+if not user: 
+    st.info("🔐 Veuillez vous connecter depuis la page principale pour accéder au CRM.")
+    st.stop()
 
 
-def atomic_append_row(
-    name: str,
-    cols: list[str],
-    row_data: dict,
-    user_email: str = "system",
-    ws_func=None,
-    paths: dict[str, Path] | None = None,
-) -> pd.DataFrame:
+user = st.session_state.get("user", {})
+
+# Chargement (cache) de toutes les tables nécessaires à la page
+dfs = load_all_tables(use_cache_only=True)
+df_contacts     = _ensure_cols(dfs.get("contacts", pd.DataFrame()),      ["ID","Nom","Prénom","Société","Email","Type","Statut","Top20","Date_Creation"])
+df_inter        = _ensure_cols(dfs.get("interactions", pd.DataFrame()),  ["ID_Interaction","ID","Date","Canal","Objet","Résumé","Résultat","Prochaine_Action","Relance","Responsable"])
+df_events       = _ensure_cols(dfs.get("evenements", pd.DataFrame()),    ["ID_Événement","Nom_Événement","Type","Date","Lieu","Cout_Total"])
+df_parts        = _ensure_cols(dfs.get("participations", pd.DataFrame()),["ID_Participation","ID","ID_Événement","Rôle","Feedback","Note"])
+df_pay          = _ensure_cols(dfs.get("paiements", pd.DataFrame()),     ["ID_Paiement","ID","ID_Événement","Date_Paiement","Montant","Moyen","Statut","Référence"])
+df_cert         = _ensure_cols(dfs.get("certifications", pd.DataFrame()),["ID_Certif","ID","Type_Certif","Date_Examen","Résultat","Score","Date_Obtention"])
+df_entreprises  = _ensure_cols(dfs.get("entreprises", pd.DataFrame()),   ["ID_Entreprise","Nom_Entreprise"])
+
+# --------- Agrégats “proba/score/totaux” (identique monofichier, condensé) ---------
+from collections.abc import Mapping
+def map_to_datetime_column(df, index_source, series_or_other, col_name, errors="coerce"):
     """
-    APPEND atomique (ajoute une ligne) sur la table `name`.
-    Relecture *fraîche* -> append -> save.
+    Aligne `series_or_other` sur l'index_source, convertit en datetime.date
+    et affecte le résultat à df[col_name].
+
+    - index_source : Index Pandas ou itérable de valeurs à mapper
+    - series_or_other : Series, dict, callable, DataFrame (1 col) ou valeur simple
+    - col_name : nom de la colonne à créer dans df
+    - errors : comportement pd.to_datetime en cas d'erreur ('coerce', 'raise', 'ignore')
     """
-    paths = paths or PATHS
-    df = ensure_df_source(name, cols, paths, ws_func).copy()
-    for c in cols:
-        if c not in df.columns: df[c] = ""
-    row = {c:"" for c in cols}
-    row.update(row_data)
-    row = stamp_create(row, user_email)
-    df = pd.concat([df, pd.DataFrame([row])[cols]], ignore_index=True)
-    save_df_target(name, df, paths, ws_func)
+    # Détermination du mapping sûr selon le type
+    if isinstance(series_or_other, pd.Series):
+        values = pd.Series(index_source).map(series_or_other.to_dict())
+    elif isinstance(series_or_other, Mapping):
+        values = pd.Series(index_source).map(series_or_other)
+    elif callable(series_or_other):
+        values = pd.Series(index_source).map(series_or_other)
+    elif isinstance(series_or_other, pd.DataFrame):
+        if series_or_other.shape[1] >= 1:
+            col = series_or_other.columns[0]
+            values = pd.Series(index_source).map(series_or_other[col].to_dict())
+        else:
+            values = pd.NaT
+    else:
+        values = pd.NaT
+
+    df[col_name] = pd.to_datetime(values, errors=errors).dt.date
     return df
 
 
-# Exception possible à adapter selon ton implémentation réelle
-class SheetConflictError(Exception):
+def aggregates_for_contacts(today=None):
+    today = today or date.today()
+    vip_thr = float(PARAMS.get("vip_threshold", "500000"))
+    w_int   = float(PARAMS.get("score_w_interaction", "1"))
+    w_part  = float(PARAMS.get("score_w_participation", "1"))
+    w_pay   = float(PARAMS.get("score_w_payment_regle", "2"))
+    lookback = int(PARAMS.get("interactions_lookback_days", "90"))
+    hot_int_min = int(PARAMS.get("rule_hot_interactions_recent_min", "3"))
+    hot_part_min = int(PARAMS.get("rule_hot_participations_min", "1"))
+    hot_partiel = PARAMS.get("rule_hot_payment_partial_counts_as_hot", "1") in ("1","true","True")
+
+    inter_count = df_inter.groupby("ID")["ID_Interaction"].count() if not df_inter.empty else pd.Series(dtype=int)
+    inter_dates = pd.to_datetime(df_inter["Date"], errors="coerce") if not df_inter.empty else pd.Series(dtype="datetime64[ns]")
+    last_contact = df_inter.assign(_d=inter_dates).groupby("ID")["_d"].max() if not df_inter.empty else pd.Series(dtype="datetime64[ns]")
+    recent_cut = today - timedelta(days=lookback)
+    recent_inter = df_inter.assign(_d=inter_dates).loc[lambda d: d["_d"] >= pd.Timestamp(recent_cut)].groupby("ID")["ID_Interaction"].count() if not df_inter.empty else pd.Series(dtype=int)
+
+    resp_max = pd.Series(dtype=str)
+    if not df_inter.empty:
+        tmp = df_inter.groupby(["ID","Responsable"])["ID_Interaction"].count().reset_index()
+        idx = tmp.groupby("ID")["ID_Interaction"].idxmax()
+        resp_max = tmp.loc[idx].set_index("ID")["Responsable"]
+
+    parts_count = df_parts.groupby("ID")["ID_Participation"].count() if not df_parts.empty else pd.Series(dtype=int)
+    has_anim = pd.Series(dtype=bool)
+    if not df_parts.empty:
+        has_anim = df_parts.assign(_anim=df_parts["Rôle"].isin(["Animateur","Invité"])).groupby("ID")["_anim"].any()
+
+    pay_reg_count = pd.Series(dtype=int)
+    if not df_pay.empty:
+        pay = df_pay.copy()
+        pay["Montant"] = pd.to_numeric(pay["Montant"], errors="coerce").fillna(0.0)
+        total_pay = pay.groupby("ID")["Montant"].sum()
+        pay_regle = pay[pay["Statut"]=="Réglé"].groupby("ID")["Montant"].sum()
+        pay_impaye= pay[pay["Statut"]!="Réglé"].groupby("ID")["Montant"].sum()
+        pay_reg_count = pay[pay["Statut"]=="Réglé"].groupby("ID")["Montant"].count()
+    else:
+        total_pay = pd.Series(dtype=float)
+        pay_regle = pd.Series(dtype=float)
+        pay_impaye= pd.Series(dtype=float)
+
+    has_cert = pd.Series(dtype=bool)
+    if not df_cert.empty:
+        has_cert = df_cert[df_cert["Résultat"]=="Réussi"].groupby("ID")["ID_Certif"].count() > 0
+
+    base = df_contacts.copy()
+    if base.empty or "ID" not in base.columns:
+        return pd.DataFrame(columns=["ID"])
+
+    ag = pd.DataFrame(index=base["ID"])
+    ag["Interactions"] = ag.index.map(inter_count).fillna(0).astype(int)
+    ag["Interactions_recent"] = ag.index.map(recent_inter).fillna(0).astype(int)
+    
+    # ag["Dernier_contact"] = pd.to_datetime(ag.index.map(last_contact), errors="coerce").dt.date
+    # je reprends le DataFrame complet modifié avec ajout de "Dernier_contact"
+    ag = map_to_datetime_column(ag, ag.index, last_contact, "Dernier_contact")
+    
+    ag["Resp_principal"] = ag.index.map(resp_max).fillna("")
+    ag["Participations"] = ag.index.map(parts_count).fillna(0).astype(int)
+    ag["A_animé_ou_invité"] = ag.index.map(has_anim).fillna(False)
+    ag["CA_total"] = ag.index.map(total_pay).fillna(0.0)
+    ag["CA_réglé"] = ag.index.map(pay_regle).fillna(0.0)
+    ag["Impayé"] = ag.index.map(pay_impaye).fillna(0.0)
+    ag["Paiements_regles_n"] = ag.index.map(pay_reg_count).fillna(0).astype(int)
+    ag["A_certification"] = ag.index.map(has_cert).fillna(False)
+    ag["Score_composite"] = (w_int * ag["Interactions"] + w_part * ag["Participations"] + w_pay * ag["Paiements_regles_n"]).round(2)
+
+    def make_tags(row):
+        tags=[]
+        # Prospect Top-20 : sur société marquée top-20
+        top20_ids = set(base.loc[base.get("Top20", False)==True, "ID"])
+        if row.name in top20_ids:
+            tags.append("Prospect Top-20")
+        # régulier non converti
+        if row["Participations"] >= 3 and row.name in set(base[base.get("Type","")== "Prospect"]["ID"]) and row["CA_réglé"] <= 0:
+            tags.append("Régulier-non-converti")
+        if row["A_animé_ou_invité"] or row["Participations"] >= 4:
+            tags.append("Futur formateur")
+        if row["A_certification"]:
+            tags.append("Ambassadeur (certifié)")
+        if row["CA_réglé"] >= float(PARAMS.get("vip_threshold", "500000")):
+            tags.append("VIP (CA élevé)")
+        return ", ".join(tags)
+
+    ag["Tags"] = ag.apply(make_tags, axis=1)
+
+    def proba(row):
+        if row.name in set(base[base.get("Type","")=="Membre"]["ID"]):
+            return "Converti"
+        chaud = (row["Interactions_recent"] >= hot_int_min and row["Participations"] >= hot_part_min)
+        if (PARAMS.get("rule_hot_payment_partial_counts_as_hot","1") in ("1","true","True")) and row["Impayé"]>0 and row["CA_réglé"]==0:
+            chaud = True
+        tiede = (row["Interactions_recent"] >= 1 or row["Participations"] >= 1)
+        if chaud: return "Chaud"
+        if tiede: return "Tiède"
+        return "Froid"
+
+    ag["Proba_conversion"] = ag.apply(proba, axis=1)
+    return ag.reset_index(names="ID")
+
+# --------- Filtres grille (locaux) ----------
+colf1, colf2, colf3, colf4 = st.columns([2,1,1,1])
+q            = colf1.text_input("🔎 Recherche (nom, société, email)…", "")
+page_size    = colf2.selectbox("Taille de page", [20,50,100,200], index=0)
+type_filtre  = colf3.selectbox("Type", ["Tous"] + list(SET.get("types_contact", [])))
+top20_only   = colf4.checkbox("Top-20 uniquement", value=False)
+
+# — fusion des agrégats au niveau contact
+ag = aggregates_for_contacts()
+dfc = df_contacts.copy()
+if not dfc.empty:
+    dfc = dfc.merge(ag, on="ID", how="left")
+
+# — application filtre global (si défini via _shared)
+try:
+    dfc = apply_global_filters(dfc, "contacts")
+except Exception:
     pass
 
-def safe_atomic_upsert(
-    name: str,
-    cols: list[str],
-    key_col: str,
-    row_data: dict,
-    user_email: str = "system",
-    ws_func=None,
-    paths: Optional[dict[str, Path]] = None,
-    retries: int = 3,
-    delay: float = 0.5
-) -> tuple[pd.DataFrame, bool]:
-    """
-    Upsert avec gestion des conflits Google Sheets via retries.
-    Renvoie (df_apres, created_bool).
-    """
-    paths = paths or PATHS
-    attempt = 0
-    while attempt < retries:
-        try:
-            # Relecture fraîche
-            df = ensure_df_source(name, cols, paths, ws_func).copy()
-            for c in cols:
-                if c not in df.columns:
-                    df[c] = ""
-            df = df[cols]
+# — filtres locaux
+if q:
+    qs = q.lower()
+    dfc = dfc[dfc.apply(lambda r: any(qs in str(r.get(k,"")).lower() for k in ("Nom","Prénom","Société","Email")), axis=1)]
+if type_filtre and type_filtre != "Tous":
+    dfc = dfc[dfc["Type"] == type_filtre]
+if top20_only and "Top20" in dfc.columns:
+    dfc = dfc[dfc["Top20"].astype(str).str.lower().isin(["true","1","yes"])]
 
-            key_val = str(row_data.get(key_col, "")).strip()
-            if not key_val:
-                raise ValueError(f"{key_col} manquant pour upsert sur {name}")
+# — colonnes par défaut + paramétrables
+def _parse_cols(s, defaults):
+    cols = [c.strip() for c in str(s or "").split(",") if c.strip()]
+    return [c for c in cols if c in dfc.columns] or defaults
 
-            idx = df.index[df[key_col].astype(str).str.strip() == key_val].tolist()
-            created = False
-            if idx:
-                # UPDATE
-                row = df.loc[idx[0]].to_dict()
-                row.update(row_data)
-                row = stamp_update(row, user_email)
-                df.loc[idx[0]] = [row.get(c, "") for c in cols]
-            else:
-                # INSERT
-                row = {c: "" for c in cols}
-                row.update(row_data)
-                row = stamp_create(row, user_email)
-                created = True
-                df = pd.concat([df, pd.DataFrame([row])[cols]], ignore_index=True)
+defaults = ["ID","Nom","Prénom","Société","Type","Statut","Email",
+            "Interactions","Participations","CA_réglé","Impayé","Resp_principal","A_animé_ou_invité",
+            "Score_composite","Proba_conversion","Tags"]
+defaults += [c for c in AUDIT_COLS if c in dfc.columns]
 
-            save_df_target(name, df, paths, ws_func)
-            return df, created
+table_cols = _parse_cols(PARAMS.get("grid_crm_columns",""), defaults)
 
-        except Exception as e:
-            msg = str(e)
-            # Détection simple du conflit (à adapter selon ton code)
-            if "conflit" in msg.lower() or "etag" in msg.lower():
-                attempt += 1
-                st.warning(f"[{attempt}/{retries}] Conflit détecté sur '{name}', retry dans {delay}s…")
-                time.sleep(delay)
-                continue
-            raise  # autre erreur → on remonte
-    # Si on sort de la boucle
-    raise SheetConflictError(f"Impossible de modifier '{name}' après {retries} tentatives.")
+# — status bar agrégée (toujours visible)
+_statusbar(dfc[table_cols], "Contacts")
 
-def safe_atomic_append_row(
-    name: str,
-    cols: list[str],
-    row_data: dict,
-    user_email: str = "system",
-    ws_func=None,
-    paths: Optional[dict[str, Path]] = None,
-    retries: int = 3,
-    delay: float = 0.5
-) -> pd.DataFrame:
-    """
-    Append avec gestion des conflits Google Sheets via retries.
-    """
-    paths = paths or PATHS
-    attempt = 0
-    while attempt < retries:
-        try:
-            df = ensure_df_source(name, cols, paths, ws_func).copy()
-            for c in cols:
-                if c not in df.columns:
-                    df[c] = ""
-            row = {c: "" for c in cols}
-            row.update(row_data)
-            row = stamp_create(row, user_email)
-            df = pd.concat([df, pd.DataFrame([row])[cols]], ignore_index=True)
-            save_df_target(name, df, paths, ws_func)
-            return df
+# — Selecteur maître (ID — Nom Prénom — Entreprise)
+sel_options = dfc.apply(_contact_display_label, axis=1).tolist() if not dfc.empty else []
+id_map = dict(zip(sel_options, dfc["ID"])) if not dfc.empty else {}
+sel_label = st.selectbox("Contact sélectionné (sélecteur maître)", [""] + sel_options, index=0, key="select_contact_label_crm")
+if sel_label:
+    st.session_state["selected_contact_id"] = id_map.get(sel_label)
 
-        except Exception as e:
-            msg = str(e)
-            if "conflit" in msg.lower() or "etag" in msg.lower():
-                attempt += 1
-                st.warning(f"[{attempt}/{retries}] Conflit détecté sur '{name}', retry dans {delay}s…")
-                time.sleep(delay)
-                continue
-            raise
-    raise SheetConflictError(f"Impossible d'ajouter une ligne à '{name}' après {retries} tentatives.")
-
-
-
-def stamp_update(row: dict, user_email: str = "system") -> dict:
-    row = dict(row)
-    row["Updated_At"] = _utc_now_str()
-    row["Updated_By"] = user_email
-    return row
-
-
-def to_int_safe(v, default=0) -> int:
-    try:
-        if v is None: return default
-        s = str(v).strip()
-        if s == "": return default
-        s = s.replace(" ", "").replace(",", ".")
-        return int(float(s))
-    except Exception:
-        return default
-
-def generate_id(prefix: str, df: pd.DataFrame, col: str) -> str:
-    """
-    Génère un ID unique de la forme PREFIX00001 à partir de la plus grande
-    terminaison numérique trouvée dans df[col].
-    """
-    try:
-        if df is None or df.empty or col not in df.columns:
-            return f"{prefix}00001"
-        nums = (
-            df[col].astype(str)
-                  .str.extract(r"(\d+)$")[0]
-                  .dropna()
-                  .astype(int)
-                  .tolist()
-        )
-        n = max(nums) + 1 if nums else 1
-        return f"{prefix}{n:05d}"
-    except Exception:
-        # fallback si parsing échoue
-        return f"{prefix}{(len(df) + 1):05d}"
-
-# ==== Filtre global ==========================================================
-_GLOBAL_FILTERS_DEFAULT = {"annee": "Toutes", "mois": "Tous"}
-
-def get_global_filters() -> Dict[str, str]:
-    return st.session_state.get("GLOBAL_FILTERS", _GLOBAL_FILTERS_DEFAULT.copy())
-
-def set_global_filters(annee: str, mois: str) -> None:
-    st.session_state["GLOBAL_FILTERS"] = {"annee": annee, "mois": mois}
-
-def _years_months_from_dfs(dfs: Dict[str, pd.DataFrame]) -> Tuple[List[str], List[str]]:
-    """
-    Scanne plusieurs tables pour inférer les années / mois disponibles selon
-    les colonnes date usuelles.
-    """
-    years = set()
-    months = set()
-    date_cols = ["Date_Creation","Date","Date_Paiement","Date_Obtention","Date_Examen"]
-    for df in dfs.values():
-        if df is None or df.empty: 
-            continue
-        for c in date_cols:
-            if c in df.columns:
-                s = pd.to_datetime(df[c], errors="coerce")
-                years.update(s.dt.year.dropna().astype(int).tolist())
-                months.update(s.dt.month.dropna().astype(int).tolist())
-    ylist = ["Toutes"] + sorted({str(y) for y in years})
-    mlist = ["Tous"] + [str(m) for m in range(1,13)] if not months else ["Tous"] + sorted({str(m) for m in months}, key=lambda x:int(x))
-    return ylist, mlist
-
-def render_global_filter_panel(dfs: Optional[Dict[str, pd.DataFrame]]=None, location="sidebar") -> Dict[str, str]:
-    """
-    Rend le panneau de filtre global (Année/Mois). Sauvegarde le choix dans
-    st.session_state["GLOBAL_FILTERS"].
-    """
-    container = st.sidebar if location == "sidebar" else st
-    with container.expander("🌍 Filtre global", expanded=True):
-        # Pour proposer des valeurs pertinentes, on peut dériver des tables chargées (cache)
-        if dfs is None:
-            dfs = st.session_state.get("__CACHED_LAST_DFS__", {})
-        years, months = _years_months_from_dfs(dfs if isinstance(dfs, dict) else {})
-        gf = get_global_filters()
-        col1, col2 = st.columns(2)
-        with col1:
-            annee = st.selectbox("Année", years, index=years.index(gf.get("annee","Toutes")) if gf.get("annee","Toutes") in years else 0, key="__global_year")
-        with col2:
-            mois = st.selectbox("Mois", months, index=months.index(gf.get("mois","Tous")) if gf.get("mois","Tous") in months else 0, key="__global_month")
-        set_global_filters(annee, mois)
-        return get_global_filters()
-
-def apply_global_filters(df: pd.DataFrame, table_name: str, gf: Optional[Dict[str, str]]=None) -> pd.DataFrame:
-    """
-    Applique Année/Mois s'ils sont différents de "Toutes"/"Tous".
-    Heuristique de colonne date: on préfère "Date_Creation" si dispo, sinon
-    "Date", "Date_Paiement", "Date_Obtention", "Date_Examen".
-    """
-    if df is None or df.empty:
-        return df
-    gf = gf or get_global_filters()
-    year_sel = gf.get("annee", "Toutes")
-    month_sel = gf.get("mois", "Tous")
-    if year_sel == "Toutes" and month_sel == "Tous":
-        return df
-    # Choix de la colonne date
-    for c in ["Date_Creation","Date","Date_Paiement","Date_Obtention","Date_Examen"]:
-        if c in df.columns:
-            s = pd.to_datetime(df[c], errors="coerce")
-            mask = pd.Series(True, index=df.index)
-            if year_sel != "Toutes":
-                mask = mask & (s.dt.year == int(year_sel))
-            if month_sel != "Tous":
-                mask = mask & (s.dt.month == int(month_sel))
-            return df.loc[mask].copy()
-    return df
-
-# ==== Cache TTL pour réduire les 429 =========================================
-def _cache_key() -> str:
-    """
-    Construit une clé de cache *hashable* indépendante des objets non sérialisables.
-    On ne met PAS les filtres dedans (lecture "globale"), les filtres s'appliquent ensuite.
-    """
-    backend = str(st.secrets.get("storage_backend","csv"))
-    sid = str(st.secrets.get("gsheet_spreadsheet_id",""))
-    stitle = str(st.secrets.get("gsheet_spreadsheet",""))
-    # On incorpore aussi la présence d'un WS_FUNC (booléen)
-    has_ws = "1" if bool(st.session_state.get("WS_FUNC")) else "0"
-    return f"{backend}|{sid}|{stitle}|{has_ws}"
-
-@st.cache_data(show_spinner=False, ttl=120)
-def _read_all_tables_cached(key: str) -> Dict[str, pd.DataFrame]:
-    """
-    Lecture groupée des tables, *mise en cache* (TTL=120s). Réduit fortement
-    le volume d'appels à l'API Sheets. Les pages devraient utiliser
-    load_all_tables(use_cache_only=True) pour l'affichage.
-    """
-    ws = st.session_state.get("WS_FUNC")
-    backend = st.secrets.get("storage_backend","csv")
-
-    def _read(name: str, cols: List[str]) -> pd.DataFrame:
-        # Tentative GSheets
-        if backend == "gsheets" and ws is not None:
-            try:
-                return ensure_df_source(name, cols, PATHS, ws).copy()
-            except Exception as e:
-                st.sidebar.caption(f"Lecture Google Sheets échouée ({name}), fallback CSV: {e}")
-        # Fallback CSV
-        p = PATHS[name]
-        p = Path(p)
-        if p.exists():
-            try:
-                df = pd.read_csv(p, dtype=str).fillna("")
-            except Exception:
-                df = pd.DataFrame(columns=cols)
-        else:
-            df = pd.DataFrame(columns=cols)
-        for c in cols:
-            if c not in df.columns:
-                df[c] = ""
-        return df[cols]
-
-    dfs = {
-        "contacts": _read("contacts", C_COLS),
-        "interactions": _read("interactions", I_COLS),
-        "evenements": _read("evenements", E_COLS),
-        "participations": _read("participations", PART_COLS),
-        "paiements": _read("paiements", PAY_COLS),
-        "certifications": _read("certifications", CERT_COLS),
-        "entreprises": _read("entreprises", ENT_COLS),
-        "parametres": _read("parametres", PARAM_COLS),
-        "users": _read("users", U_COLS),
-        "entreprise_participations": _read("entreprise_participations", EP_COLS),
+# — Grille paginée + filtres avancés
+proba_style = JsCode("""
+  function(params) {
+    const v = params.value;
+    let color = null;
+    if (v === 'Chaud') color = '#10B981';
+    else if (v === 'Tiède') color = '#F59E0B';
+    else if (v === 'Froid') color = '#EF4444';
+    else if (v === 'Converti') color = '#6366F1';
+    if (color){
+      return { color: 'white', 'font-weight':'600', 'text-align':'center', 'border-radius':'12px', 'background-color': color };
     }
+    return {};
+  }
+""") if HAS_AGGRID else None
 
-    # Exposer aux autres fonctions (ex: panneau filtre global)
-    st.session_state["__CACHED_LAST_DFS__"] = dfs
+style_map = {"Proba_conversion": proba_style} if proba_style else None
+grid = _aggrid(dfc[table_cols], page_size=page_size, key="crm_grid", side_bar=True, single_select=True, style_cols=style_map) 
 
-    # Construire PARAMS (dict) à partir de df parametres (clé/valeur)
-    try:
-        dfp = dfs.get("parametres", pd.DataFrame())
-        params = {}
-        if dfp is not None and not dfp.empty and {"clé","valeur"}.issubset(dfp.columns):
-            for _, r in dfp.iterrows():
-                k = str(r.get("clé","")).strip()
-                v = r.get("valeur","")
-                if k:
-                    params[k] = v
-        # garder dans session + global
-        st.session_state["PARAMS"] = params
-        global PARAMS
-        PARAMS = params
-    except Exception:
-        pass
+# Récupération du DataFrame des lignes sélectionnées
+selected_df = grid.selected_rows  # c'est un DataFrame Pandas
+if selected_df is not None and not selected_df.empty:
+    # On prend la première ligne sélectionnée
+    row0 = selected_df.iloc[0]
+    if "ID" in row0:
+        st.session_state["selected_contact_id"] = row0["ID"]
+        
+st.markdown("---")
+cL, cR = st.columns([1,2])
 
-    return dfs
+# =============== Colonne gauche : FICHE CONTACT (CRUD) ===============
+with cL:
+    st.subheader("Fiche Contact")
 
-def load_all_tables(use_cache_only: bool = False) -> Dict[str, pd.DataFrame]:
-    """
-    Chargement des tables. Par défaut, renvoie la version *cache* (TTL=120s).
-    Utilisez use_cache_only=True pour garantir zéro appel Sheets.
-    Les écritures doivent faire leurs relectures ciblées via ensure_df_source().
-    """
-    key = _cache_key()
-    if use_cache_only:
-        return _read_all_tables_cached(key)
-    # Sinon on s'appuie tout de même sur le cache (TTL court). Pour forcer une
-    # relecture totale ici, on pourrait invalider le cache ; on évite pour limiter
-    # les 429 et on réserve la relecture "fraîche" aux opérations de sauvegarde.
-    return _read_all_tables_cached(key)
+    sel_id = st.session_state.get("selected_contact_id", None)
+    if sel_id and not dfc.empty and (dfc["ID"] == sel_id).any():
+        d = dfc[dfc["ID"] == sel_id].iloc[0].to_dict()
 
-# ==== Export util pour d'autres pages ========================================
-__all__ = [
-    "PATHS",
-    "C_COLS","I_COLS","E_COLS","PART_COLS","PAY_COLS","CERT_COLS","ENT_COLS","PARAM_COLS","U_COLS","EP_COLS",
-    "PARAMS",
-    "to_int_safe","generate_id",
-    "get_global_filters","set_global_filters","render_global_filter_panel","apply_global_filters",
-    "load_all_tables",
-]
+        col_top = st.columns(2)
+        if col_top[0].button("➕ Nouveau contact", use_container_width=True):
+            st.session_state["selected_contact_id"] = None
+            st.rerun()
+        if col_top[1].button("🧬 Dupliquer ce contact", use_container_width=True, disabled=not bool(sel_id)):
+            src = df_contacts[df_contacts["ID"] == sel_id]
+            if not src.empty:
+                clone = src.iloc[0].to_dict()
+                new_id = generate_id("CNT", df_contacts, "ID")
+                clone["ID"] = new_id
+                clone = _stamp_create(clone, user)
+                df_new = pd.concat([df_contacts, pd.DataFrame([clone])], ignore_index=True)
+                if save_df_target:
+                    save_df_target("contacts", df_new, SH.PATHS if hasattr(SH, "PATHS") else None, WS_FUNC)
+                st.session_state["selected_contact_id"] = new_id
+                st.success(f"Contact dupliqué sous l'ID {new_id}")
+                st.rerun()
+# Dupliquer (new chatgpt)
+# if st.button("Dupliquer ce contact") and selected_id:
+#     ws = st.session_state.get("WS_FUNC")
+#     df_fresh = ensure_df_source("contacts", C_COLS, PATHS, ws)
+#     new_id = generate_id("CNT", df_fresh, "ID")
+#     # Base = ligne sélectionnée nettoyée
+#     base = df_contacts[df_contacts["ID"] == selected_id]
+#     payload = base.iloc[0].to_dict() if not base.empty else {}
+#     payload["ID"] = new_id
+#     payload = {k: payload.get(k,"") for k in C_COLS}
+#     df_after, created = atomic_upsert("contacts", C_COLS, "ID", payload,
+#                          user_email=st.session_state.get("auth_user",{}).get("email","system"),
+#                          ws_func=ws, paths=PATHS)
+#     st.success(f"Contact dupliqué ({new_id})")
+#     st.session_state["selected_contact_id"] = new_id
+#     st.rerun()
+
+
+        with st.form("edit_contact_form", clear_on_submit=False):
+            st.text_input("ID", value=d.get("ID",""), disabled=True)
+
+            a1, a2 = st.columns(2)
+            nom     = a1.text_input("Nom *", d.get("Nom",""))
+            prenom  = a2.text_input("Prénom", d.get("Prénom",""))
+
+            b1, b2 = st.columns(2)
+            genre  = b1.selectbox("Genre", SET.get("genres",["Homme","Femme","Autre"]),
+                                  index=(SET.get("genres",[]).index(d.get("Genre","Homme")) if d.get("Genre","Homme") in SET.get("genres",[]) else 0))
+            titre  = b2.text_input("Titre / Position", d.get("Titre",""))
+
+            c1, c2 = st.columns(2)
+            # Entreprise (dropdown depuis la table entreprises)
+            entreprises_opts = [""] + SH.get_column_as_list(df_entreprises, "Nom_Entreprise") if hasattr(SH,"get_column_as_list") else [""] + sorted(df_entreprises["Nom_Entreprise"].dropna().astype(str).unique().tolist())
+            societe = c1.selectbox("Société", entreprises_opts,
+                                   index=(entreprises_opts.index(d.get("Société","")) if d.get("Société","") in entreprises_opts else 0))
+            secteur = c2.selectbox("Secteur", SET.get("secteurs",["Autre"]),
+                                   index=(SET.get("secteurs",[]).index(d.get("Secteur","Autre")) if d.get("Secteur","Autre") in SET.get("secteurs",[]) else len(SET.get("secteurs",["Autre"]))-1))
+
+            d1, d2, d3 = st.columns(3)
+            email    = d1.text_input("Email", d.get("Email",""))
+            tel      = d2.text_input("Téléphone", d.get("Téléphone",""))
+            linkedin = d3.text_input("LinkedIn", d.get("LinkedIn",""))
+
+            e1, e2, e3 = st.columns(3)
+            villes = SET.get("villes",["Autres"])
+            payses = SET.get("pays",["Cameroun"])
+            typesc = SET.get("types_contact",["Prospect","Membre"])
+            ville   = e1.selectbox("Ville", villes, index=(villes.index(d.get("Ville","Autres")) if d.get("Ville","Autres") in villes else len(villes)-1))
+            pays    = e2.selectbox("Pays", payses, index=(payses.index(d.get("Pays","Cameroun")) if d.get("Pays","Cameroun") in payses else 0))
+            typec   = e3.selectbox("Type", typesc, index=(typesc.index(d.get("Type","Prospect")) if d.get("Type","Prospect") in typesc else 0))
+
+            f1, f2, f3 = st.columns(3)
+            sources = SET.get("sources",["LinkedIn","Recommandation","Autre"])
+            statuts = SET.get("statuts_engagement",["Actif","Inactif"])
+            source  = f1.selectbox("Source", sources, index=(sources.index(d.get("Source","LinkedIn")) if d.get("Source","LinkedIn") in sources else 0))
+            statut  = f2.selectbox("Statut", statuts, index=(statuts.index(d.get("Statut","Actif")) if d.get("Statut","Actif") in statuts else 0))
+            score   = f3.number_input("Score IIBA", value=float(d.get("Score_Engagement") or 0), step=1.0)
+
+            dc = st.date_input("Date de création", value=parse_date(d.get("Date_Creation")) or date.today())
+            notes = st.text_area("Notes", d.get("Notes",""))
+            top20 = st.checkbox("Top-20 entreprise", value=str(d.get("Top20","")).lower() in ("1","true","yes"))
+
+            if st.form_submit_button("💾 Enregistrer les modifications (le contact)") and sel_id:
+                ws = st.session_state.get("WS_FUNC")
+                upd = {
+                    "ID": sel_id,
+                    "Nom": nom, "Prénom": prenom, "Genre": genre, "Titre": titre,
+                    "Société": societe, "Secteur": secteur, "Email": email, "Téléphone": tel,
+                    "LinkedIn": linkedin, "Ville": ville, "Pays": pays, "Type": typec, "Source": source,
+                    "Statut": statut, "Score_Engagement": score, "Notes": notes, "Top20": "1" if top20 else "",
+                }
+                df_after, created = atomic_upsert("contacts", C_COLS, "ID", upd,
+                                     user_email=st.session_state.get("auth_user",{}).get("email","system"),
+                                     ws_func=ws, paths=PATHS)
+                st.success(f"Contact mis à jour ({sel_id})")
+                st.rerun()
+
+
+    else:
+        st.info("Sélectionnez un contact via le sélecteur maître ou la grille ci-dessous.")
+        with st.expander("➕ Créer un nouveau contact"):
+            with st.form("create_contact_form"):
+                a1, a2 = st.columns(2)
+                nom_new    = a1.text_input("Nom *", "")
+                prenom_new = a2.text_input("Prénom", "")
+
+                b1, b2 = st.columns(2)
+                genre_new = b1.selectbox("Genre", SET.get("genres",["Homme","Femme","Autre"]), index=0)
+                titre_new = b2.text_input("Titre / Position", "")
+
+                c1, c2 = st.columns(2)
+                entreprises_opts = [""] + (SH.get_column_as_list(df_entreprises, "Nom_Entreprise") if hasattr(SH,"get_column_as_list") else sorted(df_entreprises["Nom_Entreprise"].dropna().astype(str).unique().tolist()))
+                societe_new = c1.selectbox("Société", entreprises_opts, index=0)
+                secteur_new = c2.selectbox("Secteur", SET.get("secteurs",["Autre"]), index=len(SET.get("secteurs",["Autre"]))-1)
+
+                d1, d2, d3 = st.columns(3)
+                email_new    = d1.text_input("Email", "")
+                tel_new      = d2.text_input("Téléphone", "")
+                linkedin_new = d3.text_input("LinkedIn", "")
+
+                e1, e2, e3 = st.columns(3)
+                villes = SET.get("villes",["Autres"])
+                payses = SET.get("pays",["Cameroun"])
+                typesc = SET.get("types_contact",["Prospect","Membre"])
+                ville_new = e1.selectbox("Ville", villes, index=len(villes)-1)
+                pays_new  = e2.selectbox("Pays",  payses, index=0)
+                typec_new = e3.selectbox("Type",  typesc, index=0)
+
+                f1, f2, f3 = st.columns(3)
+                sources = SET.get("sources",["LinkedIn","Recommandation","Autre"])
+                statuts = SET.get("statuts_engagement",["Actif","Inactif"])
+                source_new = f1.selectbox("Source", sources, index=0)
+                statut_new = f2.selectbox("Statut", statuts, index=0)
+                score_new  = f3.number_input("Score IIBA", value=0.0, step=1.0)
+
+                dc_new  = st.date_input("Date de création", value=date.today())
+                notes_new = st.text_area("Notes", "")
+                top20_new = st.checkbox("Top-20 entreprise", value=False)
+
+                if st.form_submit_button("💾 Créer le contact"):
+                    ws = st.session_state.get("WS_FUNC")
+                    # Relecture fraîche + ID basé sur l'état courant
+                    df_fresh = ensure_df_source("contacts", C_COLS, PATHS, ws)
+                    new_id = generate_id("CNT", df_fresh, "ID")
+                    new_row = {
+                        "ID": new_id,
+                        "Nom": nom_new, "Prénom": prenom_new, "Genre": genre_new, "Titre": titre_new,
+                        "Société": societe_new, "Secteur": secteur_new, "Email": email_new, "Téléphone": tel_new,
+                        "LinkedIn": linkedin_new, "Ville": ville_new, "Pays": pays_new, "Type": typec_new, "Source": sources,
+                        "Statut": statuts, "Score_Engagement": score_new, "Notes": notes_new, "Top20": "1" if top20_new else "",
+                        "Date_Creation": datetime.utcnow().strftime("%Y-%m-%d"),
+                    }
+                    df_after, created = atomic_upsert(
+                        "contacts", C_COLS, "ID", new_row,
+                        user_email=st.session_state.get("auth_user",{}).get("email","system"),
+                        ws_func=ws, paths=PATHS
+                    )
+                    st.success(f"Contact créé ({new_id})")
+                    st.session_state["selected_contact_id"] = new_id
+                    st.rerun()
+
+
+# =============== Colonne droite : ACTIONS LIÉES (CRUD) ===============
+with cR:
+    st.subheader("Actions liées au contact sélectionné")
+    sel_id = st.session_state.get("selected_contact_id")
+
+    tabs = st.tabs(["➕ Interaction","➕ Participation","➕ Paiement","➕ Certification","📑 Historique & sous-tables"])
+
+    # --- INTERACTION ---
+    with tabs[0]:
+        if not sel_id:
+            st.info("Sélectionnez d’abord un contact.")
+        else:
+            with st.form("form_add_inter"):
+                canaux     = get_param_list("interaction_canaux", "Appel,Email,WhatsApp,LinkedIn,Visio,Présentiel")
+                resultats  = get_param_list("interaction_resultats", "OK,Relancer,Pas intéressé,NRP")
+                responsabs = get_param_list("responsables", "IIBA Cameroun,Admin,Equipe")
+
+                a1, a2, a3 = st.columns(3)
+                dti   = a1.date_input("Date", value=date.today())
+                canal_sel = a2.selectbox("Canal", options=canaux or ["—"], index=0)
+                resp  = a3.selectbox("Responsable", options=responsabs or ["—"], index=0)
+
+                obj = st.text_input("Objet")
+                result_sel = st.selectbox("Résultat", options=resultats or ["—"], index=0)
+                resume = st.text_area("Résumé")
+                add_rel = st.checkbox("Planifier une relance ?")
+                rel = st.date_input("Relance", value=date.today()) if add_rel else None
+
+                if st.form_submit_button("Enregistrer l’interaction"):
+                    ws = st.session_state.get("WS_FUNC")
+                    df_fresh_int = ensure_df_source("interactions", I_COLS, PATHS, ws)
+                    new_id = generate_id("INT", df_fresh_int, "ID_Interaction")
+                    row = {
+                        "ID_Interaction": new_id,
+                        "ID": sel_id,
+                        "Date": str(dti) if dti else "",
+                        "Canal": canal_sel, "Objet": obj, "Résumé": resume, "Résultat": result_sel,
+                        "Prochaine_Action": add_rel, "Relance": rel, "Responsable": resp,
+                    }
+                    atomic_append_row("interactions", I_COLS, row,
+                        user_email=st.session_state.get("auth_user",{}).get("email","system"),
+                        ws_func=ws, paths=PATHS)
+                    st.success(f"Interaction enregistrée ({new_id})")
+                    st.rerun()
+                
+                
+    # --- PARTICIPATION ---
+    with tabs[1]:
+        # --> pour participation :
+        evt_map = make_event_label_map(df_events)  # {label -> ID}
+        evt_labels = sorted(evt_map.keys()) if evt_map else ["—"]
+        label_sel_part = st.selectbox("Événement", options=evt_labels, index=0, key="evt_part")
+        evt_id_part = evt_map.get(label_sel_part, "")
+        if not sel_id:
+            st.info("Sélectionnez d’abord un contact.")
+        else:
+            if df_events.empty:
+                st.warning("Créez d’abord un événement dans la page Événements.")
+            else:
+                with st.form("form_add_part"):
+                    e1, e2 = st.columns(2)
+                    ide  = e1.selectbox("Événement", df_events["ID_Événement"].tolist())
+                    role = e2.selectbox("Rôle", ["Participant","Animateur","Invité"])
+                    f1, f2 = st.columns(2)
+                    fb   = f1.selectbox("Feedback", ["Très satisfait","Satisfait","Moyen","Insatisfait"])
+                    note = f2.number_input("Note (1-5)", min_value=1, max_value=5, value=5)
+                    comment_part = st.text_area("Commentaire (Participation)", key="comment_part")
+                    
+                    if st.form_submit_button("💾 Enregistrer la participation"):
+                        ws = st.session_state.get("WS_FUNC")
+                        df_fresh_part = ensure_df_source("participations", PART_COLS, PATHS, ws)
+                        new_id = generate_id("PAR", df_fresh_part, "ID_Participation")
+                        row = {
+                            "ID_Participation": new_id,
+                            "ID": sel_id,
+                            "ID_Événement": ide,
+                            "Rôle": role,
+                            "Feedback": fb,
+                            "Note": note,
+                            "Commentaire": comment_part,   # <- ajouté
+                        }
+                        atomic_append_row("participations", PART_COLS, row,
+                            user_email=st.session_state.get("auth_user",{}).get("email","system"),
+                            ws_func=ws, paths=PATHS)
+                        st.success(f"Participation enregistrée ({new_id})")
+                        st.rerun()
+                    
+                    
+    # --- PAIEMENT ---
+    with tabs[2]:
+        # --> pour paiements :
+        evt_map = make_event_label_map(df_events)  # {label -> ID}
+        evt_labels = sorted(evt_map.keys()) if evt_map else ["—"]
+        label_sel_pay = st.selectbox("Événement", options=evt_labels, index=0, key="evt_pay")
+        evt_id_pay = evt_map.get(label_sel_pay, "")
+        if not sel_id:
+            st.info("Sélectionnez d’abord un contact.")
+        else:
+            if df_events.empty:
+                st.warning("Créez d’abord un événement.")
+            else:
+                with st.form("form_add_pay"):
+                    moyens  = get_param_list("moyens_paiement", "Cash,Mobile Money,CB,Virement")
+                    statuts = get_param_list("statuts_paiement", "Réglé,Partiel,En attente,Annulé")
+                    
+                    p1, p2 = st.columns(2)
+                    ide = p1.selectbox("Événement", df_events["ID_Événement"].tolist())
+                    dtp = p2.date_input("Date paiement", value=date.today())
+                    p3, p4, p5 = st.columns(3)
+                    montant = p3.number_input("Montant (FCFA)", min_value=0, step=1000)
+                    moyen   = p4.selectbox("Moyen", options=moyens or ["—"], index=0)
+                    statut  = p5.selectbox("Statut", options=statuts or ["—"], index=0)
+                    ref = st.text_input("Référence")
+                    comment_pay  = st.text_area("Commentaire (Paiement)", key="comment_pay")
+                    
+                    if st.form_submit_button("💾 Enregistrer le paiement"):
+                        ws = st.session_state.get("WS_FUNC")
+                        df_fresh_pay = ensure_df_source("paiements", PAY_COLS, PATHS, ws)
+                        new_id = generate_id("PAY", df_fresh_pay, "ID_Paiement")
+                        row = {
+                            "ID_Paiement": new_id,
+                            "ID": sel_id,
+                            "ID_Événement": evt_id_pay,
+                            "Date_Paiement": str(date_pay) if date_pay else "",
+                            "Montant": str(montant_pay or ""),
+                            "Moyen": moyen_sel, "Statut": statut_sel, "Référence": reference_pay,
+                            "Commentaire": comment_pay,    # <- ajouté
+                        }
+                        atomic_append_row("paiements", PAY_COLS, row,
+                            user_email=st.session_state.get("auth_user",{}).get("email","system"),
+                            ws_func=ws, paths=PATHS)
+                        st.success(f"Paiement enregistré ({new_id})")
+                        st.rerun()
+                    
+                    
+    # --- CERTIFICATION ---
+    with tabs[3]:
+        if not sel_id:
+            st.info("Sélectionnez d’abord un contact.")
+        else:
+            with st.form("form_add_cert"):
+                types_cert = get_param_list("types_certif", "ECBA,CCBA,CBAP,AAC,CBDA,CPOA")
+                c1, c2, c3 = st.columns(3)
+                tc  = c1.selectbox("Type Certification", options=types_cert or ["—"], index=0)
+                dte = c2.date_input("Date Examen", value=date.today())
+                res = c3.selectbox("Résultat", ["Réussi","Échoué","En cours","Reporté"])
+                s1, s2 = st.columns(2)
+                sc  = s1.number_input("Score", min_value=0, max_value=100, value=0)
+                has_dto = s2.checkbox("Renseigner une date d'obtention ?")
+                dto = st.date_input("Date Obtention", value=date.today()) if has_dto else None
+                comment_cert = st.text_area("Commentaire (Certification)", key="comment_cert")
+
+                if st.form_submit_button("💾 Enregistrer la certification"):
+                    ws = st.session_state.get("WS_FUNC")
+                    df_fresh_cert = ensure_df_source("certifications", CERT_COLS, PATHS, ws)
+                    new_id = generate_id("CER", df_fresh_cert, "ID_Certif")
+                    row = {
+                        "ID_Certif": new_id,
+                        "ID": sel_id,
+                        "Type_Certif": type_sel,
+                        "Date_Examen": str(date_exam) if date_exam else "",
+                        "Résultat": result_cert, "Score": score_cert,
+                        "Date_Obtention": str(date_obt) if date_obt else "",
+                        "Commentaire": comment_cert,   # <- ajouté
+                    }
+                    atomic_append_row("certifications", CERT_COLS, row,
+                        user_email=st.session_state.get("auth_user",{}).get("email","system"),
+                        ws_func=ws, paths=PATHS)
+                    st.success(f"Certification enregistrée ({new_id})")
+                    st.rerun()
+                
+                
+    # --- HISTORIQUE & sous-tables (grilles paginées + filtres + status bar) ---
+    with tabs[4]:
+        if not sel_id:
+            st.info("Sélectionnez d’abord un contact.")
+        else:
+            st.markdown("### 🧾 Historique du contact sélectionné")
+
+            # Interactions
+            sub_inter = df_inter[df_inter["ID"] == sel_id].copy()
+            st.caption(f"Interactions ({len(sub_inter)})")
+            _statusbar(_ensure_cols(sub_inter, AUDIT_COLS), "Interactions")
+            _aggrid(sub_inter, page_size=20, key=f"grid_inter_{sel_id}")
+
+            # Participations
+            sub_parts = df_parts[df_parts["ID"] == sel_id].copy()
+            st.caption(f"Participations ({len(sub_parts)})")
+            _statusbar(_ensure_cols(sub_parts, AUDIT_COLS), "Participations")
+            _aggrid(sub_parts, page_size=20, key=f"grid_parts_{sel_id}")
+            
+            # Historique enrichi (colonnes événement)
+            # df_parts_enriched = enrich_with_event_cols(df_parts_contact, df_events, "ID_Événement")
+            df_parts_enriched = enrich_with_event_cols(sub_parts, df_events, "ID_Événement")
+            st.dataframe(
+                df_parts_enriched[["ID_Participation","Rôle","Nom_Événement","Type","Lieu","Date","Feedback","Note","Commentaire"]],
+                use_container_width=True
+            )
+
+            # Paiements
+            sub_pay = df_pay[df_pay["ID"] == sel_id].copy()
+            st.caption(f"Paiements ({len(sub_pay)})")
+            _statusbar(_ensure_cols(sub_pay, AUDIT_COLS), "Paiements")
+            _aggrid(sub_pay, page_size=20, key=f"grid_pay_{sel_id}")
+            
+            # Historique enrichi (colonnes événement)
+            # df_pay_enriched = enrich_with_event_cols(df_pay_contact, df_events, "ID_Événement")
+            df_pay_enriched = enrich_with_event_cols(sub_pay, df_events, "ID_Événement")
+            st.dataframe(
+                df_pay_enriched[["ID_Paiement","Référence","Nom_Événement","Type","Lieu","Date","Date_Paiement","Montant","Moyen","Statut","Commentaire"]],
+                use_container_width=True
+            )            
+
+            # Certifications
+            sub_cert = df_cert[df_cert["ID"] == sel_id].copy()
+            st.caption(f"Certifications ({len(sub_cert)})")
+            _statusbar(_ensure_cols(sub_cert, AUDIT_COLS), "Certifications")
+            _aggrid(sub_cert, page_size=20, key=f"grid_cert_{sel_id}")
