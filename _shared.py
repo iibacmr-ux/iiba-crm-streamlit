@@ -226,6 +226,111 @@ def atomic_append_row(
     return df
 
 
+# Exception possible à adapter selon ton implémentation réelle
+class SheetConflictError(Exception):
+    pass
+
+def safe_atomic_upsert(
+    name: str,
+    cols: list[str],
+    key_col: str,
+    row_data: dict,
+    user_email: str = "system",
+    ws_func=None,
+    paths: Optional[dict[str, Path]] = None,
+    retries: int = 3,
+    delay: float = 0.5
+) -> tuple[pd.DataFrame, bool]:
+    """
+    Upsert avec gestion des conflits Google Sheets via retries.
+    Renvoie (df_apres, created_bool).
+    """
+    paths = paths or PATHS
+    attempt = 0
+    while attempt < retries:
+        try:
+            # Relecture fraîche
+            df = ensure_df_source(name, cols, paths, ws_func).copy()
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = ""
+            df = df[cols]
+
+            key_val = str(row_data.get(key_col, "")).strip()
+            if not key_val:
+                raise ValueError(f"{key_col} manquant pour upsert sur {name}")
+
+            idx = df.index[df[key_col].astype(str).str.strip() == key_val].tolist()
+            created = False
+            if idx:
+                # UPDATE
+                row = df.loc[idx[0]].to_dict()
+                row.update(row_data)
+                row = stamp_update(row, user_email)
+                df.loc[idx[0]] = [row.get(c, "") for c in cols]
+            else:
+                # INSERT
+                row = {c: "" for c in cols}
+                row.update(row_data)
+                row = stamp_create(row, user_email)
+                created = True
+                df = pd.concat([df, pd.DataFrame([row])[cols]], ignore_index=True)
+
+            save_df_target(name, df, paths, ws_func)
+            return df, created
+
+        except Exception as e:
+            msg = str(e)
+            # Détection simple du conflit (à adapter selon ton code)
+            if "conflit" in msg.lower() or "etag" in msg.lower():
+                attempt += 1
+                st.warning(f"[{attempt}/{retries}] Conflit détecté sur '{name}', retry dans {delay}s…")
+                time.sleep(delay)
+                continue
+            raise  # autre erreur → on remonte
+    # Si on sort de la boucle
+    raise SheetConflictError(f"Impossible de modifier '{name}' après {retries} tentatives.")
+
+def safe_atomic_append_row(
+    name: str,
+    cols: list[str],
+    row_data: dict,
+    user_email: str = "system",
+    ws_func=None,
+    paths: Optional[dict[str, Path]] = None,
+    retries: int = 3,
+    delay: float = 0.5
+) -> pd.DataFrame:
+    """
+    Append avec gestion des conflits Google Sheets via retries.
+    """
+    paths = paths or PATHS
+    attempt = 0
+    while attempt < retries:
+        try:
+            df = ensure_df_source(name, cols, paths, ws_func).copy()
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = ""
+            row = {c: "" for c in cols}
+            row.update(row_data)
+            row = stamp_create(row, user_email)
+            df = pd.concat([df, pd.DataFrame([row])[cols]], ignore_index=True)
+            save_df_target(name, df, paths, ws_func)
+            return df
+
+        except Exception as e:
+            msg = str(e)
+            if "conflit" in msg.lower() or "etag" in msg.lower():
+                attempt += 1
+                st.warning(f"[{attempt}/{retries}] Conflit détecté sur '{name}', retry dans {delay}s…")
+                time.sleep(delay)
+                continue
+            raise
+    raise SheetConflictError(f"Impossible d'ajouter une ligne à '{name}' après {retries} tentatives.")
+
+
+
 def stamp_update(row: dict, user_email: str = "system") -> dict:
     row = dict(row)
     row["Updated_At"] = _utc_now_str()
