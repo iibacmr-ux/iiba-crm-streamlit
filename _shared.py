@@ -279,6 +279,11 @@ def export_filtered_excel(dfs: Dict[str, pd.DataFrame], filename_prefix: str = "
     )
 
 # === _shared.py : Filtres globaux inter-pages =================================
+
+
+
+# === Filtres globaux inter-pages =================================================
+# Dépendances : pandas as pd, streamlit as st (déjà importés dans _shared.py)
 def _safe_unique(series: pd.Series):
     if series is None or series.empty:
         return []
@@ -288,12 +293,12 @@ def _safe_unique(series: pd.Series):
     return vals
 
 def get_global_filters(defaults: dict | None = None) -> dict:
-    """Récupère l'état des filtres globaux depuis la session (avec valeurs par défaut)."""
+    """Récupère/initialise l'état des filtres globaux dans la session."""
     base = {
         "search": "",
         "year": "Toutes",      # "Toutes" ou int (ex: 2025)
-        "month": "Tous",       # "Tous"   ou int (1-12)
-        "entreprise_ids": [],  # liste d'ID_Entreprise
+        "month": "Tous",       # "Tous"   ou int (1..12)
+        "entreprise_ids": [],
         "secteurs": [],
         "pays": [],
         "villes": [],
@@ -305,7 +310,6 @@ def get_global_filters(defaults: dict | None = None) -> dict:
     if defaults:
         base.update({k:v for k,v in defaults.items() if k in base})
     st.session_state.setdefault("GLOBAL_FILTERS", base)
-    # on recolle avec schéma (au cas où des clés aient évolué)
     gf = {**base, **st.session_state["GLOBAL_FILTERS"]}
     st.session_state["GLOBAL_FILTERS"] = gf
     return gf
@@ -316,37 +320,33 @@ def set_global_filters(new_values: dict):
     st.session_state["GLOBAL_FILTERS"] = gf
 
 def render_global_filter_panel(dfs: dict):
-    """Rend le panneau de filtres globaux dans la sidebar et met à jour l'état.
-       dfs : dictionnaire de DataFrames (load_all_tables()).
-    """
+    """Affiche le panneau latéral '🔎 Filtre global' et met à jour l'état."""
     gf = get_global_filters()
 
-    # Collecte des options à partir des tables (tout est caché par @cache_data au-dessus)
     dfc  = dfs.get("contacts", pd.DataFrame())
     dfe  = dfs.get("events", pd.DataFrame())
     dfen = dfs.get("entreprises", pd.DataFrame())
     dfi  = dfs.get("inter", pd.DataFrame())
 
-    # Options – Contacts
+    # Options à partir des tables
     opt_types_c   = _safe_unique(dfc.get("Type", pd.Series(dtype=str)))
     opt_statuts_c = _safe_unique(dfc.get("Statut", pd.Series(dtype=str)))
     opt_resp      = _safe_unique(dfi.get("Responsable", pd.Series(dtype=str))) if not dfi.empty else []
 
-    # Options – Entreprises
     opt_ent_ids   = _safe_unique(dfen.get("ID_Entreprise", pd.Series(dtype=str)))
     opt_secteurs  = _safe_unique(dfen.get("Secteur", pd.Series(dtype=str)))
     opt_pays      = _safe_unique(dfen.get("Pays", pd.Series(dtype=str)))
     opt_villes    = _safe_unique(dfen.get("Ville", pd.Series(dtype=str)))
 
-    # Options – Evénements
     opt_types_e   = _safe_unique(dfe.get("Type", pd.Series(dtype=str)))
 
     with st.sidebar.expander("🔎 Filtre global", expanded=True):
         gf["search"] = st.text_input("Recherche globale", value=gf.get("search",""))
+
+        # Année / Mois (agrégation de dates issues de plusieurs tables)
         col_y, col_m = st.columns(2)
         with col_y:
             years = ["Toutes"]
-            # années disponibles à partir de diverses dates
             all_dates = []
             for s in [
                 dfc.get("Date_Creation", pd.Series(dtype=str)),
@@ -389,10 +389,9 @@ def render_global_filter_panel(dfs: dict):
         gf["responsables"]    = st.multiselect("Responsable (interactions)", options=opt_resp, default=[x for x in gf.get("responsables",[]) if x in opt_resp])
 
         if st.button("↩ Réinitialiser", use_container_width=True):
-            gf = get_global_filters({})  # restaure les défauts
+            get_global_filters({})  # reset
             st.experimental_rerun()
 
-    # Mettre à jour session
     set_global_filters(gf)
 
 def _match_year_month(dt: pd.Series, year_sel, month_sel):
@@ -411,7 +410,6 @@ def _contains_any(text_series: pd.Series, needle: str) -> pd.Series:
         return pd.Series([True]*len(text_series), index=text_series.index) if not text_series.empty else pd.Series([], dtype=bool)
     pattern = re.escape(needle.strip().lower())
     s = text_series.fillna("").astype(str).str.lower()
-    # recherche plein-texte naïve : la plus robuste et rapide sur colonnes textuelles
     return s.str.contains(pattern, na=False)
 
 def apply_global_filters(df: pd.DataFrame, domain: str, gf: dict | None = None) -> pd.DataFrame:
@@ -423,32 +421,28 @@ def apply_global_filters(df: pd.DataFrame, domain: str, gf: dict | None = None) 
     gf = gf or get_global_filters()
     out = df.copy()
 
-    # --- 1) Recherche globale (plein-texte) ---
+    # 1) Recherche plein-texte
     text_cols = [c for c in out.columns if out[c].dtype == object or out[c].dtype == "string"]
     if text_cols:
-        mask_text = pd.Series([False]*len(out), index=out.index)
         if gf.get("search", "").strip():
+            mask_text = pd.Series([False]*len(out), index=out.index)
             for c in text_cols:
                 mask_text = mask_text | _contains_any(out[c], gf["search"])
-        else:
-            mask_text = pd.Series([True]*len(out), index=out.index)
-        out = out[mask_text]
+            out = out[mask_text]
+    # si pas de search -> pas de restriction
 
-    # --- 2) Filtres année/mois selon domaine ---
+    # 2) Filtres année/mois & spécifiques
     if domain == "contacts":
-        # Date_Creation
         if "Date_Creation" in out.columns:
-            m = _match_year_month(out["Date_Creation"], gf.get("year","Toutes"), gf.get("month","Tous"))
-            out = out[m]
-        # Type / Statut
-        if gf.get("types_contact"):   out = out[out.get("Type","").isin(gf["types_contact"])]
-        if gf.get("statuts_contact"): out = out[out.get("Statut","").isin(gf["statuts_contact"])]
-        # Filtre d’appartenance à une entreprise (si demandé)
+            out = out[_match_year_month(out["Date_Creation"], gf.get("year","Toutes"), gf.get("month","Tous"))]
+        if gf.get("types_contact") and "Type" in out.columns:
+            out = out[out["Type"].isin(gf["types_contact"])]
+        if gf.get("statuts_contact") and "Statut" in out.columns:
+            out = out[out["Statut"].isin(gf["statuts_contact"])]
         if gf.get("entreprise_ids") and "ID_Entreprise" in out.columns:
             out = out[out["ID_Entreprise"].astype(str).isin(gf["entreprise_ids"])]
 
     elif domain == "entreprises":
-        # Filtre sectoriel / géographique
         if gf.get("secteurs") and "Secteur" in out.columns:
             out = out[out["Secteur"].isin(gf["secteurs"])]
         if gf.get("pays") and "Pays" in out.columns:
@@ -457,49 +451,41 @@ def apply_global_filters(df: pd.DataFrame, domain: str, gf: dict | None = None) 
             out = out[out["Ville"].isin(gf["villes"])]
 
     elif domain == "events":
-        # Date
         if "Date" in out.columns:
-            m = _match_year_month(out["Date"], gf.get("year","Toutes"), gf.get("month","Tous"))
-            out = out[m]
+            out = out[_match_year_month(out["Date"], gf.get("year","Toutes"), gf.get("month","Tous"))]
         if gf.get("types_event") and "Type" in out.columns:
             out = out[out["Type"].isin(gf["types_event"])]
 
     elif domain == "inter":
-        # Date + Responsable
         if "Date" in out.columns:
-            m = _match_year_month(out["Date"], gf.get("year","Toutes"), gf.get("month","Tous"))
-            out = out[m]
+            out = out[_match_year_month(out["Date"], gf.get("year","Toutes"), gf.get("month","Tous"))]
         if gf.get("responsables") and "Responsable" in out.columns:
             out = out[out["Responsable"].isin(gf["responsables"])]
 
-    elif domain == "parts":
-        # Participations — si on veut filtrer par date d'événement, il faut la joindre côté page
-        # Ici on peut filtrer par entreprise/contact via filtres si dispo
-        pass
-
     elif domain == "pay":
         if "Date_Paiement" in out.columns:
-            m = _match_year_month(out["Date_Paiement"], gf.get("year","Toutes"), gf.get("month","Tous"))
-            out = out[m]
+            out = out[_match_year_month(out["Date_Paiement"], gf.get("year","Toutes"), gf.get("month","Tous"))]
 
     elif domain == "cert":
-        # On prend Date_Obtention (ou Date_Examen si présente)
         d1 = out.get("Date_Obtention")
         d2 = out.get("Date_Examen")
         if d1 is not None or d2 is not None:
             m1 = _match_year_month(d1, gf.get("year","Toutes"), gf.get("month","Tous")) if d1 is not None else None
             m2 = _match_year_month(d2, gf.get("year","Toutes"), gf.get("month","Tous")) if d2 is not None else None
             if m1 is not None and m2 is not None:
-                m = (m1 | m2).fillna(False)
+                out = out[(m1 | m2).fillna(False)]
             else:
-                m = m1 if m1 is not None else m2
-            out = out[m]
+                out = out[m1] if m1 is not None else out[m2]
 
     elif domain == "entreprise_parts":
-        # Participations officielles d'entreprise — pas de date native (selon votre modèle),
-        # mais on pourrait filtrer par entreprise si gf["entreprise_ids"] est rempli
         if gf.get("entreprise_ids") and "ID_Entreprise" in out.columns:
             out = out[out["ID_Entreprise"].astype(str).isin(gf["entreprise_ids"])]
 
-    # Rien d’autre : retour du DataFrame filtré
     return out
+
+# (facultatif) export explicite
+__all__ = [
+    "parse_date",
+    "get_global_filters", "set_global_filters",
+    "render_global_filter_panel", "apply_global_filters",
+]
