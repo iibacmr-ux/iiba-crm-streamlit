@@ -160,6 +160,37 @@ df_cert         = _ensure_cols(dfs.get("certifications", pd.DataFrame()),["ID_Ce
 df_entreprises  = _ensure_cols(dfs.get("entreprises", pd.DataFrame()),   ["ID_Entreprise","Nom_Entreprise"])
 
 # --------- Agrégats “proba/score/totaux” (identique monofichier, condensé) ---------
+from collections.abc import Mapping
+def map_to_datetime_column(df, index_source, series_or_other, col_name, errors="coerce"):
+    """
+    Aligne `series_or_other` sur l'index_source, convertit en datetime.date
+    et affecte le résultat à df[col_name].
+
+    - index_source : Index Pandas ou itérable de valeurs à mapper
+    - series_or_other : Series, dict, callable, DataFrame (1 col) ou valeur simple
+    - col_name : nom de la colonne à créer dans df
+    - errors : comportement pd.to_datetime en cas d'erreur ('coerce', 'raise', 'ignore')
+    """
+    # Détermination du mapping sûr selon le type
+    if isinstance(series_or_other, pd.Series):
+        values = pd.Series(index_source).map(series_or_other.to_dict())
+    elif isinstance(series_or_other, Mapping):
+        values = pd.Series(index_source).map(series_or_other)
+    elif callable(series_or_other):
+        values = pd.Series(index_source).map(series_or_other)
+    elif isinstance(series_or_other, pd.DataFrame):
+        if series_or_other.shape[1] >= 1:
+            col = series_or_other.columns[0]
+            values = pd.Series(index_source).map(series_or_other[col].to_dict())
+        else:
+            values = pd.NaT
+    else:
+        values = pd.NaT
+
+    df[col_name] = pd.to_datetime(values, errors=errors).dt.date
+    return df
+
+
 def aggregates_for_contacts(today=None):
     today = today or date.today()
     vip_thr = float(PARAMS.get("vip_threshold", "500000"))
@@ -212,7 +243,11 @@ def aggregates_for_contacts(today=None):
     ag = pd.DataFrame(index=base["ID"])
     ag["Interactions"] = ag.index.map(inter_count).fillna(0).astype(int)
     ag["Interactions_recent"] = ag.index.map(recent_inter).fillna(0).astype(int)
-    ag["Dernier_contact"] = pd.to_datetime(ag.index.map(last_contact), errors="coerce").dt.date
+    
+    # ag["Dernier_contact"] = pd.to_datetime(ag.index.map(last_contact), errors="coerce").dt.date
+    # je reprends le DataFrame complet modifié avec ajout de "Dernier_contact"
+    ag = map_to_datetime_column(ag, ag.index, last_contact, "Dernier_contact")
+    
     ag["Resp_principal"] = ag.index.map(resp_max).fillna("")
     ag["Participations"] = ag.index.map(parts_count).fillna(0).astype(int)
     ag["A_animé_ou_invité"] = ag.index.map(has_anim).fillna(False)
