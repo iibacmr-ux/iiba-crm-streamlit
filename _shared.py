@@ -1,596 +1,300 @@
-# _shared.py — utilitaires communs (filtres, pagination, statusbar, chargements, exports)
+
+# _shared.py — Helpers communs (cache TTL + filtres globaux + fallback CSV)
+# ----------------------------------------------------------------------------
+# Objectifs
+# - Réduire les erreurs 429 côté Google Sheets en privilégiant la lecture
+#   cache-only pour l'affichage (TTL configuré), et en réservant les lectures
+#   "fraîches" aux opérations d'écriture via ensure_df_source() dans les pages.
+# - Centraliser le filtre global (année / mois) et son panneau UI.
+# - Fournir utilitaires génériques (generate_id, to_int_safe, etc.).
+# ----------------------------------------------------------------------------
+
 from __future__ import annotations
-import io
 import re
-import time
-from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple, List
+from datetime import datetime
+from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
 import streamlit as st
 
-# ==== Import backends existants ====
+# ==== Backend helpers (importés si dispo, sinon fallback CSV) =================
 try:
-    from storage_backend import (
-        AUDIT_COLS, SHEET_NAME,
-        compute_etag, ensure_df_source, save_df_target
-    )
+    from storage_backend import ensure_df_source, save_df_target  # noqa: F401
 except Exception:
-    # Garde-fous si le module n'existe pas (dev local minimal)
-    AUDIT_COLS = ["Created_At","Created_By","Updated_At","Updated_By"]
-    SHEET_NAME = {
-        "contacts":"contacts","inter":"interactions","events":"evenements",
-        "parts":"participations","pay":"paiements","cert":"certifications",
-        "entreprises":"entreprises","params":"parametres","users":"users",
-        "entreprise_parts":"entreprise_participations"
-    }
-    def compute_etag(df, name):  # pragma: no cover
-        try:
-            payload = df.astype(str).fillna("").to_csv(index=False)
-            import hashlib
-            return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-        except Exception:
-            return "empty"
-    def ensure_df_source(name: str, cols: list, paths: dict=None, ws_func=None) -> pd.DataFrame:  # pragma: no cover
-        p = (paths or {}).get(name, Path(f"data/{name}.csv"))
-        p.parent.mkdir(exist_ok=True, parents=True)
-        if not p.exists():
-            df = pd.DataFrame(columns=cols + [c for c in AUDIT_COLS if c not in cols])
-            df.to_csv(p, index=False, encoding="utf-8")
-            return df
-        return pd.read_csv(p, dtype=str).fillna("")
-    def save_df_target(name: str, df: pd.DataFrame, paths: dict=None, ws_func=None):  # pragma: no cover
-        p = (paths or {}).get(name, Path(f"data/{name}.csv"))
-        p.parent.mkdir(exist_ok=True, parents=True)
-        df.to_csv(p, index=False, encoding="utf-8")
-
-# ==== Schémas colonnes minimaux ====
-# 0) Colonnes minimales (fallbacks si non définies ailleurs)
-C_COLS = globals().get("C_COLS", ["ID","Nom","Prénom","Genre","Titre","Société","Secteur","Email","Téléphone","LinkedIn","Ville","Pays","Type","Source","Statut","Score_Engagement","Date_Creation","Notes","Top20"])
-I_COLS = globals().get("I_COLS", ["ID_Interaction","ID","Date","Canal","Objet","Résumé","Résultat","Prochaine_Action","Relance","Responsable"])
-E_COLS = globals().get("E_COLS", ["ID_Événement","Nom_Événement","Type","Date","Lieu","Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total"])
-PART_COLS = globals().get("PART_COLS", ["ID_Participation","ID","ID_Événement","Rôle","Feedback","Note"])
-PAY_COLS  = globals().get("PAY_COLS",  ["ID_Paiement","ID","ID_Événement","Date_Paiement","Montant","Moyen","Statut","Référence"])
-CERT_COLS = globals().get("CERT_COLS", ["ID_Certif","ID","Type_Certif","Date_Examen","Résultat","Score","Date_Obtention"])
-ENT_COLS  = globals().get("ENT_COLS",  ["ID_Entreprise","Nom_Entreprise","Secteur","Pays","Ville","Contact_Principal","CA_Annuel","Nb_Employés","Top20","Notes"])
-PARAMS_COLS = globals().get("PARAMS_COLS", ["clé","valeur"])
-U_COLS    = globals().get("U_COLS",    ["user_id","email","password_hash","role","is_active","display_name","Created_At","Created_By","Updated_At","Updated_By"])
-ENT_PARTS_COLS = globals().get("ENT_PARTS_COLS", ["ID_EP","ID_Entreprise","ID_Événement","Type_Lien","Nb_Employés_Envoyés","Sponsoring","Notes"])
-
-# ==== Backend & chemins ====
-# 1) Chemins CSV (définis ici pour être visibles de toutes les pages)
-try:
-    PATHS  # déjà défini ? on ne touche pas
-except NameError:
-    DATA_DIR = Path(st.secrets.get("csv_data_dir", "data"))
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    PATHS = {
-        "contacts": DATA_DIR / "contacts.csv",
-        "inter": DATA_DIR / "interactions.csv",
-        "events": DATA_DIR / "evenements.csv",
-        "parts": DATA_DIR / "participations.csv",
-        "pay": DATA_DIR / "paiements.csv",
-        "cert": DATA_DIR / "certifications.csv",
-        "entreprises": DATA_DIR / "entreprises.csv",
-        "params": DATA_DIR / "parametres.csv",
-        "users": DATA_DIR / "users.csv",
-        "entreprise_participations": DATA_DIR / "entreprise_participations.csv",
-    }
-
-# 2) Backend utils
-try:
-    from storage_backend import ensure_df_source, AUDIT_COLS, SHEET_NAME
-except Exception:
-    # garde-fous
-    from typing import Dict
-    AUDIT_COLS = ["Created_At","Created_By","Updated_At","Updated_By"]
-    SHEET_NAME = {
-        "contacts":"contacts","inter":"interactions","events":"evenements","parts":"participations",
-        "pay":"paiements","cert":"certifications","entreprises":"entreprises","params":"parametres",
-        "users":"users","entreprise_participations":"entreprise_participations"
-    }
-    def ensure_df_source(name, cols, paths=None, ws_func=None):
+    def ensure_df_source(name: str, cols: list, paths: Dict[str, Path]=None, ws_func=None) -> pd.DataFrame:  # type: ignore
         p = (paths or PATHS)[name]
+        p = Path(p)
         if p.exists():
             try:
-                return pd.read_csv(p, dtype=str).fillna("")
+                df = pd.read_csv(p, dtype=str).fillna("")
             except Exception:
-                return pd.DataFrame(columns=cols)
+                df = pd.DataFrame(columns=cols)
         else:
             df = pd.DataFrame(columns=cols)
-            df.to_csv(p, index=False, encoding="utf-8")
-            return df
-            
-# TTL configurable via secrets, sinon 120 s
-TTL_SECONDS = int(st.secrets.get("cache_ttl_seconds", 120))
+        for c in cols:
+            if c not in df.columns:
+                df[c] = ""
+        return df[cols]
 
-def _now_ts() -> float:
-    return time.time()
+# ==== Répertoire local CSV (fallback / dev local) ============================
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-def _gsheets_retry(fn, *args, **kwargs):
-    """
-    Petit backoff pour limiter les 429 (read per minute).
-    On tente jusqu'à 3 fois avec délais (0.8s puis 1.6s).
-    """
-    delays = [0.8, 1.6]
+# ==== Mapping des chemins CSV par table ======================================
+PATHS: Dict[str, Path] = {
+    "contacts": DATA_DIR / "contacts.csv",
+    "interactions": DATA_DIR / "interactions.csv",
+    "evenements": DATA_DIR / "evenements.csv",
+    "participations": DATA_DIR / "participations.csv",
+    "paiements": DATA_DIR / "paiements.csv",
+    "certifications": DATA_DIR / "certifications.csv",
+    "entreprises": DATA_DIR / "entreprises.csv",
+    "parametres": DATA_DIR / "parametres.csv",
+    "users": DATA_DIR / "users.csv",
+    "entreprise_participations": DATA_DIR / "entreprise_participations.csv",
+}
+
+# ==== Schémas de colonnes minimaux (ajustez au besoin) =======================
+C_COLS = ["ID","Nom","Prénom","Genre","Titre","Société","Secteur","Email","Téléphone",
+          "LinkedIn","Ville","Pays","Type","Source","Statut","Score_Engagement","Notes",
+          "Top20","Date_Creation","Created_At","Created_By","Updated_At","Updated_By"]
+
+I_COLS = ["ID_Interaction","ID","Date","Canal","Objet","Résumé","Résultat",
+          "Prochaine_Action","Relance","Responsable","Created_At","Created_By","Updated_At","Updated_By"]
+
+E_COLS = ["ID_Événement","Nom_Événement","Type","Date","Lieu","Cout_Salle","Cout_Formateur","Cout_Logistique",
+          "Cout_Pub","Cout_Autres","Cout_Total","Created_At","Created_By","Updated_At","Updated_By"]
+
+PART_COLS = ["ID_Participation","ID","ID_Événement","Rôle","Feedback","Note","Commentaire",
+             "Created_At","Created_By","Updated_At","Updated_By"]
+
+PAY_COLS = ["ID_Paiement","ID","ID_Événement","Date_Paiement","Montant","Moyen","Statut",
+            "Référence","Commentaire","Created_At","Created_By","Updated_At","Updated_By"]
+
+CERT_COLS = ["ID_Certif","ID","Type_Certif","Date_Examen","Résultat","Score","Date_Obtention","Commentaire",
+             "Created_At","Created_By","Updated_At","Updated_By"]
+
+ENT_COLS = ["ID_Entreprise","Nom_Entreprise","Secteur","Adresse","Ville","Pays",
+            "Site_Web","Email","Téléphone","Contact_Principal_ID","CA_Annuel","Nb_Employés",
+            "Notes","Created_At","Created_By","Updated_At","Updated_By"]
+
+PARAM_COLS = ["clé","valeur"]
+U_COLS = ["user_id","email","password_hash","role","is_active","display_name",
+          "Created_At","Created_By","Updated_At","Updated_By"]
+
+EP_COLS = ["ID_EntPart","ID_Entreprise","ID_Événement","Type_Lien","Nb_Employés","Sponsoring_FCFA",
+           "Commentaire","Created_At","Created_By","Updated_At","Updated_By"]
+
+# ==== Paramètres courants (alimentés depuis parametres) ======================
+PARAMS: Dict[str, object] = {}
+
+# ==== Utilitaires ============================================================
+def to_int_safe(v, default=0) -> int:
     try:
-        return fn(*args, **kwargs)
-    except Exception as e:
-        msg = str(e)
-        if "429" not in msg:
-            raise
-        # 1er retry
-        time.sleep(delays[0])
-        try:
-            return fn(*args, **kwargs)
-        except Exception as e2:
-            if "429" not in str(e2):
-                raise
-            # 2e retry
-            time.sleep(delays[1])
-            return fn(*args, **kwargs)
-
-def _read_table(name: str, cols: list, paths: dict, ws_func):
-    """
-    Lecture d'une table avec retries 429 si backend gsheets.
-    """
-    backend = st.secrets.get("storage_backend", "csv")
-    if backend == "gsheets":
-        return _gsheets_retry(ensure_df_source, name, cols, paths, ws_func)
-    return ensure_df_source(name, cols, paths, ws_func)
-
-@st.cache_data(show_spinner=False, ttl=TTL_SECONDS)
-def _read_all_tables_cached(_cache_key: str) -> dict:
-    """
-    Fonction réellement exécutée à froid (cache par clé stable).
-    NB : on ne passe pas ws_func à cache_data (non sérialisable).
-    On le récupère via st.session_state à l'intérieur.
-    """
-    ws_func = st.session_state.get("WS_FUNC")  # peut être None (CSV)
-    paths   = PATHS  # supposé défini dans _shared.py comme aujourd’hui
-
-    dfs = {}
-    # ⚠️ gardez vos schémas / colonnes de référence :
-    dfs["contacts"]                = _read_table("contacts", C_COLS, paths, ws_func)
-    dfs["interactions"]            = _read_table("inter", I_COLS, paths, ws_func)
-    dfs["evenements"]              = _read_table("events", E_COLS, paths, ws_func)
-    dfs["participations"]          = _read_table("parts", PART_COLS, paths, ws_func)
-    dfs["paiements"]               = _read_table("pay",  PAY_COLS, paths, ws_func)
-    dfs["certifications"]          = _read_table("cert", CERT_COLS, paths, ws_func)
-    dfs["entreprises"]             = _read_table("entreprises", ENT_COLS, paths, ws_func)
-    dfs["parametres"]              = _read_table("params", PARAMS_COLS, paths, ws_func)
-    dfs["users"]                   = _read_table("users", U_COLS, paths, ws_func)
-    # si vous avez cette table :
-    if "entreprise_participations" in SHEET_NAME:
-        dfs["entreprise_participations"] = _read_table("entreprise_participations", ENT_PARTS_COLS, paths, ws_func)
-
-    # Normalisation minimale pour éviter les “truth value of DataFrame is ambiguous”
-    for k, v in list(dfs.items()):
-        if v is None or not isinstance(v, pd.DataFrame):
-            dfs[k] = pd.DataFrame(columns=globals().get(f"{k.upper()[0:3]}_COLS", []))
-        else:
-            dfs[k] = v.fillna("")
-
-    # mémorise aussi en RAM (accès ultra-rapide pour “lecture rapide”)
-    st.session_state["__dfs_cache_obj__"] = dfs
-    st.session_state["__dfs_cache_ts__"]  = _now_ts()
-    return dfs
-
-def _make_cache_key() -> str:
-    """
-    Clé stable de cache : backend + spreadsheet id/titre.
-    Evite que cache_data recalculé sans raison.
-    """
-    backend = st.secrets.get("storage_backend", "csv")
-    if backend != "gsheets":
-        return f"csv::{str(PATHS)}"
-    sid = st.secrets.get("gsheet_spreadsheet_id") or st.secrets.get("gsheet_spreadsheet") or "unknown"
-    return f"gs::{sid}"
-
-def _paths() -> Dict[str, Path]:
-    return st.session_state.get("PATHS", DEFAULT_PATHS)
-
-def _ws_func():
-    return st.session_state.get("WS_FUNC", None)
-
-# ==== Chargement groupé ====
-def load_all_tables(use_cache_only: bool = False) -> dict:
-    """
-    - use_cache_only=True  ➜ ne JAMAIS relire Google Sheets ; rend le cache s'il existe et est “frais”.
-    - use_cache_only=False ➜ si TTL expiré, relire (avec cache_data) sinon servir le cache.
-    """
-    # 1) si on a un cache RAM récent et qu'on a explicitement demandé cache_only
-    if use_cache_only:
-        dfs = st.session_state.get("__dfs_cache_obj__")
-        ts  = st.session_state.get("__dfs_cache_ts__", 0)
-        if dfs is not None and (_now_ts() - ts) < TTL_SECONDS:
-            return dfs
-        # sinon, on tombe en 2) ci-dessous (ça relira via cache_data si besoin)
-
-    # 2) cache “persistant” Streamlit (clé stable)
-    key = _make_cache_key()
-    try:
-        dfs = _read_all_tables_cached(key)
-    except Exception as e:
-        # Ne pas casser l’UI : si cache RAM présent, on le renvoie (mode dégradé)
-        _dfs_ram = st.session_state.get("__dfs_cache_obj__")
-        if _dfs_ram is not None:
-            st.warning(f"Lecture Sheets dégradée: {e}. Utilisation du cache local récent.")
-            return _dfs_ram
-        # Sinon, on remonte l’erreur (qui sera affichée par les pages)
-        raise
-    return dfs
-
-def save_table(name: str, df: pd.DataFrame) -> None:
-    paths = _paths()
-    backend_eff = st.session_state.get("BACKEND_EFFECTIVE", st.secrets.get("storage_backend","csv")).strip().lower()
-    ws = _ws_func() if backend_eff == "gsheets" else None
-    save_df_target(name, df, paths, ws)
-
-# ==== Helpers divers ====
-def generate_id(prefix: str, series_like) -> str:
-    try:
-        existing = pd.Series(series_like).astype(str)
-        nums = existing.str.extract(rf"{prefix}(\d+)", expand=False).dropna().astype(int)
-        nxt = (nums.max() + 1) if not nums.empty else 1
-    except Exception:
-        nxt = 1
-    return f"{prefix}{nxt:05d}"
-
-def to_int_safe(x, default=0) -> int:
-    try:
-        if pd.isna(x): return default
-        s = str(x).strip().replace(" ", "").replace("\u00a0","")
-        return int(float(s)) if s != "" else default
+        if v is None: return default
+        s = str(v).strip()
+        if s == "": return default
+        s = s.replace(" ", "").replace(",", ".")
+        return int(float(s))
     except Exception:
         return default
 
-def parse_date(x):
+def generate_id(prefix: str, df: pd.DataFrame, col: str) -> str:
+    """
+    Génère un ID unique de la forme PREFIX00001 à partir de la plus grande
+    terminaison numérique trouvée dans df[col].
+    """
     try:
-        if pd.isna(x) or str(x).strip()=="": return None
-        return pd.to_datetime(x).date()
+        if df is None or df.empty or col not in df.columns:
+            return f"{prefix}00001"
+        nums = (
+            df[col].astype(str)
+                  .str.extract(r"(\d+)$")[0]
+                  .dropna()
+                  .astype(int)
+                  .tolist()
+        )
+        n = max(nums) + 1 if nums else 1
+        return f"{prefix}{n:05d}"
     except Exception:
-        return None
+        # fallback si parsing échoue
+        return f"{prefix}{(len(df) + 1):05d}"
 
-def add_year_month(df: pd.DataFrame, date_col: str, year_col="Année", month_col="Mois") -> pd.DataFrame:
-    d = pd.to_datetime(df[date_col], errors="coerce")
-    df[year_col] = d.dt.year.astype("Int64")
-    df[month_col] = d.dt.month.astype("Int64")
-    return df
+# ==== Filtre global ==========================================================
+_GLOBAL_FILTERS_DEFAULT = {"annee": "Toutes", "mois": "Tous"}
 
-# ==== Barre d'agrégats + Filtres & Pagination ====
-def _sum_numeric(df: pd.DataFrame, cols: List[str]) -> Dict[str, float]:
-    out = {}
-    for c in cols:
-        if c in df.columns:
-            out[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
-    return out
+def get_global_filters() -> Dict[str, str]:
+    return st.session_state.get("GLOBAL_FILTERS", _GLOBAL_FILTERS_DEFAULT.copy())
 
-def statusbar(df: pd.DataFrame, numeric_keys: List[str] = None, key: str = "statusbar"):
-    numeric_keys = numeric_keys or []
-    sums = _sum_numeric(df, numeric_keys)
-    parts = [f"lignes : **{len(df)}**"]
-    for k, v in sums.items():
-        parts.append(f"{k} = **{int(v):,}**".replace(",", " "))
-    st.caption(" | ".join(parts))
+def set_global_filters(annee: str, mois: str) -> None:
+    st.session_state["GLOBAL_FILTERS"] = {"annee": annee, "mois": mois}
 
-def smart_suggested_filters(df: pd.DataFrame, extra: List[str]=None, max_cols: int = 6) -> List[str]:
-    """Propose des colonnes catégorielles pertinentes pour les filtres."""
-    extra = extra or []
-    candidates = [
-        "Type","Statut","Entreprise","Fonction","Secteur","Pays","Ville",
-        "Responsable","Canal","Résultat","Rôle","Top20"
-    ]
-    # Ajouter les extra en priorité
-    ordered = extra + [c for c in candidates if c not in extra]
-    present = [c for c in ordered if c in df.columns]
-    # Exclure colonnes ID et numériques évidentes
-    def _is_numeric_series(s: pd.Series) -> bool:
-        try:
-            return pd.api.types.is_numeric_dtype(pd.to_numeric(s, errors="coerce"))
-        except Exception:
-            return False
-    present = [c for c in present if c.lower() not in {"id","id_événement","id_paiement","id_participation",
-                                                       "id_interaction","id_certif","id_entreprise"}]
-    present = [c for c in present if not _is_numeric_series(df[c])]
-    return present[:max_cols]
+def _years_months_from_dfs(dfs: Dict[str, pd.DataFrame]) -> Tuple[List[str], List[str]]:
+    """
+    Scanne plusieurs tables pour inférer les années / mois disponibles selon
+    les colonnes date usuelles.
+    """
+    years = set()
+    months = set()
+    date_cols = ["Date_Creation","Date","Date_Paiement","Date_Obtention","Date_Examen"]
+    for df in dfs.values():
+        if df is None or df.empty: 
+            continue
+        for c in date_cols:
+            if c in df.columns:
+                s = pd.to_datetime(df[c], errors="coerce")
+                years.update(s.dt.year.dropna().astype(int).tolist())
+                months.update(s.dt.month.dropna().astype(int).tolist())
+    ylist = ["Toutes"] + sorted({str(y) for y in years})
+    mlist = ["Tous"] + [str(m) for m in range(1,13)] if not months else ["Tous"] + sorted({str(m) for m in months}, key=lambda x:int(x))
+    return ylist, mlist
 
-def filter_and_paginate(df: pd.DataFrame,
-                        key_prefix: str,
-                        page_size_default: int = 20,
-                        suggested_filters: List[str] = None,
-                        enable_sort: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Renvoie (df_page, df_filtered). Dessine UI filtres + pagination."""
-    if df is None: df = pd.DataFrame()
-    df = df.copy()
-    if suggested_filters is None:
-        suggested_filters = smart_suggested_filters(df)
+def render_global_filter_panel(dfs: Optional[Dict[str, pd.DataFrame]]=None, location="sidebar") -> Dict[str, str]:
+    """
+    Rend le panneau de filtre global (Année/Mois). Sauvegarde le choix dans
+    st.session_state["GLOBAL_FILTERS"].
+    """
+    container = st.sidebar if location == "sidebar" else st
+    with container.expander("🌍 Filtre global", expanded=True):
+        # Pour proposer des valeurs pertinentes, on peut dériver des tables chargées (cache)
+        if dfs is None:
+            dfs = st.session_state.get("__CACHED_LAST_DFS__", {})
+        years, months = _years_months_from_dfs(dfs if isinstance(dfs, dict) else {})
+        gf = get_global_filters()
+        col1, col2 = st.columns(2)
+        with col1:
+            annee = st.selectbox("Année", years, index=years.index(gf.get("annee","Toutes")) if gf.get("annee","Toutes") in years else 0, key="__global_year")
+        with col2:
+            mois = st.selectbox("Mois", months, index=months.index(gf.get("mois","Tous")) if gf.get("mois","Tous") in months else 0, key="__global_month")
+        set_global_filters(annee, mois)
+        return get_global_filters()
 
-    with st.expander("🔎 Filtres avancés", expanded=False):
-        # Recherche globale (colonnes texte)
-        global_q = st.text_input("Recherche globale (contient)", key=f"{key_prefix}_q").strip()
-        if global_q:
-            mask = pd.Series(False, index=df.index)
-            for c in df.columns:
-                if df[c].dtype == object:
-                    mask = mask | df[c].astype(str).str.contains(global_q, case=False, na=False)
-            df = df[mask]
-
-        # Filtres catégoriels proposés (si présents)
-        cols_present = [c for c in suggested_filters if c in df.columns]
-        if cols_present:
-            cols = st.columns(min(4, len(cols_present)))
-            # Répartir les filtres sur 4 colonnes max
-            for i, c in enumerate(cols_present):
-                col = cols[i % len(cols)]
-                vals = sorted([v for v in df[c].dropna().astype(str).unique() if v!=""])
-                sel = col.multiselect(c, vals, default=[], key=f"{key_prefix}_f_{c}")
-                if sel:
-                    df = df[df[c].astype(str).isin(sel)]
-
-        # Tri (optionnel)
-        if enable_sort and not df.empty:
-            sort_cols = ["(aucun)"] + df.columns.tolist()
-            sc = st.selectbox("Tri par", options=sort_cols, index=0, key=f"{key_prefix}_sortcol")
-            if sc != "(aucun)":
-                asc = st.checkbox("Tri ascendant", value=True, key=f"{key_prefix}_sortasc")
-                try:
-                    df = df.sort_values(by=sc, ascending=asc, kind="mergesort")
-                except Exception:
-                    pass
-
-        # Page size
-        page_size = st.number_input("Taille de page", min_value=5, max_value=200,
-                                    value=page_size_default, step=5, key=f"{key_prefix}_pagesize")
-
-    # Pagination
-    total = len(df)
-    if total == 0:
-        st.info("Aucune donnée à afficher.")
-        return df, df  # vide
-
-    import math
-    pages = max(1, math.ceil(total / page_size))
-    col_p1, col_p2, col_p3 = st.columns([1,2,1])
-    with col_p1:
-        page_idx = st.number_input("Page", min_value=1, max_value=pages, value=1, step=1, key=f"{key_prefix}_page")
-    with col_p2:
-        st.caption(f"{total} lignes • {pages} pages • {page_size} par page")
-    with col_p3:
-        if st.button("⟳ Rafraîchir", key=f"{key_prefix}_refresh"):
-            st.experimental_rerun()
-
-    start = (page_idx - 1) * page_size
-    end = start + page_size
-    df_page = df.iloc[start:end].copy()
-
-    return df_page, df
-
-# ==== Export utilitaire (multi-feuilles) ====
-def export_filtered_excel(dfs: Dict[str, pd.DataFrame], filename_prefix: str = "export"):
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        for sheet, df in dfs.items():
-            try:
-                df.to_excel(writer, sheet_name=str(sheet)[:31], index=False)
-            except Exception:
-                pd.DataFrame().to_excel(writer, sheet_name=str(sheet)[:31], index=False)
-    st.download_button(
-        "⬇ Export Excel (filtres appliqués)",
-        data=buf.getvalue(),
-        file_name=f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-# === _shared.py : Filtres globaux inter-pages =================================
-
-
-
-# === Filtres globaux inter-pages =================================================
-# Dépendances : pandas as pd, streamlit as st (déjà importés dans _shared.py)
-def _safe_unique(series: pd.Series):
-    if series is None or series.empty:
-        return []
-    vals = series.dropna().astype(str).str.strip()
-    vals = vals[vals!=""].unique().tolist()
-    vals.sort()
-    return vals
-
-def get_global_filters(defaults: dict | None = None) -> dict:
-    """Récupère/initialise l'état des filtres globaux dans la session."""
-    base = {
-        "search": "",
-        "year": "Toutes",      # "Toutes" ou int (ex: 2025)
-        "month": "Tous",       # "Tous"   ou int (1..12)
-        "entreprise_ids": [],
-        "secteurs": [],
-        "pays": [],
-        "villes": [],
-        "types_contact": [],
-        "statuts_contact": [],
-        "types_event": [],
-        "responsables": [],
-    }
-    if defaults:
-        base.update({k:v for k,v in defaults.items() if k in base})
-    st.session_state.setdefault("GLOBAL_FILTERS", base)
-    gf = {**base, **st.session_state["GLOBAL_FILTERS"]}
-    st.session_state["GLOBAL_FILTERS"] = gf
-    return gf
-
-def set_global_filters(new_values: dict):
-    gf = get_global_filters()
-    gf.update({k:v for k,v in new_values.items() if k in gf})
-    st.session_state["GLOBAL_FILTERS"] = gf
-
-def render_global_filter_panel(dfs: dict):
-    """Affiche le panneau latéral '🔎 Filtre global' et met à jour l'état."""
-    gf = get_global_filters()
-
-    dfc  = dfs.get("contacts", pd.DataFrame())
-    dfe  = dfs.get("events", pd.DataFrame())
-    dfen = dfs.get("entreprises", pd.DataFrame())
-    dfi  = dfs.get("inter", pd.DataFrame())
-
-    # Options à partir des tables
-    opt_types_c   = _safe_unique(dfc.get("Type", pd.Series(dtype=str)))
-    opt_statuts_c = _safe_unique(dfc.get("Statut", pd.Series(dtype=str)))
-    opt_resp      = _safe_unique(dfi.get("Responsable", pd.Series(dtype=str))) if not dfi.empty else []
-
-    opt_ent_ids   = _safe_unique(dfen.get("ID_Entreprise", pd.Series(dtype=str)))
-    opt_secteurs  = _safe_unique(dfen.get("Secteur", pd.Series(dtype=str)))
-    opt_pays      = _safe_unique(dfen.get("Pays", pd.Series(dtype=str)))
-    opt_villes    = _safe_unique(dfen.get("Ville", pd.Series(dtype=str)))
-
-    opt_types_e   = _safe_unique(dfe.get("Type", pd.Series(dtype=str)))
-
-    with st.sidebar.expander("🔎 Filtre global", expanded=True):
-        gf["search"] = st.text_input("Recherche globale", value=gf.get("search",""))
-
-        # Année / Mois (agrégation de dates issues de plusieurs tables)
-        col_y, col_m = st.columns(2)
-        with col_y:
-            years = ["Toutes"]
-            all_dates = []
-            for s in [
-                dfc.get("Date_Creation", pd.Series(dtype=str)),
-                dfe.get("Date", pd.Series(dtype=str)),
-                dfs.get("pay", pd.DataFrame()).get("Date_Paiement", pd.Series(dtype=str)),
-                dfs.get("cert", pd.DataFrame()).get("Date_Obtention", pd.Series(dtype=str)),
-                dfs.get("inter", pd.DataFrame()).get("Date", pd.Series(dtype=str)),
-            ]:
-                if not s.empty:
-                    dd = pd.to_datetime(s, errors="coerce")
-                    all_dates.append(dd)
-            if all_dates:
-                years_avail = pd.concat(all_dates).dt.year.dropna().astype(int).unique().tolist()
-                years_avail.sort(reverse=True)
-                years += years_avail
-            gf["year"] = st.selectbox("Année", options=years, index=(years.index(gf.get("year")) if gf.get("year") in years else 0))
-        with col_m:
-            months = ["Tous"] + list(range(1,13))
-            try:
-                idx = months.index(gf.get("month"))
-            except Exception:
-                idx = 0
-            gf["month"] = st.selectbox("Mois", options=months, index=idx)
-
-        st.markdown("**Contacts**")
-        gf["types_contact"]   = st.multiselect("Type",   options=opt_types_c,   default=[x for x in gf.get("types_contact",[]) if x in opt_types_c])
-        gf["statuts_contact"] = st.multiselect("Statut", options=opt_statuts_c, default=[x for x in gf.get("statuts_contact",[]) if x in opt_statuts_c])
-
-        st.markdown("**Entreprises**")
-        gf["entreprise_ids"]  = st.multiselect("ID Entreprise", options=opt_ent_ids, default=[x for x in gf.get("entreprise_ids",[]) if x in opt_ent_ids])
-        col_s, col_pv = st.columns(2)
-        with col_s:
-            gf["secteurs"]      = st.multiselect("Secteurs", options=opt_secteurs, default=[x for x in gf.get("secteurs",[]) if x in opt_secteurs])
-        with col_pv:
-            gf["pays"]          = st.multiselect("Pays", options=opt_pays, default=[x for x in gf.get("pays",[]) if x in opt_pays])
-            gf["villes"]        = st.multiselect("Villes", options=opt_villes, default=[x for x in gf.get("villes",[]) if x in opt_villes])
-
-        st.markdown("**Événements & Interactions**")
-        gf["types_event"]     = st.multiselect("Type d'événement", options=opt_types_e, default=[x for x in gf.get("types_event",[]) if x in opt_types_e])
-        gf["responsables"]    = st.multiselect("Responsable (interactions)", options=opt_resp, default=[x for x in gf.get("responsables",[]) if x in opt_resp])
-
-        if st.button("↩ Réinitialiser", use_container_width=True):
-            get_global_filters({})  # reset
-            st.experimental_rerun()
-
-    set_global_filters(gf)
-
-def _match_year_month(dt: pd.Series, year_sel, month_sel):
-    if dt is None or dt.empty:
-        return pd.Series([True]*0, dtype=bool)
-    d = pd.to_datetime(dt, errors="coerce")
-    mask = pd.Series([True]*len(d), index=d.index)
-    if year_sel != "Toutes":
-        mask = mask & (d.dt.year == int(year_sel))
-    if month_sel != "Tous":
-        mask = mask & (d.dt.month == int(month_sel))
-    return mask.fillna(False)
-
-def _contains_any(text_series: pd.Series, needle: str) -> pd.Series:
-    if not needle:
-        return pd.Series([True]*len(text_series), index=text_series.index) if not text_series.empty else pd.Series([], dtype=bool)
-    pattern = re.escape(needle.strip().lower())
-    s = text_series.fillna("").astype(str).str.lower()
-    return s.str.contains(pattern, na=False)
-
-def apply_global_filters(df: pd.DataFrame, domain: str, gf: dict | None = None) -> pd.DataFrame:
-    """Applique le filtre global à une table selon son domaine.
-       domain in {"contacts","entreprises","events","inter","parts","pay","cert","entreprise_parts"}
+def apply_global_filters(df: pd.DataFrame, table_name: str, gf: Optional[Dict[str, str]]=None) -> pd.DataFrame:
+    """
+    Applique Année/Mois s'ils sont différents de "Toutes"/"Tous".
+    Heuristique de colonne date: on préfère "Date_Creation" si dispo, sinon
+    "Date", "Date_Paiement", "Date_Obtention", "Date_Examen".
     """
     if df is None or df.empty:
         return df
     gf = gf or get_global_filters()
-    out = df.copy()
+    year_sel = gf.get("annee", "Toutes")
+    month_sel = gf.get("mois", "Tous")
+    if year_sel == "Toutes" and month_sel == "Tous":
+        return df
+    # Choix de la colonne date
+    for c in ["Date_Creation","Date","Date_Paiement","Date_Obtention","Date_Examen"]:
+        if c in df.columns:
+            s = pd.to_datetime(df[c], errors="coerce")
+            mask = pd.Series(True, index=df.index)
+            if year_sel != "Toutes":
+                mask = mask & (s.dt.year == int(year_sel))
+            if month_sel != "Tous":
+                mask = mask & (s.dt.month == int(month_sel))
+            return df.loc[mask].copy()
+    return df
 
-    # 1) Recherche plein-texte
-    text_cols = [c for c in out.columns if out[c].dtype == object or out[c].dtype == "string"]
-    if text_cols:
-        if gf.get("search", "").strip():
-            mask_text = pd.Series([False]*len(out), index=out.index)
-            for c in text_cols:
-                mask_text = mask_text | _contains_any(out[c], gf["search"])
-            out = out[mask_text]
-    # si pas de search -> pas de restriction
+# ==== Cache TTL pour réduire les 429 =========================================
+def _cache_key() -> str:
+    """
+    Construit une clé de cache *hashable* indépendante des objets non sérialisables.
+    On ne met PAS les filtres dedans (lecture "globale"), les filtres s'appliquent ensuite.
+    """
+    backend = str(st.secrets.get("storage_backend","csv"))
+    sid = str(st.secrets.get("gsheet_spreadsheet_id",""))
+    stitle = str(st.secrets.get("gsheet_spreadsheet",""))
+    # On incorpore aussi la présence d'un WS_FUNC (booléen)
+    has_ws = "1" if bool(st.session_state.get("WS_FUNC")) else "0"
+    return f"{backend}|{sid}|{stitle}|{has_ws}"
 
-    # 2) Filtres année/mois & spécifiques
-    if domain == "contacts":
-        if "Date_Creation" in out.columns:
-            out = out[_match_year_month(out["Date_Creation"], gf.get("year","Toutes"), gf.get("month","Tous"))]
-        if gf.get("types_contact") and "Type" in out.columns:
-            out = out[out["Type"].isin(gf["types_contact"])]
-        if gf.get("statuts_contact") and "Statut" in out.columns:
-            out = out[out["Statut"].isin(gf["statuts_contact"])]
-        if gf.get("entreprise_ids") and "ID_Entreprise" in out.columns:
-            out = out[out["ID_Entreprise"].astype(str).isin(gf["entreprise_ids"])]
+@st.cache_data(show_spinner=False, ttl=120)
+def _read_all_tables_cached(key: str) -> Dict[str, pd.DataFrame]:
+    """
+    Lecture groupée des tables, *mise en cache* (TTL=120s). Réduit fortement
+    le volume d'appels à l'API Sheets. Les pages devraient utiliser
+    load_all_tables(use_cache_only=True) pour l'affichage.
+    """
+    ws = st.session_state.get("WS_FUNC")
+    backend = st.secrets.get("storage_backend","csv")
 
-    elif domain == "entreprises":
-        if gf.get("secteurs") and "Secteur" in out.columns:
-            out = out[out["Secteur"].isin(gf["secteurs"])]
-        if gf.get("pays") and "Pays" in out.columns:
-            out = out[out["Pays"].isin(gf["pays"])]
-        if gf.get("villes") and "Ville" in out.columns:
-            out = out[out["Ville"].isin(gf["villes"])]
+    def _read(name: str, cols: List[str]) -> pd.DataFrame:
+        # Tentative GSheets
+        if backend == "gsheets" and ws is not None:
+            try:
+                return ensure_df_source(name, cols, PATHS, ws).copy()
+            except Exception as e:
+                st.sidebar.caption(f"Lecture Google Sheets échouée ({name}), fallback CSV: {e}")
+        # Fallback CSV
+        p = PATHS[name]
+        p = Path(p)
+        if p.exists():
+            try:
+                df = pd.read_csv(p, dtype=str).fillna("")
+            except Exception:
+                df = pd.DataFrame(columns=cols)
+        else:
+            df = pd.DataFrame(columns=cols)
+        for c in cols:
+            if c not in df.columns:
+                df[c] = ""
+        return df[cols]
 
-    elif domain == "events":
-        if "Date" in out.columns:
-            out = out[_match_year_month(out["Date"], gf.get("year","Toutes"), gf.get("month","Tous"))]
-        if gf.get("types_event") and "Type" in out.columns:
-            out = out[out["Type"].isin(gf["types_event"])]
+    dfs = {
+        "contacts": _read("contacts", C_COLS),
+        "interactions": _read("interactions", I_COLS),
+        "evenements": _read("evenements", E_COLS),
+        "participations": _read("participations", PART_COLS),
+        "paiements": _read("paiements", PAY_COLS),
+        "certifications": _read("certifications", CERT_COLS),
+        "entreprises": _read("entreprises", ENT_COLS),
+        "parametres": _read("parametres", PARAM_COLS),
+        "users": _read("users", U_COLS),
+        "entreprise_participations": _read("entreprise_participations", EP_COLS),
+    }
 
-    elif domain == "inter":
-        if "Date" in out.columns:
-            out = out[_match_year_month(out["Date"], gf.get("year","Toutes"), gf.get("month","Tous"))]
-        if gf.get("responsables") and "Responsable" in out.columns:
-            out = out[out["Responsable"].isin(gf["responsables"])]
+    # Exposer aux autres fonctions (ex: panneau filtre global)
+    st.session_state["__CACHED_LAST_DFS__"] = dfs
 
-    elif domain == "pay":
-        if "Date_Paiement" in out.columns:
-            out = out[_match_year_month(out["Date_Paiement"], gf.get("year","Toutes"), gf.get("month","Tous"))]
+    # Construire PARAMS (dict) à partir de df parametres (clé/valeur)
+    try:
+        dfp = dfs.get("parametres", pd.DataFrame())
+        params = {}
+        if dfp is not None and not dfp.empty and {"clé","valeur"}.issubset(dfp.columns):
+            for _, r in dfp.iterrows():
+                k = str(r.get("clé","")).strip()
+                v = r.get("valeur","")
+                if k:
+                    params[k] = v
+        # garder dans session + global
+        st.session_state["PARAMS"] = params
+        global PARAMS
+        PARAMS = params
+    except Exception:
+        pass
 
-    elif domain == "cert":
-        d1 = out.get("Date_Obtention")
-        d2 = out.get("Date_Examen")
-        if d1 is not None or d2 is not None:
-            m1 = _match_year_month(d1, gf.get("year","Toutes"), gf.get("month","Tous")) if d1 is not None else None
-            m2 = _match_year_month(d2, gf.get("year","Toutes"), gf.get("month","Tous")) if d2 is not None else None
-            if m1 is not None and m2 is not None:
-                out = out[(m1 | m2).fillna(False)]
-            else:
-                out = out[m1] if m1 is not None else out[m2]
+    return dfs
 
-    elif domain == "entreprise_parts":
-        if gf.get("entreprise_ids") and "ID_Entreprise" in out.columns:
-            out = out[out["ID_Entreprise"].astype(str).isin(gf["entreprise_ids"])]
+def load_all_tables(use_cache_only: bool = False) -> Dict[str, pd.DataFrame]:
+    """
+    Chargement des tables. Par défaut, renvoie la version *cache* (TTL=120s).
+    Utilisez use_cache_only=True pour garantir zéro appel Sheets.
+    Les écritures doivent faire leurs relectures ciblées via ensure_df_source().
+    """
+    key = _cache_key()
+    if use_cache_only:
+        return _read_all_tables_cached(key)
+    # Sinon on s'appuie tout de même sur le cache (TTL court). Pour forcer une
+    # relecture totale ici, on pourrait invalider le cache ; on évite pour limiter
+    # les 429 et on réserve la relecture "fraîche" aux opérations de sauvegarde.
+    return _read_all_tables_cached(key)
 
-    return out
-
-# (facultatif) export explicite
+# ==== Export util pour d'autres pages ========================================
 __all__ = [
-    "parse_date",
-    "get_global_filters", "set_global_filters",
-    "render_global_filter_panel", "apply_global_filters",
+    "PATHS",
+    "C_COLS","I_COLS","E_COLS","PART_COLS","PAY_COLS","CERT_COLS","ENT_COLS","PARAM_COLS","U_COLS","EP_COLS",
+    "PARAMS",
+    "to_int_safe","generate_id",
+    "get_global_filters","set_global_filters","render_global_filter_panel","apply_global_filters",
+    "load_all_tables",
 ]
