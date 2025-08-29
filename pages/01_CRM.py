@@ -467,7 +467,7 @@ with cL:
             notes = st.text_area("Notes", d.get("Notes",""))
             top20 = st.checkbox("Top-20 entreprise", value=str(d.get("Top20","")).lower() in ("1","true","yes"))
 
-            if st.button("💾 Enregistrer les modifications (le contact)") and sel_id:
+            if st.form_submit_button("💾 Enregistrer les modifications (le contact)") and sel_id:
                 ws = st.session_state.get("WS_FUNC")
                 upd = {
                     "ID": sel_id,
@@ -524,17 +524,17 @@ with cL:
                 notes_new = st.text_area("Notes", "")
                 top20_new = st.checkbox("Top-20 entreprise", value=False)
 
-                if st.button("💾 Créer le contact"):
+                if st.form_submit_button("💾 Créer le contact"):
                     ws = st.session_state.get("WS_FUNC")
                     # Relecture fraîche + ID basé sur l'état courant
                     df_fresh = ensure_df_source("contacts", C_COLS, PATHS, ws)
                     new_id = generate_id("CNT", df_fresh, "ID")
                     new_row = {
                         "ID": new_id,
-                        "Nom": nom, "Prénom": prenom, "Genre": genre, "Titre": titre,
-                        "Société": societe, "Secteur": secteur, "Email": email, "Téléphone": tel,
-                        "LinkedIn": linkedin, "Ville": ville, "Pays": pays, "Type": typ, "Source": source,
-                        "Statut": statut, "Score_Engagement": score, "Notes": notes, "Top20": "1" if top20 else "",
+                        "Nom": nom_new, "Prénom": prenom_new, "Genre": genre_new, "Titre": titre_new,
+                        "Société": societe_new, "Secteur": secteur_new, "Email": email_new, "Téléphone": tel_new,
+                        "LinkedIn": linkedin_new, "Ville": ville_new, "Pays": pays_new, "Type": typec_new, "Source": sources,
+                        "Statut": statuts, "Score_Engagement": score_new, "Notes": notes_new, "Top20": "1" if top20_new else "",
                         "Date_Creation": datetime.utcnow().strftime("%Y-%m-%d"),
                     }
                     df_after, created = atomic_upsert(
@@ -575,7 +575,7 @@ with cR:
                 add_rel = st.checkbox("Planifier une relance ?")
                 rel = st.date_input("Relance", value=date.today()) if add_rel else None
 
-                if st.button("Enregistrer l’interaction"):
+                if st.form_submit_button("Enregistrer l’interaction"):
                     ws = st.session_state.get("WS_FUNC")
                     df_fresh_int = ensure_df_source("interactions", I_COLS, PATHS, ws)
                     new_id = generate_id("INT", df_fresh_int, "ID_Interaction")
@@ -615,7 +615,7 @@ with cR:
                     note = f2.number_input("Note (1-5)", min_value=1, max_value=5, value=5)
                     comment_part = st.text_area("Commentaire (Participation)", key="comment_part")
                     
-                    if st.button("💾 Enregistrer la participation"):
+                    if st.form_submit_button("💾 Enregistrer la participation"):
                         ws = st.session_state.get("WS_FUNC")
                         df_fresh_part = ensure_df_source("participations", PART_COLS, PATHS, ws)
                         new_id = generate_id("PAR", df_fresh_part, "ID_Participation")
@@ -662,7 +662,7 @@ with cR:
                     ref = st.text_input("Référence")
                     comment_pay  = st.text_area("Commentaire (Paiement)", key="comment_pay")
                     
-                    if st.button("💾 Enregistrer le paiement"):
+                    if st.form_submit_button("💾 Enregistrer le paiement"):
                         ws = st.session_state.get("WS_FUNC")
                         df_fresh_pay = ensure_df_source("paiements", PAY_COLS, PATHS, ws)
                         new_id = generate_id("PAY", df_fresh_pay, "ID_Paiement")
@@ -699,7 +699,7 @@ with cR:
                 dto = st.date_input("Date Obtention", value=date.today()) if has_dto else None
                 comment_cert = st.text_area("Commentaire (Certification)", key="comment_cert")
 
-                if st.button("💾 Enregistrer la certification"):
+                if st.form_submit_button("💾 Enregistrer la certification"):
                     ws = st.session_state.get("WS_FUNC")
                     df_fresh_cert = ensure_df_source("certifications", CERT_COLS, PATHS, ws)
                     new_id = generate_id("CER", df_fresh_cert, "ID_Certif")
