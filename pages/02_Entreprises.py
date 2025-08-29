@@ -20,6 +20,10 @@ dfpay = dfs["pay"].copy()
 dfcert = dfs["cert"].copy()
 df_ep = dfs["entreprise_parts"].copy()
 
+# ===== filtre dans chaque page
+gf = get_global_filters()
+df_ent = apply_global_filters(dfs["entreprises"], "entreprises", gf)
+
 # ===== Grille avec filtres + pagination =====
 base_filters = ["Secteur","Pays","Ville"]
 suggested = [c for c in base_filters if c in dfe.columns] or smart_suggested_filters(dfe)

@@ -17,6 +17,10 @@ dfp  = dfs["parts"].copy()
 dfc  = dfs["contacts"].copy()
 df_ep = dfs["entreprise_parts"].copy()
 
+# ===== filtre dans chaque page
+gf = get_global_filters()
+df_events = apply_global_filters(dfs["events"], "events", gf)
+
 # ===== Grille événements avec filtres/pagination =====
 if "Date" in dfev.columns:
     dfev["_annee"] = pd.to_datetime(dfev["Date"], errors="coerce").dt.year.astype("Int64")

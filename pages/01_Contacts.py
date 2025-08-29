@@ -14,6 +14,14 @@ if "auth_user" not in st.session_state:
 dfs = load_all_tables()
 dfc = dfs["contacts"]
 
+# ===== filtre dans chaque page
+gf = get_global_filters()
+df_contacts = apply_global_filters(dfs["contacts"], "contacts", gf)
+df_inter = apply_global_filters(dfs["inter"], "inter", gf)
+df_pay   = apply_global_filters(dfs["pay"], "pay", gf)
+df_cert  = apply_global_filters(dfs["cert"], "cert", gf)
+# ensuite vous affichez df_contacts, vos grilles, stats bar, etc.
+
 # Filtres & pagination (bonnes pratiques CRM 2025)
 base_filters = ["Type","Statut","Entreprise","Fonction","Pays","Ville","Genre","Top20"]
 suggested = [c for c in base_filters if c in dfc.columns]
