@@ -1,254 +1,272 @@
-# pages/_shared.py
+# _shared.py — utilitaires communs (filtres, pagination, statusbar, chargements, exports)
 from __future__ import annotations
+import io
+from datetime import datetime
 from pathlib import Path
-from datetime import datetime, date, timedelta
-import hashlib
+from typing import Dict, Optional, Tuple, List
+
 import pandas as pd
 import streamlit as st
 
-# === Import helpers from project (fallbacks if absent) ===
+# ==== Import backends existants ====
 try:
     from storage_backend import (
-        AUDIT_COLS, SHEET_NAME, compute_etag, ensure_df_source, save_df_target
+        AUDIT_COLS, SHEET_NAME,
+        compute_etag, ensure_df_source, save_df_target
     )
 except Exception:
-    # Minimal fallbacks for local-only previews
+    # Garde-fous si le module n'existe pas (dev local minimal)
     AUDIT_COLS = ["Created_At","Created_By","Updated_At","Updated_By"]
     SHEET_NAME = {
-        "contacts":"contacts","inter":"interactions","events":"evenements","parts":"participations",
-        "pay":"paiements","cert":"certifications","entreprises":"entreprises","params":"parametres","users":"users"
+        "contacts":"contacts","inter":"interactions","events":"evenements",
+        "parts":"participations","pay":"paiements","cert":"certifications",
+        "entreprises":"entreprises","params":"parametres","users":"users",
+        "entreprise_parts":"entreprise_participations"
     }
-    import pandas as _pd
-    def compute_etag(df: _pd.DataFrame, name: str) -> str:
-        if df is None or df.empty:
-            return "empty"
+    def compute_etag(df, name):  # pragma: no cover
         try:
             payload = df.astype(str).fillna("").to_csv(index=False)
+            import hashlib
+            return hashlib.sha256(payload.encode("utf-8")).hexdigest()
         except Exception:
-            payload = ""
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    def ensure_df_source(name: str, cols: list, paths: dict = None, ws_func=None) -> _pd.DataFrame:
-        full_cols = list(dict.fromkeys(cols + AUDIT_COLS))
-        path = (Path("data") / f"{name}.csv")
-        path.parent.mkdir(exist_ok=True)
-        if path.exists():
-            try:
-                df = _pd.read_csv(path, dtype=str).fillna("")
-            except Exception:
-                df = _pd.DataFrame(columns=full_cols)
-        else:
-            df = _pd.DataFrame(columns=full_cols)
-            df.to_csv(path, index=False, encoding="utf-8")
-        for c in full_cols:
-            if c not in df.columns: df[c] = ""
-        return df[full_cols]
-    def save_df_target(name: str, df: _pd.DataFrame, paths: dict = None, ws_func=None):
-        path = (Path("data") / f"{name}.csv")
-        path.parent.mkdir(exist_ok=True)
-        df.to_csv(path, index=False, encoding="utf-8")
+            return "empty"
+    def ensure_df_source(name: str, cols: list, paths: dict=None, ws_func=None) -> pd.DataFrame:  # pragma: no cover
+        p = (paths or {}).get(name, Path(f"data/{name}.csv"))
+        p.parent.mkdir(exist_ok=True, parents=True)
+        if not p.exists():
+            df = pd.DataFrame(columns=cols + [c for c in AUDIT_COLS if c not in cols])
+            df.to_csv(p, index=False, encoding="utf-8")
+            return df
+        return pd.read_csv(p, dtype=str).fillna("")
+    def save_df_target(name: str, df: pd.DataFrame, paths: dict=None, ws_func=None):  # pragma: no cover
+        p = (paths or {}).get(name, Path(f"data/{name}.csv"))
+        p.parent.mkdir(exist_ok=True, parents=True)
+        df.to_csv(p, index=False, encoding="utf-8")
 
-# === Column schemas (supersets; pages pick what they need) ===
-C_COLS = [
-    "ID","Nom","Prénom","Email","Téléphone","Genre",
-    "Société","Fonction","Secteur","Pays","Ville","Type","Statut",
-    "Top20","Notes"
-] + AUDIT_COLS
-ENT_COLS = [
-    "ID_Entreprise","Nom_Entreprise","Secteur","Adresse","Pays","Ville",
-    "Contact_Principal_ID","CA_Annuel","Nb_Employés","Statut_Partenariat","Notes"
-] + AUDIT_COLS
-E_COLS = [
-    "ID_Événement","Nom_Événement","Type","Date","Lieu",
-    "Capacité","Coût_Total","Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres",
-    "Statut","Description"
-] + AUDIT_COLS
-INTER_COLS = [
-    "ID_Interaction","ID","Date","Canal","Objet","Résultat","Relance","Responsable","Notes"
-] + AUDIT_COLS
-PART_COLS = [
-    "ID_Participation","ID","ID_Événement","Rôle","Feedback","Note"
-] + AUDIT_COLS
-PAY_COLS = [
-    "ID_Paiement","ID","ID_Événement","Date_Paiement","Montant","Moyen","Statut","Référence"
-] + AUDIT_COLS
-CERT_COLS = [
-    "ID_Certif","ID","Type_Certif","Date_Examen","Résultat","Score","Date_Obtention","Validité","Renouvellement","Notes"
-] + AUDIT_COLS
+# ==== Schémas colonnes minimaux ====
+C_COLS = ["ID","Nom","Prenom","Email","Telephone","Type","Statut","Entreprise","Fonction","Pays","Ville",
+          "Top20","Created_At","Created_By","Updated_At","Updated_By","Genre"]
+ENT_COLS = ["ID_Entreprise","Nom_Entreprise","Secteur","Contact_Principal_ID","CA_Annuel","Nb_Employes",
+            "Pays","Ville","Created_At","Created_By","Updated_At","Updated_By"]
+E_COLS = ["ID_Événement","Nom_Événement","Type","Date","Ville","Pays",
+          "Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total",
+          "Created_At","Created_By","Updated_At","Updated_By"]
+PART_COLS = ["ID_Participation","ID","ID_Événement","Rôle","Note","Created_At","Created_By","Updated_At","Updated_By"]
+PAY_COLS  = ["ID_Paiement","ID","ID_Événement","Montant","Statut","Date_Paiement","Created_At","Created_By","Updated_At","Updated_By"]
+CERT_COLS = ["ID_Certif","ID","Intitulé","Résultat","Date_Obtention","Date_Examen","Created_At","Created_By","Updated_At","Updated_By"]
+INTER_COLS = ["ID_Interaction","ID","Canal","Objet","Date","Responsable","Cible","ID_Cible",
+              "Created_At","Created_By","Updated_At","Updated_By"]
+EPART_COLS = ["ID_EntPart","ID_Entreprise","ID_Événement","Type_Lien","Nb_Employes","Sponsoring_FCFA",
+              "Created_At","Created_By","Updated_At","Updated_By"]
 
-# === Backend opener (CSV by default; GSheets if configured) ===
-def _get_backend():
-    backend = st.secrets.get("storage_backend","csv")
-    DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True)
-    PATHS = {
-        "users": DATA_DIR/"users.csv",
-        "contacts": DATA_DIR/"contacts.csv",
-        "inter": DATA_DIR/"interactions.csv",
-        "events": DATA_DIR/"evenements.csv",
-        "parts": DATA_DIR/"participations.csv",
-        "pay": DATA_DIR/"paiements.csv",
-        "cert": DATA_DIR/"certifications.csv",
-        "entreprises": DATA_DIR/"entreprises.csv",
-        "params": DATA_DIR/"parametres.csv",
-    }
-    WS_FUNC = None
-    if backend == "gsheets":
-        try:
-            from gs_client import read_service_account_secret, get_gspread_client, make_ws_func
-            info = read_service_account_secret()
-            GC = get_gspread_client(info)
-            WS_FUNC = make_ws_func(GC)
-        except Exception as e:
-            st.warning(f"Back-end Google Sheets non initialisé: {e}")
-            WS_FUNC = None
-    return backend, PATHS, WS_FUNC
+# ==== Backend & chemins ====
+DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True, parents=True)
+DEFAULT_PATHS = {
+    "contacts": DATA_DIR / "contacts.csv",
+    "entreprises": DATA_DIR / "entreprises.csv",
+    "events": DATA_DIR / "evenements.csv",
+    "parts": DATA_DIR / "participations.csv",
+    "pay": DATA_DIR / "paiements.csv",
+    "cert": DATA_DIR / "certifications.csv",
+    "inter": DATA_DIR / "interactions.csv",
+    "entreprise_parts": DATA_DIR / "entreprise_participations.csv",
+    "params": DATA_DIR / "parametres.csv",
+    "users": DATA_DIR / "users.csv",
+}
 
-# === Utils ===
-def parse_date(x):
-    from datetime import datetime as _dt
-    if x is None: return None
-    s = str(x).strip()
-    if not s: return None
-    for fmt in ("%Y-%m-%d","%d/%m/%Y","%Y/%m/%d","%d-%m-%Y","%Y-%m-%d %H:%M:%S"):
-        try: return _dt.strptime(s, fmt).date()
-        except Exception: pass
+def _paths() -> Dict[str, Path]:
+    return st.session_state.get("PATHS", DEFAULT_PATHS)
+
+def _ws_func():
+    return st.session_state.get("WS_FUNC", None)
+
+# ==== Chargement groupé ====
+def load_all_tables() -> Dict[str, pd.DataFrame]:
+    paths = _paths()
+    ws = _ws_func() if st.secrets.get("storage_backend","csv")=="gsheets" else None
+
+    def _norm(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+        df = (df or pd.DataFrame(columns=cols)).copy()
+        for c in cols:
+            if c not in df.columns:
+                df[c] = ""
+        ordered = [c for c in cols if c in df.columns] + [c for c in df.columns if c not in cols]
+        return df[ordered].fillna("")
+
+    dfs = {}
+    dfs["contacts"] = _norm(ensure_df_source("contacts", C_COLS, paths, ws), C_COLS)
+    dfs["entreprises"] = _norm(ensure_df_source("entreprises", ENT_COLS, paths, ws), ENT_COLS)
+    dfs["events"] = _norm(ensure_df_source("events", E_COLS, paths, ws), E_COLS)
+    dfs["parts"] = _norm(ensure_df_source("parts", PART_COLS, paths, ws), PART_COLS)
+    dfs["pay"] = _norm(ensure_df_source("pay", PAY_COLS, paths, ws), PAY_COLS)
+    dfs["cert"] = _norm(ensure_df_source("cert", CERT_COLS, paths, ws), CERT_COLS)
+    _inter = ensure_df_source("inter", INTER_COLS, paths, ws)
+    for nc in ["Cible","ID_Cible"]:
+        if nc not in _inter.columns:
+            _inter[nc] = ""
+    dfs["inter"] = _norm(_inter, INTER_COLS)
+    dfs["entreprise_parts"] = _norm(ensure_df_source("entreprise_parts", EPART_COLS, paths, ws), EPART_COLS)
+    dfs["params"] = ensure_df_source("params", ["key","value"], paths, ws)
+    dfs["users"]  = ensure_df_source("users", ["user_id","email","password_hash","role","is_active","display_name",
+                                               "Created_At","Created_By","Updated_At","Updated_By"], paths, ws)
+    return dfs
+
+def save_table(name: str, df: pd.DataFrame) -> None:
+    paths = _paths()
+    ws = _ws_func() if st.secrets.get("storage_backend","csv")=="gsheets" else None
+    save_df_target(name, df, paths, ws)
+
+# ==== Helpers divers ====
+def generate_id(prefix: str, series_like) -> str:
     try:
-        return pd.to_datetime(s, errors="coerce").date()
+        existing = pd.Series(series_like).astype(str)
+        nums = existing.str.extract(rf"{prefix}(\d+)", expand=False).dropna().astype(int)
+        nxt = (nums.max() + 1) if not nums.empty else 1
     except Exception:
-        return None
+        nxt = 1
+    return f"{prefix}{nxt:05d}"
 
-def to_int_safe(x, default=0):
+def to_int_safe(x, default=0) -> int:
     try:
-        if x in (None,"","nan","NaN"): return default
-        return int(float(str(x).replace(" ","").replace(",",".")))
+        if pd.isna(x): return default
+        s = str(x).strip().replace(" ", "").replace("\u00a0","")
+        return int(float(s)) if s != "" else default
     except Exception:
         return default
 
-def generate_id(prefix: str, df: pd.DataFrame, col: str) -> str:
-    exist = pd.to_numeric(
-        df[col].astype(str).str.replace(prefix,"", regex=False),
-        errors="coerce"
-    ).fillna(0).astype(int)
-    nxt = (exist.max() + 1) if len(exist) else 1
-    return f"{prefix}{nxt:05d}"
+def parse_date(x):
+    try:
+        if pd.isna(x) or str(x).strip()=="": return None
+        return pd.to_datetime(x).date()
+    except Exception:
+        return None
 
-def get_sets_and_params(df_params: pd.DataFrame):
-    """
-    Convertit 'parametres' en deux structures:
-      - PARAMS: dict(key -> value str)
-      - SET: dict(key -> list[str]) pour listes utilisables en dropdown
-    Format attendu coté CSV/Sheets: colonnes ['cle','val'] ou ['key','value'].
-    """
-    PARAMS, SET = {}, {}
-    if df_params is not None and not df_params.empty:
-        cols = [c.lower() for c in df_params.columns]
-        if "cle" in cols and "val" in cols:
-            key_col, val_col = "cle","val"
-        elif "key" in cols and "value" in cols:
-            key_col, val_col = "key","value"
-        else:
-            # fallback: 1ère = key, 2ème = value
-            key_col, val_col = df_params.columns[:2].tolist()
-        tmp = df_params.rename(columns={key_col:key_col.lower(), val_col:val_col.lower()})
-        for _, r in tmp.iterrows():
-            k = str(r[key_col.lower()]).strip()
-            v = str(r[val_col.lower()]).strip()
-            PARAMS[k] = v
-            # fabriquer SET si valeur contient des virgules
-            if "," in v:
-                SET[k] = [s.strip() for s in v.split(",") if s.strip()]
-    # valeurs par défaut pour listes clés si manquantes
-    SET.setdefault("types_contact", ["Prospect","Membre","Partenaire","Autre"])
-    SET.setdefault("statuts_contact", ["Actif","Inactif","Perdu"])
-    SET.setdefault("fonctions", ["BA","DA","PM","Étudiant","Autre"])
-    SET.setdefault("secteurs", ["Banque","Télécom","IT","Éducation","Santé","ONG","Industrie","Public","Autre"])
-    SET.setdefault("pays", ["Cameroun","Côte d'Ivoire","Suisse","France","Autre"])
-    SET.setdefault("villes", ["Douala","Yaoundé","Abidjan","Genève","Autre"])
-    SET.setdefault("types_evt", ["Formation","Meetup","Webinar","Certification","Autre"])
-    SET.setdefault("roles_evt", ["Participant","Animateur","Invité"])
-    SET.setdefault("moyens_paiement", ["Mobile Money","Virement","Cash","Carte"])
-    SET.setdefault("statuts_paiement", ["Réglé","Partiel","En attente","Annulé"])
-    SET.setdefault("types_certif", ["ECBA","CCBA","CBAP","AAC","CBDA","CPOA"])
-    return PARAMS, SET
+def add_year_month(df: pd.DataFrame, date_col: str, year_col="Année", month_col="Mois") -> pd.DataFrame:
+    d = pd.to_datetime(df[date_col], errors="coerce")
+    df[year_col] = d.dt.year.astype("Int64")
+    df[month_col] = d.dt.month.astype("Int64")
+    return df
 
-def load_all_tables():
-    backend, PATHS, WS_FUNC = _get_backend()
-    # Ensure each table with its columns
-    df_contacts = ensure_df_source("contacts", C_COLS, PATHS, WS_FUNC)
-    df_inter    = ensure_df_source("inter",    INTER_COLS, PATHS, WS_FUNC)
-    df_events   = ensure_df_source("events",   E_COLS, PATHS, WS_FUNC)
-    df_parts    = ensure_df_source("parts",    PART_COLS, PATHS, WS_FUNC)
-    df_pay      = ensure_df_source("pay",      PAY_COLS, PATHS, WS_FUNC)
-    df_cert     = ensure_df_source("cert",     CERT_COLS, PATHS, WS_FUNC)
-    df_ent      = ensure_df_source("entreprises", ENT_COLS, PATHS, WS_FUNC)
-    df_params   = ensure_df_source("params",   ["cle","val"] + AUDIT_COLS, PATHS, WS_FUNC)
+# ==== Barre d'agrégats + Filtres & Pagination ====
+def _sum_numeric(df: pd.DataFrame, cols: List[str]) -> Dict[str, float]:
+    out = {}
+    for c in cols:
+        if c in df.columns:
+            out[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).sum()
+    return out
 
-    # normalize types
-    for df in (df_contacts, df_inter, df_events, df_parts, df_pay, df_cert, df_ent):
-        for c in df.columns:
-            df[c] = df[c].astype(str).fillna("")
-    PARAMS, SET = get_sets_and_params(df_params)
+def statusbar(df: pd.DataFrame, numeric_keys: List[str] = None, key: str = "statusbar"):
+    numeric_keys = numeric_keys or []
+    sums = _sum_numeric(df, numeric_keys)
+    parts = [f"lignes : **{len(df)}**"]
+    for k, v in sums.items():
+        parts.append(f"{k} = **{int(v):,}**".replace(",", " "))
+    st.caption(" | ".join(parts))
 
-    return {
-        "backend": backend, "PATHS": PATHS, "WS_FUNC": WS_FUNC,
-        "contacts": df_contacts, "inter": df_inter, "events": df_events,
-        "parts": df_parts, "pay": df_pay, "cert": df_cert, "entreprises": df_ent,
-        "params": df_params, "PARAMS": PARAMS, "SET": SET
-    }
+def smart_suggested_filters(df: pd.DataFrame, extra: List[str]=None, max_cols: int = 6) -> List[str]:
+    """Propose des colonnes catégorielles pertinentes pour les filtres."""
+    extra = extra or []
+    candidates = [
+        "Type","Statut","Entreprise","Fonction","Secteur","Pays","Ville",
+        "Responsable","Canal","Résultat","Rôle","Top20"
+    ]
+    # Ajouter les extra en priorité
+    ordered = extra + [c for c in candidates if c not in extra]
+    present = [c for c in ordered if c in df.columns]
+    # Exclure colonnes ID et numériques évidentes
+    def _is_numeric_series(s: pd.Series) -> bool:
+        try:
+            return pd.api.types.is_numeric_dtype(pd.to_numeric(s, errors="coerce"))
+        except Exception:
+            return False
+    present = [c for c in present if c.lower() not in {"id","id_événement","id_paiement","id_participation",
+                                                       "id_interaction","id_certif","id_entreprise"}]
+    present = [c for c in present if not _is_numeric_series(df[c])]
+    return present[:max_cols]
 
-def aggregates_for_contacts(dfs: dict) -> pd.DataFrame:
-    """Retourne les agrégats (Interactions, Participations, CA, etc.) par ID de contact."""
-    df_inter = dfs["inter"]; df_parts = dfs["parts"]; df_pay = dfs["pay"]; df_cert = dfs["cert"]
-    ids = dfs["contacts"]["ID"].astype(str).str.strip().tolist()
-    ag = pd.DataFrame(index=ids)
+def filter_and_paginate(df: pd.DataFrame,
+                        key_prefix: str,
+                        page_size_default: int = 20,
+                        suggested_filters: List[str] = None,
+                        enable_sort: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Renvoie (df_page, df_filtered). Dessine UI filtres + pagination."""
+    if df is None: df = pd.DataFrame()
+    df = df.copy()
+    if suggested_filters is None:
+        suggested_filters = smart_suggested_filters(df)
 
-    # Interactions
-    if not df_inter.empty:
-        inter_count = df_inter.groupby("ID")["ID_Interaction"].count()
-        last_contact = df_inter.groupby("ID")["Date"].max()
-        ag["Interactions"] = ag.index.to_series().map(inter_count).fillna(0).astype(int)
-        ag["Dernier_contact"] = ag.index.to_series().map(last_contact).fillna("")
-    else:
-        ag["Interactions"] = 0
-        ag["Dernier_contact"] = ""
+    with st.expander("🔎 Filtres avancés", expanded=False):
+        # Recherche globale (colonnes texte)
+        global_q = st.text_input("Recherche globale (contient)", key=f"{key_prefix}_q").strip()
+        if global_q:
+            mask = pd.Series(False, index=df.index)
+            for c in df.columns:
+                if df[c].dtype == object:
+                    mask = mask | df[c].astype(str).str.contains(global_q, case=False, na=False)
+            df = df[mask]
 
-    # Participations
-    if not df_parts.empty:
-        parts_count = df_parts.groupby("ID")["ID_Participation"].count()
-        ag["Participations"] = ag.index.to_series().map(parts_count).fillna(0).astype(int)
-    else:
-        ag["Participations"] = 0
+        # Filtres catégoriels proposés (si présents)
+        cols_present = [c for c in suggested_filters if c in df.columns]
+        if cols_present:
+            cols = st.columns(min(4, len(cols_present)))
+            # Répartir les filtres sur 4 colonnes max
+            for i, c in enumerate(cols_present):
+                col = cols[i % len(cols)]
+                vals = sorted([v for v in df[c].dropna().astype(str).unique() if v!=""])
+                sel = col.multiselect(c, vals, default=[], key=f"{key_prefix}_f_{c}")
+                if sel:
+                    df = df[df[c].astype(str).isin(sel)]
 
-    # Paiements
-    if not df_pay.empty:
-        p = df_pay.copy()
-        p["Montant"] = pd.to_numeric(p["Montant"], errors="coerce").fillna(0.0)
-        total_pay = p.groupby("ID")["Montant"].sum()
-        pay_regle = p[p["Statut"]=="Réglé"].groupby("ID")["Montant"].sum()
-        impaye = p[p["Statut"]!="Réglé"].groupby("ID")["Montant"].sum()
-        ag["CA_réglé"] = ag.index.to_series().map(pay_regle).fillna(0.0)
-        ag["Impayé"] = ag.index.to_series().map(impaye).fillna(0.0)
-    else:
-        ag["CA_réglé"] = 0.0
-        ag["Impayé"] = 0.0
+        # Tri (optionnel)
+        if enable_sort and not df.empty:
+            sort_cols = ["(aucun)"] + df.columns.tolist()
+            sc = st.selectbox("Tri par", options=sort_cols, index=0, key=f"{key_prefix}_sortcol")
+            if sc != "(aucun)":
+                asc = st.checkbox("Tri ascendant", value=True, key=f"{key_prefix}_sortasc")
+                try:
+                    df = df.sort_values(by=sc, ascending=asc, kind="mergesort")
+                except Exception:
+                    pass
 
-    # Certifications
-    if not df_cert.empty:
-        cert_success = (df_cert["Résultat"]=="Réussi").groupby(df_cert["ID"]).sum()
-        ag["A_certification"] = ag.index.to_series().map(cert_success).fillna(False).astype(bool)
-    else:
-        ag["A_certification"] = False
+        # Page size
+        page_size = st.number_input("Taille de page", min_value=5, max_value=200,
+                                    value=page_size_default, step=5, key=f"{key_prefix}_pagesize")
 
-    # Scores simples
-    ag["Score_composite"] = (ag["Interactions"] + ag["Participations"] + (ag["CA_réglé"]>0).astype(int)*2).astype(float)
-    def _proba(row):
-        if row["CA_réglé"]>0: return "Converti"
-        if row["Interactions"]>=3 and row["Participations"]>=1: return "Chaud"
-        if row["Interactions"]>=1 or row["Participations"]>=1: return "Tiède"
-        return "Froid"
-    ag["Proba_conversion"] = ag.apply(_proba, axis=1)
-    ag["Tags"] = ag.apply(lambda r: ", ".join([
-        "Ambassadeur (certifié)" if r["A_certification"] else "",
-        "VIP" if r["CA_réglé"]>=500000 else ""
-    ]).replace(", ,",", ").strip(", "), axis=1)
+    # Pagination
+    total = len(df)
+    if total == 0:
+        st.info("Aucune donnée à afficher.")
+        return df, df  # vide
 
-    return ag.reset_index(names="ID")
+    import math
+    pages = max(1, math.ceil(total / page_size))
+    col_p1, col_p2, col_p3 = st.columns([1,2,1])
+    with col_p1:
+        page_idx = st.number_input("Page", min_value=1, max_value=pages, value=1, step=1, key=f"{key_prefix}_page")
+    with col_p2:
+        st.caption(f"{total} lignes • {pages} pages • {page_size} par page")
+    with col_p3:
+        if st.button("⟳ Rafraîchir", key=f"{key_prefix}_refresh"):
+            st.experimental_rerun()
+
+    start = (page_idx - 1) * page_size
+    end = start + page_size
+    df_page = df.iloc[start:end].copy()
+
+    return df_page, df
+
+# ==== Export utilitaire (multi-feuilles) ====
+def export_filtered_excel(dfs: Dict[str, pd.DataFrame], filename_prefix: str = "export"):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for sheet, df in dfs.items():
+            try:
+                df.to_excel(writer, sheet_name=str(sheet)[:31], index=False)
+            except Exception:
+                pd.DataFrame().to_excel(writer, sheet_name=str(sheet)[:31], index=False)
+    st.download_button(
+        "⬇ Export Excel (filtres appliqués)",
+        data=buf.getvalue(),
+        file_name=f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )

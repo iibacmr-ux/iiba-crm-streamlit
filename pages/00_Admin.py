@@ -1,98 +1,84 @@
-
+# pages/00_Admin.py — Listes, KPI cibles, Import/Export Excel (toutes tables) + filtres/pagination
 from __future__ import annotations
 import io
-import pandas as pd
 import streamlit as st
-from _shared import load_all_tables, save_df_target
+import pandas as pd
+from _shared import load_all_tables, save_table, filter_and_paginate, statusbar, export_filtered_excel, smart_suggested_filters
 
-st.set_page_config(page_title="Admin", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="Admin — IIBA Cameroun", page_icon="🛠️", layout="wide")
+st.title("🛠️ Administration")
+
 dfs = load_all_tables()
-PATHS = dfs["PATHS"]; WS_FUNC = dfs["WS_FUNC"]
 
-st.title("🛠️ Administration — Paramètres & Données")
-
-st.subheader("📋 Listes de valeurs (Paramètres)")
-df_params = dfs["params"].copy()
-
-def _val(key, default=""):
-    r = df_params[df_params["cle"]==key]
-    return (r.iloc[0]["val"] if not r.empty else default)
-
-def _set(key, value):
-    nonlocal_df = st.session_state.setdefault("_params_work", df_params.copy())
-    r = nonlocal_df[nonlocal_df["cle"]==key]
-    if r.empty:
-        nonlocal_df = pd.concat([nonlocal_df, pd.DataFrame([{"cle":key,"val":value}])], ignore_index=True)
-    else:
-        nonlocal_df.loc[r.index[0],"val"] = value
-    st.session_state["_params_work"] = nonlocal_df
-
-with st.form("params_form"):
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        secteurs = st.text_area("Secteurs (séparés par des virgules)", value=_val("secteurs", ",".join(dfs["SET"]["secteurs"])))
-        fonctions = st.text_area("Fonctions", value=_val("fonctions", ",".join(dfs["SET"]["fonctions"])))
-        types_evt = st.text_area("Types d'événement", value=_val("types_evt", ",".join(dfs["SET"]["types_evt"])))
-    with col2:
-        pays = st.text_area("Pays", value=_val("pays", ",".join(dfs["SET"]["pays"])))
-        villes = st.text_area("Villes", value=_val("villes", ",".join(dfs["SET"]["villes"])))
-        roles_evt = st.text_area("Rôles événement", value=_val("roles_evt", ",".join(dfs["SET"]["roles_evt"])))
-    with col3:
-        moyens = st.text_area("Moyens de paiement", value=_val("moyens_paiement", ",".join(dfs["SET"]["moyens_paiement"])))
-        statuts_pay = st.text_area("Statuts paiement", value=_val("statuts_paiement", ",".join(dfs["SET"]["statuts_paiement"])))
-        types_cert = st.text_area("Types de certification", value=_val("types_certif", ",".join(dfs["SET"]["types_certif"])))
-        types_org = st.text_area("Types de lien entreprise–événement", value=_val("types_org_lien", ",".join(dfs["SET"]["types_org_lien"])))
-
-    ok = st.form_submit_button("💾 Enregistrer les paramètres")
-    if ok:
-        dfw = st.session_state.get("_params_work", df_params.copy())
-        # rafraîchir depuis les champs
-        mapping = {
-            "secteurs": secteurs, "fonctions": fonctions, "types_evt": types_evt,
-            "pays": pays, "villes": villes, "roles_evt": roles_evt,
-            "moyens_paiement": moyens, "statuts_paiement": statuts_pay,
-            "types_certif": types_cert, "types_org_lien": types_org
-        }
-        for k, v in mapping.items():
-            r = dfw[dfw["cle"]==k]
-            if r.empty:
-                dfw = pd.concat([dfw, pd.DataFrame([{"cle":k,"val":v}])], ignore_index=True)
-            else:
-                dfw.loc[r.index[0],"val"] = v
-        save_df_target("params", dfw, PATHS, WS_FUNC)
-        st.success("Paramètres enregistrés.")
-
-st.markdown("---")
-st.subheader("⬇️ Export complet (.xlsx) / ⬆️ Import CSV (table par table)")
-
-# Export Excel
-buf = io.BytesIO()
-with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-    for key in ["contacts","entreprises","events","inter","parts","pay","cert","orgparts","params"]:
-        dfs[key].to_excel(writer, sheet_name=key, index=False)
-st.download_button("⬇️ Exporter toutes les tables (Excel)", buf.getvalue(),
-                   file_name="iiba_crm_export.xlsx",
-                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-# Import CSV rapide
-imp_col1, imp_col2 = st.columns(2)
-with imp_col1:
-    st.write("Importer un CSV dans une table :")
-    target = st.selectbox("Table cible", ["contacts","entreprises","events","inter","parts","pay","cert","orgparts","params"])
-    up = st.file_uploader("CSV (UTF-8)", type=["csv"], key="imp_csv")
-    if st.button("📥 Importer"):
-        if up is None:
-            st.error("Choisissez un fichier CSV.")
-        else:
+st.header("📦 Export/Import Excel (toutes tables)")
+c1, c2 = st.columns(2)
+with c1:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for name, df in dfs.items():
             try:
-                newdf = pd.read_csv(up, dtype=str).fillna("")
-                dfs[target] = newdf
-                save_df_target(target, newdf, PATHS, WS_FUNC)
-                st.success(f"Table '{target}' importée avec succès.")
-            except Exception as e:
-                st.error(f"Erreur d'import: {e}")
+                df.to_excel(writer, sheet_name=name[:31], index=False)
+            except Exception:
+                pd.DataFrame().to_excel(writer, sheet_name=name[:31], index=False)
+    st.download_button("⬇ Exporter toutes les tables (Excel)", buf.getvalue(),
+                       file_name="iiba_crm_all_tables.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+with c2:
+    up = st.file_uploader("Importer un Excel (mêmes feuilles/colonnes)", type=["xlsx"])
+    if up is not None:
+        try:
+            x = pd.ExcelFile(up)
+            changed = False
+            for sheet in x.sheet_names:
+                try:
+                    df_new = pd.read_excel(x, sheet_name=sheet, dtype=str).fillna("")
+                    dfs[sheet] = df_new
+                    save_table(sheet, df_new)
+                    changed = True
+                except Exception:
+                    pass
+            if changed:
+                st.success("Import terminé. Les tables ont été mises à jour.")
+        except Exception as e:
+            st.error(f"Import échoué: {e}")
 
-with imp_col2:
-    st.write("Tables actuelles (taille) :")
-    for key in ["contacts","entreprises","events","inter","parts","pay","cert","orgparts","params"]:
-        st.caption(f"• {key}: {len(dfs[key])} lignes")
+st.header("📋 Listes de valeurs & KPI / Paramètres")
+tab_cats, tab_kpi, tab_tech = st.tabs(["Listes", "KPI / Paramètres", "Tech (diagnostic data)"])
+
+with tab_cats:
+    st.caption("Éditez vos listes dans la table 'parametres' (clé/valeur).")
+    dfp = dfs.get("params", pd.DataFrame(columns=["key","value"])).copy()
+    suggested = ["key"]
+    page_p, filt_p = filter_and_paginate(dfp, key_prefix="adm_params", page_size_default=20,
+                                         suggested_filters=suggested)
+    statusbar(filt_p, numeric_keys=[])
+    st.dataframe(page_p, use_container_width=True, hide_index=True)
+
+with tab_kpi:
+    st.caption("KPI cibles et paramètres divers (scoring, seuils, objectifs, etc.).")
+    dfp = dfs.get("params", pd.DataFrame(columns=["key","value"])).copy()
+    suggested = ["key"]
+    page_p, filt_p = filter_and_paginate(dfp, key_prefix="adm_kpi", page_size_default=20,
+                                         suggested_filters=suggested)
+    statusbar(filt_p, numeric_keys=[])
+    st.dataframe(page_p, use_container_width=True, hide_index=True)
+
+with tab_tech:
+    st.caption("Aperçu rapide des autres tables (filtrées/paginées).")
+    for name in ["contacts","entreprises","events","parts","pay","cert","inter","entreprise_parts"]:
+        st.markdown(f"#### Table : {name}")
+        df = dfs.get(name, pd.DataFrame())
+        suggested = smart_suggested_filters(df)
+        page_t, filt_t = filter_and_paginate(df, key_prefix=f"adm_{name}", page_size_default=20,
+                                             suggested_filters=suggested)
+        # Choix auto des sommes numériques usuelles
+        numeric_keys = []
+        if name == "pay": numeric_keys = ["Montant"]
+        if name == "entreprises": numeric_keys = ["CA_Annuel","Nb_Employes"]
+        if name == "entreprise_parts": numeric_keys = ["Nb_Employes","Sponsoring_FCFA"]
+        statusbar(filt_t, numeric_keys=numeric_keys)
+        st.dataframe(page_t, use_container_width=True, hide_index=True)
+
+st.subheader("⬇ Export des tables filtrées (depuis l'onglet Tech)")
+# Exemple d'export combiné des dernières grilles filtrées si nécessaire : on exporte tout brut
+export_filtered_excel({k:v for k,v in dfs.items()}, filename_prefix="admin_tables_brut")
