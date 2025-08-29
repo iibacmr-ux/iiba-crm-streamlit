@@ -5,6 +5,7 @@ import io
 from datetime import date, datetime, timedelta
 import pandas as pd
 import streamlit as st
+from storage_backend import ensure_df_source
 
 # --- AgGrid (pagination + filtres avancés)
 try:
@@ -739,7 +740,8 @@ with cR:
             _aggrid(sub_parts, page_size=20, key=f"grid_parts_{sel_id}")
             
             # Historique enrichi (colonnes événement)
-            df_parts_enriched = enrich_with_event_cols(df_parts_contact, df_events, "ID_Événement")
+            # df_parts_enriched = enrich_with_event_cols(df_parts_contact, df_events, "ID_Événement")
+            df_parts_enriched = enrich_with_event_cols(sub_parts, df_events, "ID_Événement")
             st.dataframe(
                 df_parts_enriched[["ID_Participation","Rôle","Nom_Événement","Type","Lieu","Date","Feedback","Note","Commentaire"]],
                 use_container_width=True
@@ -752,7 +754,8 @@ with cR:
             _aggrid(sub_pay, page_size=20, key=f"grid_pay_{sel_id}")
             
             # Historique enrichi (colonnes événement)
-            df_pay_enriched = enrich_with_event_cols(df_pay_contact, df_events, "ID_Événement")
+            # df_pay_enriched = enrich_with_event_cols(df_pay_contact, df_events, "ID_Événement")
+            df_pay_enriched = enrich_with_event_cols(sub_pay, df_events, "ID_Événement")
             st.dataframe(
                 df_pay_enriched[["ID_Paiement","Référence","Nom_Événement","Type","Lieu","Date","Date_Paiement","Montant","Moyen","Statut","Commentaire"]],
                 use_container_width=True
