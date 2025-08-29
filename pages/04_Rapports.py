@@ -1,172 +1,250 @@
-# pages/04_Rapports.py — Rapports + sous-rapports avec filtres/pagination
+# pages/04_Rapports.py
 from __future__ import annotations
+from datetime import datetime, date, timedelta
 import io
-import streamlit as st
 import pandas as pd
-from datetime import datetime
-from _shared import (
-    load_all_tables, filter_and_paginate, statusbar, parse_date,
-    export_filtered_excel, smart_suggested_filters
-)
+import altair as alt
+import streamlit as st
+from _shared import load_all_tables, parse_date
 
-st.set_page_config(page_title="Rapports — IIBA Cameroun", page_icon="📈", layout="wide")
-st.title("📈 Rapports & KPI — Période + Sous-rapports")
-
+st.set_page_config(page_title="Rapports & KPI", page_icon="📑", layout="wide")
 dfs = load_all_tables()
-df_contacts = dfs["contacts"]
-df_events   = dfs["events"]
-df_parts    = dfs["parts"]
-df_pay      = dfs["pay"]
-df_cert     = dfs["cert"]
-df_entre    = dfs["entreprises"]
-df_ep       = dfs["entreprise_parts"]
+df_contacts = dfs["contacts"]; df_events = dfs["events"]
+df_parts = dfs["parts"]; df_pay = dfs["pay"]; df_cert = dfs["cert"]
+PARAMS = dfs["PARAMS"]
 
-# --- Sélecteurs de période ---
-def _years_from(series):
-    s = pd.to_datetime(series, errors="coerce").dt.year.dropna().astype(int)
-    if s.empty: return []
-    return sorted(s.unique().tolist())
+st.title("📑 Rapports & KPI — IIBA Cameroun")
 
-years = sorted(set(_years_from(df_events.get("Date","")) |
-                   set(_years_from(df_pay.get("Date_Paiement","")))))
-annees = ["Toutes"] + [str(y) for y in years]
-mois = ["Tous"] + [str(i) for i in range(1,13)]
-c1,c2 = st.columns(2)
-annee = c1.selectbox("Année", annees, index=0)
-mois_sel = c2.selectbox("Mois", mois, index=0)
+# Sélection période
+years = ["Toutes"] + sorted(list({str(pd.to_datetime(x, errors="coerce").year) for x in list(df_events.get("Date","")) + list(df_pay.get("Date_Paiement","")) if str(x).strip()}))
+months = ["Tous"] + [str(i) for i in range(1,13)]
+colp1, colp2 = st.columns(2)
+annee = colp1.selectbox("Année", years, index=0)
+mois = colp2.selectbox("Mois", months, index=0)
 
-def _apply_period(df, date_col):
-    if date_col not in df.columns: return df
-    d = pd.to_datetime(df[date_col], errors="coerce")
-    if annee != "Toutes":
-        df = df[d.dt.year == int(annee)]
-    if mois_sel != "Tous":
-        df = df[d.dt.month == int(mois_sel)]
-    return df
+def _safe_parse_series(s: pd.Series) -> pd.Series:
+    return s.map(lambda x: parse_date(x) if pd.notna(x) and str(x).strip() != "" else None)
 
-# === Événements ===
-st.header("📅 Événements (période)")
-dfe = _apply_period(df_events.copy(), "Date")
-page_e, filt_e = filter_and_paginate(dfe, key_prefix="rep_evt", page_size_default=20,
-                                     suggested_filters=["Type","Ville","Pays"])
-statusbar(filt_e, numeric_keys=["Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total"])
-st.dataframe(page_e, use_container_width=True, hide_index=True)
+def _build_mask_from_dates(d: pd.Series, year_sel: str, month_sel: str) -> pd.Series:
+    mask = pd.Series(True, index=d.index)
+    if year_sel != "Toutes":
+        y = int(year_sel)
+        mask = mask & d.map(lambda x: isinstance(x, (datetime, date)) and x.year == y)
+    if month_sel != "Tous":
+        m = int(month_sel)
+        mask = mask & d.map(lambda x: isinstance(x, (datetime, date)) and x.month == m)
+    return mask.fillna(False)
 
-# === Participations (via date d'événement) ===
-st.header("🎟 Participations (période via date événement)")
-dfp = df_parts.copy()
-if not dfp.empty and "ID_Événement" in dfp.columns and "Date" in df_events.columns:
-    ev_dates = df_events.set_index("ID_Événement")["Date"].map(pd.to_datetime, na_action="ignore")
-    dfp["_d_evt"] = dfp["ID_Événement"].map(ev_dates)
-    if annee != "Toutes":
-        dfp = dfp[dfp["_d_evt"].dt.year == int(annee)]
-    if mois_sel != "Tous":
-        dfp = dfp[dfp["_d_evt"].dt.month == int(mois_sel)]
-page_p, filt_p = filter_and_paginate(dfp.drop(columns=["_d_evt"], errors="ignore"), key_prefix="rep_parts", page_size_default=20,
-                                     suggested_filters=["Rôle"])
-statusbar(filt_p, numeric_keys=[])
-st.dataframe(page_p, use_container_width=True, hide_index=True)
-
-# === Paiements (période via Date_Paiement) ===
-st.header("💰 Paiements (période via Date_Paiement)")
-dfpay = _apply_period(df_pay.copy(), "Date_Paiement")
-page_pay, filt_pay = filter_and_paginate(dfpay, key_prefix="rep_pay", page_size_default=20,
-                                         suggested_filters=["Statut"])
-statusbar(filt_pay, numeric_keys=["Montant"])
-st.dataframe(page_pay, use_container_width=True, hide_index=True)
-
-# === Certifications (période) ===
-st.header("🎓 Certifications (période via Date_Obtention/Examen)")
-dfc = df_cert.copy()
-if not dfc.empty:
-    dfc["_do"] = pd.to_datetime(dfc.get("Date_Obtention",""), errors="coerce")
-    dfc["_de"] = pd.to_datetime(dfc.get("Date_Examen",""), errors="coerce")
-    mask = pd.Series(True, index=dfc.index)
-    if annee != "Toutes":
-        mask &= ((dfc["_do"].dt.year == int(annee)) | (dfc["_de"].dt.year == int(annee)))
-    if mois_sel != "Tous":
-        mask &= ((dfc["_do"].dt.month == int(mois_sel)) | (dfc["_de"].dt.month == int(mois_sel)))
-    dfc = dfc[mask]
-page_c, filt_c = filter_and_paginate(dfc.drop(columns=["_do","_de"], errors="ignore"), key_prefix="rep_cert", page_size_default=20,
-                                     suggested_filters=["Résultat"])
-statusbar(filt_c, numeric_keys=[])
-st.dataframe(page_c, use_container_width=True, hide_index=True)
-
-# === Sous-rapports spécifiques ===
-st.header("📊 Sous-rapports spécifiques")
-
-# Top entreprises par CA réglé (via paiements + contacts Entreprise) + sponsoring officiel
-with st.expander("🏆 Top entreprises par CA réglé (incl. sponsoring officiel)", expanded=False):
-    pay_ok = df_pay.copy()
-    pay_ok["Montant"] = pd.to_numeric(pay_ok.get("Montant",0), errors="coerce").fillna(0)
-    pay_ok = pay_ok[pay_ok.get("Statut","")=="Réglé"]
-    # via employés
-    if not pay_ok.empty and "ID" in pay_ok.columns and "Entreprise" in df_contacts.columns:
-        merged = pay_ok.merge(df_contacts[["ID","Entreprise"]], on="ID", how="left")
-        agg_emp = merged.groupby("Entreprise")["Montant"].sum().reset_index().rename(columns={"Montant":"CA_Regle_Employes"})
+def filtered_tables_for_period(year_sel: str, month_sel: str):
+    if df_events.empty:
+        dfe2 = df_events.copy()
     else:
-        agg_emp = pd.DataFrame(columns=["Entreprise","CA_Regle_Employes"])
-    # sponsoring officiel (entreprise_parts -> Sponsoring_FCFA)
-    ep = df_ep.copy()
-    ep["Sponsoring_FCFA"] = pd.to_numeric(ep.get("Sponsoring_FCFA",0), errors="coerce").fillna(0)
-    agg_off = ep.groupby("ID_Entreprise")["Sponsoring_FCFA"].sum().reset_index()
-    agg_off = agg_off.merge(df_entre[["ID_Entreprise","Nom_Entreprise"]], on="ID_Entreprise", how="left")
-    agg_off = agg_off.rename(columns={"Nom_Entreprise":"Entreprise"})
-    # fusion
-    top = pd.merge(agg_emp, agg_off[["Entreprise","Sponsoring_FCFA"]], on="Entreprise", how="outer").fillna(0)
-    top["CA_Total"] = pd.to_numeric(top.get("CA_Regle_Employes",0), errors="coerce").fillna(0) + \
-                      pd.to_numeric(top.get("Sponsoring_FCFA",0), errors="coerce").fillna(0)
-    # filtres/pagination
-    suggested = ["Entreprise"]
-    page_top, filt_top = filter_and_paginate(top, key_prefix="rep_top_ca", page_size_default=20, suggested_filters=suggested)
-    statusbar(filt_top, numeric_keys=["CA_Regle_Employes","Sponsoring_FCFA","CA_Total"])
-    st.dataframe(page_top.sort_values("CA_Total", ascending=False), use_container_width=True, hide_index=True)
+        ev_dates = _safe_parse_series(df_events["Date"])
+        mask_e = _build_mask_from_dates(ev_dates, year_sel, month_sel)
+        dfe2 = df_events[mask_e].copy()
 
-# Activité mensuelle (événements / participations / paiements réglés)
-with st.expander("📆 Activité mensuelle (Événements / Participations / Paiements réglés)", expanded=False):
-    # Événements par mois
-    dfe2 = df_events.copy()
-    dfe2["_mois"] = pd.to_datetime(dfe2.get("Date",""), errors="coerce").dt.to_period("M").astype(str)
-    evm = dfe2["_mois"].value_counts().rename_axis("Mois").reset_index(name="Nb_Événements")
-    page_evm, filt_evm = filter_and_paginate(evm, key_prefix="rep_act_evt", page_size_default=20,
-                                             suggested_filters=["Mois"])
-    statusbar(filt_evm, numeric_keys=["Nb_Événements"])
-    st.dataframe(page_evm.sort_values("Mois"), use_container_width=True, hide_index=True)
-
-    # Participations par mois (via Date événement)
-    dfp2 = df_parts.copy()
-    if not dfp2.empty and "ID_Événement" in dfp2.columns and "Date" in df_events.columns:
-        ev_dates = df_events.set_index("ID_Événement")["Date"].map(pd.to_datetime, na_action="ignore")
-        dfp2["_d_evt"] = dfp2["ID_Événement"].map(ev_dates)
-        dfp2["_mois"] = pd.to_datetime(dfp2["_d_evt"], errors="coerce").dt.to_period("M").astype(str)
-        pm = dfp2["_mois"].value_counts().rename_axis("Mois").reset_index(name="Nb_Participations")
+    if df_parts.empty:
+        dfp2 = df_parts.copy()
     else:
-        pm = pd.DataFrame(columns=["Mois","Nb_Participations"])
-    page_pm, filt_pm = filter_and_paginate(pm, key_prefix="rep_act_parts", page_size_default=20,
-                                           suggested_filters=["Mois"])
-    statusbar(filt_pm, numeric_keys=["Nb_Participations"])
-    st.dataframe(page_pm.sort_values("Mois"), use_container_width=True, hide_index=True)
+        dfp2 = df_parts.copy()
+        if not df_events.empty:
+            ev_dates_map = df_events.set_index("ID_Événement")["Date"].map(parse_date)
+            dfp2["_d_evt"] = dfp2["ID_Événement"].map(ev_dates_map)
+            mask_p = _build_mask_from_dates(dfp2["_d_evt"], year_sel, month_sel)
+            dfp2 = dfp2[mask_p].copy()
+        else:
+            dfp2 = dfp2.iloc[0:0].copy()
 
-    # Paiements réglés par mois
-    dfpay2 = df_pay.copy()
-    dfpay2 = dfpay2[dfpay2.get("Statut","")=="Réglé"].copy()
-    dfpay2["Montant"] = pd.to_numeric(dfpay2.get("Montant",0), errors="coerce").fillna(0)
-    dfpay2["_mois"] = pd.to_datetime(dfpay2.get("Date_Paiement",""), errors="coerce").dt.to_period("M").astype(str)
-    pym = dfpay2.groupby("_mois")["Montant"].sum().reset_index().rename(columns={"_mois":"Mois","Montant":"CA_Regle"})
-    page_pym, filt_pym = filter_and_paginate(pym, key_prefix="rep_act_pay", page_size_default=20,
-                                             suggested_filters=["Mois"])
-    statusbar(filt_pym, numeric_keys=["CA_Regle"])
-    st.dataframe(page_pym.sort_values("Mois"), use_container_width=True, hide_index=True)
+    if df_pay.empty:
+        dfpay2 = df_pay.copy()
+    else:
+        pay_dates = _safe_parse_series(df_pay["Date_Paiement"])
+        mask_pay = _build_mask_from_dates(pay_dates, year_sel, month_sel)
+        dfpay2 = df_pay[mask_pay].copy()
 
-# Export des tables filtrées principales (non paginées)
-st.subheader("⬇ Exports (filtres appliqués)")
-export_filtered_excel({
-    "Événements": filt_e,
-    "Participations": filt_p,
-    "Paiements": filt_pay,
-    "Certifications": filt_c,
-    "Top_Entreprises_CA": 'filt_top' in locals() and filt_top or pd.DataFrame(),
-    "Activité_Mensuelle_Événements": 'filt_evm' in locals() and filt_evm or pd.DataFrame(),
-    "Activité_Mensuelle_Participations": 'filt_pm' in locals() and filt_pm or pd.DataFrame(),
-    "Activité_Mensuelle_Paiements": 'filt_pym' in locals() and filt_pym or pd.DataFrame(),
-}, filename_prefix="rapports_filtres")
+    if df_cert.empty:
+        dfcert2 = df_cert.copy()
+    else:
+        obt = _safe_parse_series(df_cert["Date_Obtention"]) if "Date_Obtention" in df_cert.columns else pd.Series([None]*len(df_cert), index=df_cert.index)
+        exa = _safe_parse_series(df_cert["Date_Examen"])    if "Date_Examen"    in df_cert.columns    else pd.Series([None]*len(df_cert), index=df_cert.index)
+        mask_c = _build_mask_from_dates(obt, year_sel, month_sel) | _build_mask_from_dates(exa, year_sel, month_sel)
+        dfcert2 = df_cert[mask_c.fillna(False)].copy()
+
+    return dfe2, dfp2, dfpay2, dfcert2
+
+def filtered_contacts_for_period(year_sel: str, month_sel: str,
+                                 dfe_all: pd.DataFrame, dfi_all: pd.DataFrame,
+                                 dfp_all: pd.DataFrame, dfpay_all: pd.DataFrame) -> pd.DataFrame:
+    base = df_contacts.copy()
+    if base.empty or "ID" not in base.columns:
+        return base
+
+    base["ID"] = base["ID"].astype(str).str.strip()
+    if "Date_Creation" in base.columns:
+        base["_dc"] = _safe_parse_series(base["Date_Creation"])
+    else:
+        base["_dc"] = pd.Series([None]*len(base), index=base.index)
+
+    use_fallback = True
+
+    if not use_fallback:
+        mask = _build_mask_from_dates(base["_dc"], year_sel, month_sel)
+        return base[mask].drop(columns=["_dc"], errors="ignore")
+
+    if not dfi_all.empty and "Date" in dfi_all.columns and "ID" in dfi_all.columns:
+        dfi = dfi_all.copy()
+        dfi["ID"] = dfi["ID"].astype(str).str.strip()
+        dfi["_di"] = pd.to_datetime(_safe_parse_series(dfi["Date"]), errors="coerce")
+        first_inter = dfi.groupby("ID")["_di"].min()
+    else:
+        first_inter = pd.Series(dtype="datetime64[ns]")
+
+    if (not dfp_all.empty and "ID" in dfp_all.columns and "ID_Événement" in dfp_all.columns
+        and not dfe_all.empty and "ID_Événement" in dfe_all.columns and "Date" in dfe_all.columns):
+        dfp = dfp_all.copy()
+        dfp = dfp[dfp["ID_Événement"].notna()]
+        dfp["ID"] = dfp["ID"].astype(str).str.strip()
+
+        ev_dates = dfe_all.copy()
+        ev_dates["_de"] = _safe_parse_series(ev_dates["Date"])
+        ev_map = ev_dates.set_index("ID_Événement")["_de"]
+
+        dfp["_de"] = dfp["ID_Événement"].map(ev_map)
+        dfp["_de"] = pd.to_datetime(dfp["_de"], errors="coerce")
+        first_part = dfp.groupby("ID")["_de"].min()
+    else:
+        first_part = pd.Series(dtype="datetime64[ns]")
+
+    if not dfpay_all.empty and "Date_Paiement" in dfpay_all.columns and "ID" in dfpay_all.columns:
+        dfpay = dfpay_all.copy()
+        dfpay["ID"] = dfpay["ID"].astype(str).str.strip()
+        dfpay["_dp"] = pd.to_datetime(_safe_parse_series(dfpay["Date_Paiement"]), errors="coerce")
+        first_pay = dfpay.groupby("ID")["_dp"].min()
+    else:
+        first_pay = pd.Series(dtype="datetime64[ns]")
+
+    def _first_valid_date(dc, fi, fp, fpay):
+        cands = []
+        for v in (dc, fi, fp, fpay):
+            if pd.isna(v) or v in (None, ""):
+                continue
+            if isinstance(v, pd.Timestamp):
+                v = v.to_pydatetime()
+            if isinstance(v, datetime):
+                cands.append(v.date())
+            elif isinstance(v, date):
+                cands.append(v)
+        return min(cands) if cands else None
+
+    ref_dates = {}
+    ids = base["ID"].tolist()
+    s_dc = base.set_index("ID")["_dc"] if "ID" in base.columns else pd.Series(dtype=object)
+
+    for cid in ids:
+        dc   = s_dc.get(cid, None) if not s_dc.empty else None
+        fi   = first_inter.get(cid, None) if not first_inter.empty else None
+        fp   = first_part.get(cid, None)  if not first_part.empty else None
+        fpay = first_pay.get(cid, None)   if not first_pay.empty else None
+        ref_dates[cid] = _first_valid_date(dc, fi, fp, fpay)
+
+    base["_ref"] = base["ID"].map(ref_dates)
+    mask = _build_mask_from_dates(base["_ref"], year_sel, month_sel)
+    return base[mask].drop(columns=["_dc","_ref"], errors="ignore")
+
+def event_financials(dfe2, dfpay2):
+    rec_by_evt = pd.Series(dtype=float)
+    if not dfpay2.empty:
+        r = dfpay2[dfpay2.get("Statut","")=="Réglé"].copy()
+        r["Montant"] = pd.to_numeric(r["Montant"], errors='coerce').fillna(0)
+        rec_by_evt = r.groupby("ID_Événement")["Montant"].sum()
+    ev = dfe2 if not dfe2.empty else df_events.copy()
+    if ev.empty:
+        return pd.DataFrame(columns=["ID_Événement","Nom_Événement","Type","Date","Coût_Total","Recette","Bénéfice"])
+    for c in ["Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total","Coût_Total"]:
+        if c not in ev.columns: ev[c] = 0
+        ev[c] = pd.to_numeric(ev[c], errors='coerce').fillna(0)
+    ev["Cout_Total"] = ev["Coût_Total"].where(ev.get("Coût_Total",0)>0, ev[["Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres"]].sum(axis=1))
+    ev = ev.set_index("ID_Événement")
+    rep = pd.DataFrame({
+        "Nom_Événement": ev.get("Nom_Événement",""),
+        "Type": ev.get("Type",""),
+        "Date": ev.get("Date",""),
+        "Coût_Total": ev["Cout_Total"]
+    })
+    rep["Recette"] = rec_by_evt.reindex(rep.index, fill_value=0)
+    rep["Bénéfice"] = rep["Recette"] - rep["Coût_Total"]
+    return rep.reset_index()
+
+dfe2, dfp2, dfpay2, dfcert2 = filtered_tables_for_period(annee, mois)
+dfc2 = filtered_contacts_for_period(annee, mois, df_events, dfs["inter"], dfs["parts"], df_pay)
+
+total_contacts = len(dfc2)
+prospects_actifs = len(dfc2[(dfc2.get("Type","")== "Prospect") & (dfc2.get("Statut","")== "Actif")])
+membres = len(dfc2[dfc2.get("Type","")=="Membre"])
+events_count = len(dfe2)
+parts_total = len(dfp2)
+if not dfpay2.empty:
+    dfpay2["Montant"] = pd.to_numeric(dfpay2["Montant"], errors='coerce').fillna(0)
+    ca_regle = float(dfpay2[dfpay2["Statut"]=="Réglé"]["Montant"].sum())
+    impayes = float(dfpay2[dfpay2["Statut"]!="Réglé"]["Montant"].sum())
+else:
+    ca_regle = 0.0
+    impayes = 0.0
+denom_prospects = max(1, len(dfc2[dfc2.get("Type","")=="Prospect"]))
+taux_conv = (membres / denom_prospects) * 100
+
+df_inter = dfs["inter"]
+if not df_inter.empty:
+    di = _safe_parse_series(df_inter["Date"])
+    mask_i = _build_mask_from_dates(di, annee, mois)
+    dfi2 = df_inter[mask_i].copy()
+else:
+    dfi2 = df_inter.copy()
+
+ids_contacts_periode = set(dfc2.get("ID", pd.Series([], dtype=str)).astype(str))
+ids_inter = set(dfi2.get("ID", pd.Series([], dtype=str)).astype(str)) if not dfi2.empty else set()
+ids_parts = set(dfp2.get("ID", pd.Series([], dtype=str)).astype(str)) if not dfp2.empty else set()
+ids_engaged = (ids_inter | ids_parts) & ids_contacts_periode
+engagement_n = len(ids_engaged)
+engagement_rate = (engagement_n / max(1, len(ids_contacts_periode))) * 100
+
+kpis = {
+    "contacts_total":        ("👥 Contacts (créés / période)", total_contacts),
+    "prospects_actifs":      ("🧲 Prospects actifs (période)", prospects_actifs),
+    "membres":               ("🏆 Membres (période)", membres),
+    "events_count":          ("📅 Événements (période)", events_count),
+    "participations_total":  ("🎟 Participations (période)", parts_total),
+    "ca_regle":              ("💰 CA réglé (période)", f"{int(ca_regle):,} FCFA".replace(",", " ")),
+    "impayes":               ("❌ Impayés (période)", f"{int(impayes):,} FCFA".replace(",", " ")),
+    "taux_conv":             ("🔄 Taux conversion (période)", f"{taux_conv:.1f}%"),
+    "engagement":            ("🙌 Engagement (période)", f"{engagement_rate:.1f}%"),
+}
+enabled = list(kpis.keys())
+ncols = 4
+rows = [enabled[i:i+ncols] for i in range(0, len(enabled), ncols)]
+for row in rows:
+    cols = st.columns(len(row))
+    for col, k in zip(cols, row):
+        label, value = kpis[k]
+        col.metric(label, value)
+
+ev_fin = event_financials(dfe2, dfpay2)
+if not ev_fin.empty:
+    chart1 = alt.Chart(ev_fin.melt(id_vars=["Nom_Événement"], value_vars=["Recette","Coût_Total","Bénéfice"])).mark_bar().encode(
+        x=alt.X("Nom_Événement:N", sort="-y", title="Événement"),
+        y=alt.Y('value:Q', title='Montant (FCFA)'),
+        color=alt.Color('variable:N', title='Indicateur'),
+        tooltip=['Nom_Événement', 'variable', 'value']
+    ).properties(height=300, title='CA vs Coût vs Bénéfice (période)')
+    st.altair_chart(chart1, use_container_width=True)
+
+buf = io.BytesIO()
+with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+    dfc2.to_excel(writer, sheet_name="Contacts(période)", index=False)
+    dfe2.to_excel(writer, sheet_name="Événements(période)", index=False)
+    dfp2.to_excel(writer, sheet_name="Participations(période)", index=False)
+    dfpay2.to_excel(writer, sheet_name="Paiements(période)", index=False)
+    dfcert2.to_excel(writer, sheet_name="Certifications(période)", index=False)
+    ev_fin.to_excel(writer, sheet_name="Finance(période)", index=False)
+st.download_button("⬇ Export Rapport Excel (période)", buf.getvalue(), "rapport_iiba_cameroon_periode.xlsx",
+                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

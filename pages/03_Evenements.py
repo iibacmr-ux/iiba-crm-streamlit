@@ -1,73 +1,104 @@
-# pages/03_Evenements.py — Grille Événements + entreprises via employés & officielles
+# pages/03_Evenements.py
 from __future__ import annotations
-import streamlit as st
 import pandas as pd
-from _shared import load_all_tables, statusbar, filter_and_paginate, parse_date, smart_suggested_filters
+import streamlit as st
+from _shared import (
+    load_all_tables, generate_id, E_COLS, PART_COLS, PAY_COLS, AUDIT_COLS
+)
 
-st.set_page_config(page_title="Événements — IIBA Cameroun", page_icon="📅", layout="wide")
+st.set_page_config(page_title="Événements", page_icon="📅", layout="wide")
+dfs = load_all_tables()
+df_events = dfs["events"]; df_parts = dfs["parts"]; df_pay = dfs["pay"]; df_contacts = dfs["contacts"]; df_ent = dfs["entreprises"]
+PATHS = dfs["PATHS"]; WS_FUNC = dfs["WS_FUNC"]; SET = dfs["SET"]
+
 st.title("📅 Événements")
 
-dfs = load_all_tables()
-dfev = dfs["events"].copy()
-dfp  = dfs["parts"].copy()
-dfc  = dfs["contacts"].copy()
-df_ep = dfs["entreprise_parts"].copy()
+# Sélecteur
+def _label_event(row):
+    dat = row.get("Date","")
+    nom = row.get("Nom_Événement","")
+    typ = row.get("Type","")
+    return f"{row['ID_Événement']} — {nom} — {typ} — {dat}"
 
-# ===== Grille événements avec filtres/pagination =====
-if "Date" in dfev.columns:
-    dfev["_annee"] = pd.to_datetime(dfev["Date"], errors="coerce").dt.year.astype("Int64")
-    dfev["_mois"]  = pd.to_datetime(dfev["Date"], errors="coerce").dt.month.astype("Int64")
-base_filters = ["Type","Ville","Pays","_annee","_mois"]
-suggested = [c for c in base_filters if c in dfev.columns] or smart_suggested_filters(dfev)
-page_df, filtered_df = filter_and_paginate(dfev, key_prefix="ev", page_size_default=20, suggested_filters=suggested)
-statusbar(filtered_df, numeric_keys=["Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total"])
-st.dataframe(page_df.drop(columns=["_annee","_mois"], errors="ignore"), use_container_width=True, hide_index=True)
+options = [] if df_events.empty else df_events.apply(_label_event, axis=1).tolist()
+id_map = {} if df_events.empty else dict(zip(options, df_events["ID_Événement"]))
 
-# ===== Détails par événement sélectionné =====
-sel_ids = ["—"] + filtered_df.get("ID_Événement", pd.Series([], dtype=str)).astype(str).tolist()
-sel_evt = st.selectbox("Sélectionner un événement (ID_Événement)", options=sel_ids, index=0, key="evt_sel")
-if sel_evt and sel_evt != "—":
-    ev = dfev[dfev["ID_Événement"].astype(str)==sel_evt]
-    if not ev.empty:
-        row = ev.iloc[0].to_dict()
-        st.subheader(f"🗂️ Fiche — {row.get('Nom_Événement','(sans nom)')}")
-        c1,c2,c3,c4 = st.columns(4)
-        c1.text_input("ID_Événement", row.get("ID_Événement",""), disabled=True)
-        c2.text_input("Créé le", row.get("Created_At",""), disabled=True)
-        c3.text_input("Modifié le", row.get("Updated_At",""), disabled=True)
-        c4.text_input("Type", row.get("Type",""), disabled=True)
+sel_label = st.selectbox("Événement sélectionné (sélecteur maître)", ["— Aucun —"] + options, index=0)
+sel_eid = id_map.get(sel_label, "") if sel_label and sel_label != "— Aucun —" else ""
 
-        st.markdown("---")
-        tab_parts, tab_emp, tab_off = st.tabs(["🎟 Participations (personnes)","🏢 Entreprises via employés","🏢 Entreprises officielles"])
+st.markdown("---")
+st.subheader("📝 Gérer un événement")
 
-        with tab_parts:
-            parts = dfp[dfp.get("ID_Événement","").astype(str)==sel_evt].copy()
-            suggested = ["Rôle"]
-            suggested = [c for c in suggested if c in parts.columns] or smart_suggested_filters(parts)
-            page_p, filt_p = filter_and_paginate(parts, key_prefix="evt_parts", page_size_default=20,
-                                                 suggested_filters=suggested)
-            statusbar(filt_p, numeric_keys=[])
-            st.dataframe(page_p, use_container_width=True, hide_index=True)
+row_init = {c:"" for c in E_COLS}
+if sel_eid:
+    src = df_events[df_events["ID_Événement"] == sel_eid]
+    if not src.empty:
+        row_init.update(src.iloc[0].to_dict())
 
-        with tab_emp:
-            parts = dfp[dfp.get("ID_Événement","").astype(str)==sel_evt].copy()
-            if not parts.empty and "ID" in parts.columns and "Entreprise" in dfc.columns:
-                emp_ent = parts.merge(dfc[["ID","Entreprise"]], on="ID", how="left")
-                agg = emp_ent.groupby("Entreprise")["ID_Participation"].count().reset_index().rename(columns={"ID_Participation":"Nb_Participants"})
-            else:
-                agg = pd.DataFrame(columns=["Entreprise","Nb_Participants"])
-            suggested = ["Entreprise"]
-            suggested = [c for c in suggested if c in agg.columns] or smart_suggested_filters(agg)
-            page_emp, filt_emp = filter_and_paginate(agg, key_prefix="evt_emp", page_size_default=20,
-                                                     suggested_filters=suggested)
-            statusbar(filt_emp, numeric_keys=["Nb_Participants"])
-            st.dataframe(page_emp, use_container_width=True, hide_index=True)
+with st.form("event_form_main", clear_on_submit=False):
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        nom = st.text_input("Nom_Événement", value=row_init.get("Nom_Événement",""))
+        typ = st.selectbox("Type", SET["types_evt"], index=0 if row_init.get("Type","") not in SET["types_evt"] else SET["types_evt"].index(row_init.get("Type","")))
+        date_ev = st.date_input("Date", value=pd.to_datetime(row_init.get("Date","") or pd.Timestamp.today(), errors="coerce"))
+    with c2:
+        lieu = st.text_input("Lieu", value=row_init.get("Lieu",""))
+        capacite = st.number_input("Capacité", min_value=0, step=1, value=int(float(row_init.get("Capacité") or 0)) if str(row_init.get("Capacité","")).strip() else 0)
+        statut = st.selectbox("Statut", ["Planifié","Publié","Clos","Annulé"], index=0 if row_init.get("Statut","Planifié")=="" else ["Planifié","Publié","Clos","Annulé"].index(row_init.get("Statut","Planifié")))
+    with c3:
+        cout_salle = st.number_input("Cout_Salle", min_value=0, step=1000, value=int(float(row_init.get("Cout_Salle") or 0)) if str(row_init.get("Cout_Salle","")).strip() else 0)
+        cout_form = st.number_input("Cout_Formateur", min_value=0, step=1000, value=int(float(row_init.get("Cout_Formateur") or 0)) if str(row_init.get("Cout_Formateur","")).strip() else 0)
+        cout_log = st.number_input("Cout_Logistique", min_value=0, step=1000, value=int(float(row_init.get("Cout_Logistique") or 0)) if str(row_init.get("Cout_Logistique","")).strip() else 0)
+        cout_pub = st.number_input("Cout_Pub", min_value=0, step=1000, value=int(float(row_init.get("Cout_Pub") or 0)) if str(row_init.get("Cout_Pub","")).strip() else 0)
+        cout_aut = st.number_input("Cout_Autres", min_value=0, step=1000, value=int(float(row_init.get("Cout_Autres") or 0)) if str(row_init.get("Cout_Autres","")).strip() else 0)
+    desc = st.text_area("Description", value=row_init.get("Description",""))
+    colb1, colb2 = st.columns([1,1])
+    if colb1.form_submit_button("💾 Enregistrer / Mettre à jour"):
+        from storage_backend import save_df_target
+        if not sel_eid:
+            new_id = generate_id("EVT", df_events, "ID_Événement")
+            row = {"ID_Événement":new_id,"Nom_Événement":nom,"Type":typ,"Date":str(date_ev.date()),
+                   "Lieu":lieu,"Capacité":int(capacite),"Coût_Total":"",
+                   "Cout_Salle":int(cout_salle),"Cout_Formateur":int(cout_form),"Cout_Logistique":int(cout_log),
+                   "Cout_Pub":int(cout_pub),"Cout_Autres":int(cout_aut),"Statut":statut,"Description":desc}
+            for c in AUDIT_COLS: row.setdefault(c,"")
+            globals()["df_events"] = pd.concat([df_events, pd.DataFrame([row])], ignore_index=True)
+            save_df_target("events", df_events, PATHS, WS_FUNC)
+            st.success(f"Événement créé ({new_id}).")
+        else:
+            idx = df_events.index[df_events["ID_Événement"] == sel_eid]
+            if len(idx):
+                i = idx[0]
+                df_events.loc[i,"Nom_Événement"] = nom
+                df_events.loc[i,"Type"] = typ
+                df_events.loc[i,"Date"] = str(date_ev.date())
+                df_events.loc[i,"Lieu"] = lieu
+                df_events.loc[i,"Capacité"] = int(capacite)
+                df_events.loc[i,"Cout_Salle"] = int(cout_salle)
+                df_events.loc[i,"Cout_Formateur"] = int(cout_form)
+                df_events.loc[i,"Cout_Logistique"] = int(cout_log)
+                df_events.loc[i,"Cout_Pub"] = int(cout_pub)
+                df_events.loc[i,"Cout_Autres"] = int(cout_aut)
+                df_events.loc[i,"Statut"] = statut
+                df_events.loc[i,"Description"] = desc
+                save_df_target("events", df_events, PATHS, WS_FUNC)
+                st.success(f"Événement mis à jour ({sel_eid}).")
 
-        with tab_off:
-            off = df_ep[df_ep.get("ID_Événement","").astype(str)==sel_evt].copy()
-            suggested = ["Type_Lien"]
-            suggested = [c for c in suggested if c in off.columns] or smart_suggested_filters(off)
-            page_off, filt_off = filter_and_paginate(off, key_prefix="evt_off", page_size_default=20,
-                                                     suggested_filters=suggested)
-            statusbar(filt_off, numeric_keys=["Nb_Employes","Sponsoring_FCFA"])
-            st.dataframe(page_off, use_container_width=True, hide_index=True)
+    if colb2.form_submit_button("🆕 Nouveau"):
+        st.experimental_rerun()
+
+st.markdown("---")
+st.subheader("👥 Participants (contacts) de l'événement")
+if df_parts.empty or df_contacts.empty:
+    st.info("Aucune participation enregistrée.")
+else:
+    if sel_eid:
+        dfp = df_parts[df_parts["ID_Événement"] == sel_eid].copy()
+    else:
+        dfp = df_parts.copy()
+    if dfp.empty:
+        st.info("Aucun participant pour l'instant.")
+    else:
+        names = df_contacts.set_index("ID").apply(lambda r: f"{r.get('Prénom','')} {r.get('Nom','')}", axis=1)
+        dfp["Contact"] = dfp["ID"].map(names)
+        st.dataframe(dfp[["ID_Participation","Contact","Rôle","Feedback","Note","ID"]], use_container_width=True)
