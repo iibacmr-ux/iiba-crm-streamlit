@@ -1,22 +1,28 @@
-# pages/02_Entreprises.py
+
 from __future__ import annotations
 from datetime import date
 import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+    HAS_AG = True
+except Exception:
+    HAS_AG = False
+
 from _shared import (
-    load_all_tables, generate_id, to_int_safe, C_COLS, ENT_COLS, AUDIT_COLS
+    load_all_tables, generate_id, to_int_safe, C_COLS, ENT_COLS, AUDIT_COLS, save_df_target
 )
 
 st.set_page_config(page_title="Entreprises", page_icon="🏢", layout="wide")
 dfs = load_all_tables()
 df_contacts = dfs["contacts"]; df_ent = dfs["entreprises"]
 df_events = dfs["events"]; df_parts = dfs["parts"]; df_pay = dfs["pay"]; df_cert = dfs["cert"]
-PATHS = dfs["PATHS"]; WS_FUNC = dfs["WS_FUNC"]; SET = dfs["SET"]
+df_orgparts = dfs["orgparts"]
+PATHS = dfs["PATHS"]; WS_FUNC = dfs["WS_FUNC"]
 
 st.title("🏢 Entreprises")
 
-# Sélecteur entreprise (label = Nom)
+# Sélecteur entreprise (label = ID — Nom_Entreprise)
 def _label_ent(r):
     return f"{r['ID_Entreprise']} — {r.get('Nom_Entreprise','')}"
 options = [] if df_ent.empty else df_ent.apply(_label_ent, axis=1).tolist()
@@ -32,11 +38,20 @@ with col_left:
     show_cols = ["ID_Entreprise","Nom_Entreprise","Secteur","Pays","Ville","Statut_Partenariat","CA_Annuel","Nb_Employés"]
     for c in show_cols:
         if c not in df_ent.columns: df_ent[c] = ""
-    gb = GridOptionsBuilder.from_dataframe(df_ent[show_cols])
-    gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=20)
-    gb.configure_default_column(filter=True, sortable=True, resizable=True)
-    grid = AgGrid(df_ent[show_cols], gridOptions=gb.build(), update_mode=GridUpdateMode.NO_UPDATE, height=360, theme="streamlit")
-
+    if HAS_AG:
+        gb = GridOptionsBuilder.from_dataframe(df_ent[show_cols])
+        gb.configure_pagination(enabled=True, paginationAutoPageSize=False, paginationPageSize=20)
+        gb.configure_default_column(filter=True, sortable=True, resizable=True)
+        gb.configure_grid_options(statusBar={"statusPanels":[
+            {"statusPanel":"agTotalRowCountComponent","align":"left"},
+            {"statusPanel":"agFilteredRowCountComponent"},
+            {"statusPanel":"agSelectedRowCountComponent"},
+            {"statusPanel":"agAggregationComponent"}
+        ]})
+        gb.configure_side_bar()
+        AgGrid(df_ent[show_cols], gridOptions=gb.build(), update_mode=GridUpdateMode.NO_UPDATE, height=360, theme="streamlit")
+    else:
+        st.dataframe(df_ent[show_cols], use_container_width=True)
 with col_right:
     st.subheader("🎯 Statistiques rapides")
     total_entreprises = len(df_ent)
@@ -92,7 +107,6 @@ with st.form("ent_form"):
     ok = st.form_submit_button("💾 Enregistrer")
 
 if ok:
-    from storage_backend import save_df_target
     if not sel_eid:
         new_id = generate_id("ENT", df_ent, "ID_Entreprise")
         row = {
@@ -102,7 +116,7 @@ if ok:
         }
         for c in AUDIT_COLS:
             row.setdefault(c,"")
-        globals()["df_ent"] = pd.concat([df_ent, pd.DataFrame([row])], ignore_index=True)
+        df_ent = pd.concat([df_ent, pd.DataFrame([row])], ignore_index=True)
         save_df_target("entreprises", df_ent, PATHS, WS_FUNC)
         st.success(f"Entreprise créée ({new_id}).")
     else:
@@ -145,19 +159,23 @@ else:
     if not nom_ent.empty:
         comp_name = nom_ent.iloc[0]
         employees = df_contacts[df_contacts.get("Société","") == comp_name][["ID","Nom","Prénom","Société"]].copy()
-    cp_id = row_init.get("Contact_Principal_ID","")
+    # Récupérer l'ID du contact principal actuel
+    src = df_ent[df_ent["ID_Entreprise"] == sel_eid]
+    cp_id = ""
+    if not src.empty:
+        cp_id = src.iloc[0].get("Contact_Principal_ID","")
+
     targets = []
     if cp_id:
         rc = df_contacts[df_contacts["ID"]==cp_id]
         if not rc.empty:
             r=rc.iloc[0]
-            targets.append(("Contact principal", cp_id, f"{r['Prénom']} {r['Nom']}"))
-    # ajouter option "Un employé (sélection)"
+            targets.append(("Contact principal", cp_id, f"{r.get('Prénom','')} {r.get('Nom','')}"))
     targets.append(("Un employé (sélection)", "single", ""))
     if not employees.empty:
         targets.append(("Tous les employés", "all", f"{len(employees)}"))
 
-    tab_int, tab_part, tab_pay, tab_cert = st.tabs(["➕ Interactions", "➕ Participations", "➕ Paiements", "➕ Certifications"])
+    tab_int, tab_part, tab_pay, tab_cert, tab_orga = st.tabs(["➕ Interactions", "➕ Participations", "➕ Paiements", "➕ Certifications", "🏢 Participation officielle"])
 
     with tab_int:
         with st.form("ent_add_inter"):
@@ -173,9 +191,9 @@ else:
             obj = st.text_input("Objet")
             res = st.selectbox("Résultat", ["OK","À suivre","Sans suite","Refus"])
             notes = st.text_area("Notes")
-            ok = st.form_submit_button("💾 Enregistrer")
-            if ok:
-                from storage_backend import save_df_target
+            ok2 = st.form_submit_button("💾 Enregistrer")
+            if ok2:
+                from _shared import generate_id
                 def _add_inter(cid):
                     nid = generate_id("INT", dfs["inter"], "ID_Interaction")
                     row = {"ID_Interaction":nid,"ID":cid,"Date":dte.isoformat(),"Canal":canal,"Objet":obj,"Résultat":res,"Relance":dte.isoformat(),"Responsable":"","Notes":notes}
@@ -208,9 +226,9 @@ else:
                 emp_map = dict(zip(emp_opts, employees["ID"]))
                 _lab = st.selectbox("Employé", emp_opts, index=0)
                 single_id = emp_map.get(_lab,"")
-            ok = st.form_submit_button("💾 Enregistrer")
-            if ok and ev_label:
-                from storage_backend import save_df_target
+            ok3 = st.form_submit_button("💾 Enregistrer")
+            if ok3 and ev_label:
+                from _shared import generate_id
                 def _add_part(cid):
                     nid = generate_id("PAR", dfs["parts"], "ID_Participation")
                     row = {"ID_Participation":nid,"ID":cid,"ID_Événement":ev_map[ev_label],"Rôle":role,"Feedback":fb,"Note":int(note)}
@@ -245,9 +263,9 @@ else:
                 emp_map = dict(zip(emp_opts, employees["ID"]))
                 _lab = st.selectbox("Employé", emp_opts, index=0)
                 single_id = emp_map.get(_lab,"")
-            ok = st.form_submit_button("💾 Enregistrer")
-            if ok and ev_label:
-                from storage_backend import save_df_target
+            ok4 = st.form_submit_button("💾 Enregistrer")
+            if ok4 and ev_label:
+                from _shared import generate_id
                 def _add_pay(cid):
                     nid = generate_id("PAY", dfs["pay"], "ID_Paiement")
                     row = {"ID_Paiement":nid,"ID":cid,"ID_Événement":ev_map[ev_label],"Date_Paiement":dte.isoformat(),
@@ -279,9 +297,9 @@ else:
                 emp_map = dict(zip(emp_opts, employees["ID"]))
                 _lab = st.selectbox("Employé", emp_opts, index=0)
                 single_id = emp_map.get(_lab,"")
-            ok = st.form_submit_button("💾 Enregistrer")
-            if ok:
-                from storage_backend import save_df_target
+            ok5 = st.form_submit_button("💾 Enregistrer")
+            if ok5:
+                from _shared import generate_id
                 def _add_cert(cid):
                     nid = generate_id("CER", dfs["cert"], "ID_Certif")
                     row = {"ID_Certif":nid,"ID":cid,"Type_Certif":tc,"Date_Examen":dte.isoformat(),"Résultat":res,"Score":str(sc),
@@ -290,10 +308,66 @@ else:
                     dfs["cert"] = pd.concat([dfs["cert"], pd.DataFrame([row])], ignore_index=True)
                 if who.startswith("Contact principal") and cp_id:
                     _add_cert(cp_id)
-                elif "Un employé" in who and single_id:
+                elif "Un employé" in qui and single_id:
                     _add_cert(single_id)
                 elif "Tous" in who and not employees.empty:
                     for cid in employees["ID"].tolist():
                         _add_cert(cid)
                 save_df_target("cert", dfs["cert"], PATHS, WS_FUNC)
                 st.success("Certification(s) ajoutée(s).")
+
+    with tab_orga:
+        st.write("Participation **officielle** au nom de l'entreprise (pas via un employé).")
+        with st.form("ent_add_org"):
+            if df_events.empty:
+                st.warning("Aucun événement défini.")
+            ev_options = [] if df_events.empty else df_events.apply(lambda r: f"{r['ID_Événement']} — {r.get('Nom_Événement','')} ({r.get('Date','')})", axis=1).tolist()
+            ev_map = {} if df_events.empty else dict(zip(ev_options, df_events["ID_Événement"]))
+            ev_label = st.selectbox("Événement", [""] + ev_options, index=0)
+            tlink = st.selectbox("Type de lien", dfs["SET"]["types_org_lien"])
+            nb = st.number_input("Nb employés (déclarés)", min_value=0, step=1, value=0)
+            sponsor = st.number_input("Montant sponsoring (FCFA)", min_value=0, step=100000, value=0)
+            notes = st.text_area("Notes")
+            ok6 = st.form_submit_button("💾 Enregistrer")
+            if ok6 and ev_label and sel_eid:
+                from _shared import generate_id
+                nid = generate_id("ORG", df_orgparts, "ID_OrgPart")
+                row = {"ID_OrgPart":nid,"ID_Entreprise":sel_eid,"ID_Événement":ev_map[ev_label],
+                       "Type_Lien":tlink,"Nb_Employés":int(nb),"Montant_Sponsor":int(sponsor),"Notes":notes}
+                for c in AUDIT_COLS: row.setdefault(c,"")
+                df_orgparts = pd.concat([df_orgparts, pd.DataFrame([row])], ignore_index=True)
+                save_df_target("orgparts", df_orgparts, PATHS, WS_FUNC)
+                st.success("Participation officielle enregistrée.")
+
+st.markdown("---")
+st.subheader("🔎 Vue 360° Entreprise")
+if sel_eid:
+    nom_ent = df_ent.loc[df_ent["ID_Entreprise"] == sel_eid, "Nom_Entreprise"].values
+    if len(nom_ent):
+        comp_name = nom_ent[0]
+        st.write(f"**Entreprise:** {comp_name}")
+        emp = df_contacts[df_contacts.get("Société","") == comp_name].copy()
+        st.caption(f"Employés rattachés: {len(emp)}")
+        # Interactions
+        inter_c = dfs["inter"][dfs["inter"]["ID"].isin(emp.get("ID", pd.Series([], dtype=str)))]
+        pay_c = dfs["pay"][dfs["pay"]["ID"].isin(emp.get("ID", pd.Series([], dtype=str)))]
+        cert_c = dfs["cert"][dfs["cert"]["ID"].isin(emp.get("ID", pd.Series([], dtype=str)))]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Interactions", len(inter_c))
+        c2.metric("Participations", len(dfs["parts"][dfs["parts"]["ID"].isin(emp.get("ID", pd.Series([], dtype=str)))]))
+        c3.metric("Certifications", len(cert_c))
+        c4.metric("CA réglé", f"{pd.to_numeric(pay_c['Montant'], errors='coerce').fillna(0).sum():,.0f} FCFA")
+        st.subheader("📋 Détails employés")
+        st.dataframe(emp[["ID","Nom","Prénom","Email","Fonction"]], use_container_width=True)
+        st.subheader("📞 Interactions employées")
+        st.dataframe(inter_c, use_container_width=True)
+        st.subheader("💳 Paiements (employés)")
+        st.dataframe(pay_c, use_container_width=True)
+        st.subheader("🎓 Certifications (employés)")
+        st.dataframe(cert_c, use_container_width=True)
+        st.subheader("🏢 Participations officielles (orgparts)")
+        st.dataframe(df_orgparts[df_orgparts["ID_Entreprise"]==sel_eid], use_container_width=True)
+    else:
+        st.info("Nom entreprise introuvable.")
+else:
+    st.info("Sélectionnez une entreprise pour la Vue 360°.")

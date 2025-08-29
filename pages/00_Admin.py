@@ -1,139 +1,98 @@
-# pages/00_Admin.py
+
 from __future__ import annotations
 import io
 import pandas as pd
 import streamlit as st
-from _shared import load_all_tables, AUDIT_COLS
-from storage_backend import save_df_target
+from _shared import load_all_tables, save_df_target
 
-st.set_page_config(page_title="Admin — Paramètres", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="Admin", page_icon="🛠️", layout="wide")
 dfs = load_all_tables()
-df_params = dfs["params"]
 PATHS = dfs["PATHS"]; WS_FUNC = dfs["WS_FUNC"]
 
-st.title("🛠️ Administration & Paramètres")
+st.title("🛠️ Administration — Paramètres & Données")
 
-st.markdown("Gérez ici les **listes de valeurs** utilisées dans les dropdowns (Fonctions, Secteurs, Pays, Villes, Types d'événement, Rôles, Moyens/Statuts de paiement, Types de certification), ainsi que quelques **KPI cibles**.")
+st.subheader("📋 Listes de valeurs (Paramètres)")
+df_params = dfs["params"].copy()
 
-# Helper to get & set single-line CSV lists in df_params
-def get_param(key: str, default: str = "") -> str:
-    if df_params.empty:
-        return default
-    _df = df_params.copy()
-    cols = [c.lower() for c in _df.columns]
-    if "cle" in cols and "val" in cols:
-        _df.columns = [c.lower() for c in _df.columns]
-        m = _df[_df["cle"] == key]
-        if not m.empty:
-            return str(m.iloc[0]["val"])
-    elif "key" in cols and "value" in cols:
-        _df.columns = [c.lower() for c in _df.columns]
-        m = _df[_df["key"] == key]
-        if not m.empty:
-            return str(m.iloc[0]["value"])
-    return default
+def _val(key, default=""):
+    r = df_params[df_params["cle"]==key]
+    return (r.iloc[0]["val"] if not r.empty else default)
 
-def set_param(key: str, value: str):
-    global df_params
-    cols = [c.lower() for c in df_params.columns]
-    if df_params.empty:
-        df_params = pd.DataFrame(columns=["cle","val"] + AUDIT_COLS)
-        cols = ["cle","val"] + AUDIT_COLS
-    df_params.columns = [c.lower() for c in df_params.columns]
-    if "cle" in df_params.columns and "val" in df_params.columns:
-        mask = (df_params["cle"] == key)
-        if mask.any():
-            df_params.loc[mask, "val"] = value
-        else:
-            row = {"cle": key, "val": value}
-            for c in AUDIT_COLS: row.setdefault(c,"")
-            df_params = pd.concat([df_params, pd.DataFrame([row])], ignore_index=True)
+def _set(key, value):
+    nonlocal_df = st.session_state.setdefault("_params_work", df_params.copy())
+    r = nonlocal_df[nonlocal_df["cle"]==key]
+    if r.empty:
+        nonlocal_df = pd.concat([nonlocal_df, pd.DataFrame([{"cle":key,"val":value}])], ignore_index=True)
     else:
-        # fallback "key"/"value"
-        if "key" not in df_params.columns or "value" not in df_params.columns:
-            df_params = pd.DataFrame(columns=["key","value"] + AUDIT_COLS)
-        mask = (df_params["key"] == key)
-        if mask.any():
-            df_params.loc[mask, "value"] = value
+        nonlocal_df.loc[r.index[0],"val"] = value
+    st.session_state["_params_work"] = nonlocal_df
+
+with st.form("params_form"):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        secteurs = st.text_area("Secteurs (séparés par des virgules)", value=_val("secteurs", ",".join(dfs["SET"]["secteurs"])))
+        fonctions = st.text_area("Fonctions", value=_val("fonctions", ",".join(dfs["SET"]["fonctions"])))
+        types_evt = st.text_area("Types d'événement", value=_val("types_evt", ",".join(dfs["SET"]["types_evt"])))
+    with col2:
+        pays = st.text_area("Pays", value=_val("pays", ",".join(dfs["SET"]["pays"])))
+        villes = st.text_area("Villes", value=_val("villes", ",".join(dfs["SET"]["villes"])))
+        roles_evt = st.text_area("Rôles événement", value=_val("roles_evt", ",".join(dfs["SET"]["roles_evt"])))
+    with col3:
+        moyens = st.text_area("Moyens de paiement", value=_val("moyens_paiement", ",".join(dfs["SET"]["moyens_paiement"])))
+        statuts_pay = st.text_area("Statuts paiement", value=_val("statuts_paiement", ",".join(dfs["SET"]["statuts_paiement"])))
+        types_cert = st.text_area("Types de certification", value=_val("types_certif", ",".join(dfs["SET"]["types_certif"])))
+        types_org = st.text_area("Types de lien entreprise–événement", value=_val("types_org_lien", ",".join(dfs["SET"]["types_org_lien"])))
+
+    ok = st.form_submit_button("💾 Enregistrer les paramètres")
+    if ok:
+        dfw = st.session_state.get("_params_work", df_params.copy())
+        # rafraîchir depuis les champs
+        mapping = {
+            "secteurs": secteurs, "fonctions": fonctions, "types_evt": types_evt,
+            "pays": pays, "villes": villes, "roles_evt": roles_evt,
+            "moyens_paiement": moyens, "statuts_paiement": statuts_pay,
+            "types_certif": types_cert, "types_org_lien": types_org
+        }
+        for k, v in mapping.items():
+            r = dfw[dfw["cle"]==k]
+            if r.empty:
+                dfw = pd.concat([dfw, pd.DataFrame([{"cle":k,"val":v}])], ignore_index=True)
+            else:
+                dfw.loc[r.index[0],"val"] = v
+        save_df_target("params", dfw, PATHS, WS_FUNC)
+        st.success("Paramètres enregistrés.")
+
+st.markdown("---")
+st.subheader("⬇️ Export complet (.xlsx) / ⬆️ Import CSV (table par table)")
+
+# Export Excel
+buf = io.BytesIO()
+with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+    for key in ["contacts","entreprises","events","inter","parts","pay","cert","orgparts","params"]:
+        dfs[key].to_excel(writer, sheet_name=key, index=False)
+st.download_button("⬇️ Exporter toutes les tables (Excel)", buf.getvalue(),
+                   file_name="iiba_crm_export.xlsx",
+                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# Import CSV rapide
+imp_col1, imp_col2 = st.columns(2)
+with imp_col1:
+    st.write("Importer un CSV dans une table :")
+    target = st.selectbox("Table cible", ["contacts","entreprises","events","inter","parts","pay","cert","orgparts","params"])
+    up = st.file_uploader("CSV (UTF-8)", type=["csv"], key="imp_csv")
+    if st.button("📥 Importer"):
+        if up is None:
+            st.error("Choisissez un fichier CSV.")
         else:
-            row = {"key": key, "value": value}
-            for c in AUDIT_COLS: row.setdefault(c,"")
-            df_params = pd.concat([df_params, pd.DataFrame([row])], ignore_index=True)
+            try:
+                newdf = pd.read_csv(up, dtype=str).fillna("")
+                dfs[target] = newdf
+                save_df_target(target, newdf, PATHS, WS_FUNC)
+                st.success(f"Table '{target}' importée avec succès.")
+            except Exception as e:
+                st.error(f"Erreur d'import: {e}")
 
-# UI — List editors
-st.subheader("📋 Listes pour dropdowns")
-lists = [
-    ("Fonctions", "fonctions"),
-    ("Secteurs", "secteurs"),
-    ("Pays", "pays"),
-    ("Villes", "villes"),
-    ("Types d'événement", "types_evt"),
-    ("Rôles événement", "roles_evt"),
-    ("Moyens de paiement", "moyens_paiement"),
-    ("Statuts de paiement", "statuts_paiement"),
-    ("Types de certification", "types_certif"),
-]
-cols = st.columns(3)
-for i, (label, key) in enumerate(lists):
-    with cols[i % 3]:
-        val = get_param(key, "")
-        new = st.text_area(label, value=val, placeholder="Valeurs séparées par des virgules")
-        if st.button(f"💾 Enregistrer {label}", key=f"save_{key}"):
-            set_param(key, new)
-            save_df_target("params", df_params, PATHS, WS_FUNC)
-            st.success(f"{label} mis à jour.")
-
-st.markdown("---")
-st.subheader("🎯 KPI cibles (année courante)")
-y = pd.Timestamp.today().year
-kpis = [
-    (f"kpi_target_contacts_total_year_{y}", "Contacts créés (année)"),
-    (f"kpi_target_participations_total_year_{y}", "Participations (année)"),
-    (f"kpi_target_ca_regle_year_{y}", "CA réglé (FCFA, année)"),
-]
-c1,c2,c3 = st.columns(3)
-for (key, label), col in zip(kpis, [c1,c2,c3]):
-    v = get_param(key, "0")
-    new = col.text_input(label, value=str(v), key=f"inp_{key}")
-    if col.button(f"💾 Enregistrer {label}", key=f"btn_{key}"):
-        set_param(key, new)
-        save_df_target("params", df_params, PATHS, WS_FUNC)
-        st.success(f"{label} mis à jour.")
-
-st.markdown("---")
-st.subheader("📤 Export / 📥 Import des paramètres")
-colx, coly = st.columns(2)
-with colx:
-    if st.button("⬇ Exporter params.csv"):
-        buf = io.StringIO()
-        df_params.to_csv(buf, index=False)
-        st.download_button("Télécharger params.csv", buf.getvalue(), file_name="params.csv", mime="text/csv", use_container_width=True)
-with coly:
-    up = st.file_uploader("Importer params.csv", type=["csv"])
-    if up is not None:
-        try:
-            imp = pd.read_csv(up).fillna("")
-            # Normaliser colonnes
-            cols = [c.lower() for c in imp.columns]
-            if "cle" in cols and "val" in cols:
-                pass
-            elif "key" in cols and "value" in cols:
-                imp = imp.rename(columns={"key":"cle","value":"val"})
-            elif len(imp.columns)>=2:
-                imp = imp.rename(columns={imp.columns[0]:"cle", imp.columns[1]:"val"})
-            # concat/sur-écrire par clé
-            base = df_params.copy()
-            base.columns = [c.lower() for c in base.columns]
-            if "cle" not in base.columns or "val" not in base.columns:
-                base = pd.DataFrame(columns=["cle","val"] + AUDIT_COLS)
-            # merge en priorisant import
-            merged = pd.concat([base[["cle","val"]], imp[["cle","val"]]], ignore_index=True)
-            merged = merged.drop_duplicates(subset=["cle"], keep="last")
-            # reconstruire df_params complet
-            df_params = merged.copy()
-            for c in AUDIT_COLS:
-                if c not in df_params.columns: df_params[c] = ""
-            save_df_target("params", df_params, PATHS, WS_FUNC)
-            st.success("Paramètres importés.")
-        except Exception as e:
-            st.error(f"Import impossible : {e}")
+with imp_col2:
+    st.write("Tables actuelles (taille) :")
+    for key in ["contacts","entreprises","events","inter","parts","pay","cert","orgparts","params"]:
+        st.caption(f"• {key}: {len(dfs[key])} lignes")
