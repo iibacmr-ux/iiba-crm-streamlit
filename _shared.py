@@ -2,6 +2,7 @@
 from __future__ import annotations
 import io
 import re
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple, List
@@ -45,36 +46,62 @@ except Exception:
         df.to_csv(p, index=False, encoding="utf-8")
 
 # ==== Schémas colonnes minimaux ====
-C_COLS = ["ID","Nom","Prenom","Email","Telephone","Type","Statut","Entreprise","Fonction","Pays","Ville",
-          "Top20","Created_At","Created_By","Updated_At","Updated_By","Genre"]
-ENT_COLS = ["ID_Entreprise","Nom_Entreprise","Secteur","Contact_Principal_ID","CA_Annuel","Nb_Employes",
-            "Pays","Ville","Created_At","Created_By","Updated_At","Updated_By"]
-E_COLS = ["ID_Événement","Nom_Événement","Type","Date","Ville","Pays",
-          "Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total",
-          "Created_At","Created_By","Updated_At","Updated_By"]
-PART_COLS = ["ID_Participation","ID","ID_Événement","Rôle","Note","Created_At","Created_By","Updated_At","Updated_By"]
-PAY_COLS  = ["ID_Paiement","ID","ID_Événement","Montant","Statut","Date_Paiement","Created_At","Created_By","Updated_At","Updated_By"]
-CERT_COLS = ["ID_Certif","ID","Intitulé","Résultat","Date_Obtention","Date_Examen","Created_At","Created_By","Updated_At","Updated_By"]
-INTER_COLS = ["ID_Interaction","ID","Canal","Objet","Date","Responsable","Cible","ID_Cible",
-              "Created_At","Created_By","Updated_At","Updated_By"]
-EPART_COLS = ["ID_EntPart","ID_Entreprise","ID_Événement","Type_Lien","Nb_Employes","Sponsoring_FCFA",
-              "Created_At","Created_By","Updated_At","Updated_By"]
+# 0) Colonnes minimales (fallbacks si non définies ailleurs)
+C_COLS = globals().get("C_COLS", ["ID","Nom","Prénom","Genre","Titre","Société","Secteur","Email","Téléphone","LinkedIn","Ville","Pays","Type","Source","Statut","Score_Engagement","Date_Creation","Notes","Top20"])
+I_COLS = globals().get("I_COLS", ["ID_Interaction","ID","Date","Canal","Objet","Résumé","Résultat","Prochaine_Action","Relance","Responsable"])
+E_COLS = globals().get("E_COLS", ["ID_Événement","Nom_Événement","Type","Date","Lieu","Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total"])
+PART_COLS = globals().get("PART_COLS", ["ID_Participation","ID","ID_Événement","Rôle","Feedback","Note"])
+PAY_COLS  = globals().get("PAY_COLS",  ["ID_Paiement","ID","ID_Événement","Date_Paiement","Montant","Moyen","Statut","Référence"])
+CERT_COLS = globals().get("CERT_COLS", ["ID_Certif","ID","Type_Certif","Date_Examen","Résultat","Score","Date_Obtention"])
+ENT_COLS  = globals().get("ENT_COLS",  ["ID_Entreprise","Nom_Entreprise","Secteur","Pays","Ville","Contact_Principal","CA_Annuel","Nb_Employés","Top20","Notes"])
+PARAMS_COLS = globals().get("PARAMS_COLS", ["clé","valeur"])
+U_COLS    = globals().get("U_COLS",    ["user_id","email","password_hash","role","is_active","display_name","Created_At","Created_By","Updated_At","Updated_By"])
+ENT_PARTS_COLS = globals().get("ENT_PARTS_COLS", ["ID_EP","ID_Entreprise","ID_Événement","Type_Lien","Nb_Employés_Envoyés","Sponsoring","Notes"])
 
 # ==== Backend & chemins ====
-DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True, parents=True)
-DEFAULT_PATHS = {
-    "contacts": DATA_DIR / "contacts.csv",
-    "entreprises": DATA_DIR / "entreprises.csv",
-    "events": DATA_DIR / "evenements.csv",
-    "parts": DATA_DIR / "participations.csv",
-    "pay": DATA_DIR / "paiements.csv",
-    "cert": DATA_DIR / "certifications.csv",
-    "inter": DATA_DIR / "interactions.csv",
-    "entreprise_parts": DATA_DIR / "entreprise_participations.csv",
-    "params": DATA_DIR / "parametres.csv",
-    "users": DATA_DIR / "users.csv",
-}
+# 1) Chemins CSV (définis ici pour être visibles de toutes les pages)
+try:
+    PATHS  # déjà défini ? on ne touche pas
+except NameError:
+    DATA_DIR = Path(st.secrets.get("csv_data_dir", "data"))
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PATHS = {
+        "contacts": DATA_DIR / "contacts.csv",
+        "inter": DATA_DIR / "interactions.csv",
+        "events": DATA_DIR / "evenements.csv",
+        "parts": DATA_DIR / "participations.csv",
+        "pay": DATA_DIR / "paiements.csv",
+        "cert": DATA_DIR / "certifications.csv",
+        "entreprises": DATA_DIR / "entreprises.csv",
+        "params": DATA_DIR / "parametres.csv",
+        "users": DATA_DIR / "users.csv",
+        "entreprise_participations": DATA_DIR / "entreprise_participations.csv",
+    }
 
+# 2) Backend utils
+try:
+    from storage_backend import ensure_df_source, AUDIT_COLS, SHEET_NAME
+except Exception:
+    # garde-fous
+    from typing import Dict
+    AUDIT_COLS = ["Created_At","Created_By","Updated_At","Updated_By"]
+    SHEET_NAME = {
+        "contacts":"contacts","inter":"interactions","events":"evenements","parts":"participations",
+        "pay":"paiements","cert":"certifications","entreprises":"entreprises","params":"parametres",
+        "users":"users","entreprise_participations":"entreprise_participations"
+    }
+    def ensure_df_source(name, cols, paths=None, ws_func=None):
+        p = (paths or PATHS)[name]
+        if p.exists():
+            try:
+                return pd.read_csv(p, dtype=str).fillna("")
+            except Exception:
+                return pd.DataFrame(columns=cols)
+        else:
+            df = pd.DataFrame(columns=cols)
+            df.to_csv(p, index=False, encoding="utf-8")
+            return df
+            
 # TTL configurable via secrets, sinon 120 s
 TTL_SECONDS = int(st.secrets.get("cache_ttl_seconds", 120))
 
