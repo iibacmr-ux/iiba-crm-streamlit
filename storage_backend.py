@@ -1,98 +1,72 @@
-# storage_backend.py — backend CSV / Google Sheets avec ETag & verrou optimiste assoupli
+
+# storage_backend.py — DataFrames <-> CSV/Google Sheets avec cache anti-429
 from __future__ import annotations
-from typing import Dict, Optional
 from pathlib import Path
 import hashlib
 import pandas as pd
 import streamlit as st
 
 try:
-    from gspread_dataframe import set_with_dataframe as _set_with_dataframe, get_as_dataframe as _get_as_dataframe
-except Exception:
-    _set_with_dataframe = None
-    _get_as_dataframe = None
+    import gspread
+    from gspread_dataframe import set_with_dataframe, get_as_dataframe
+except Exception:  # pragma: no cover
+    gspread = None
+    def set_with_dataframe(*a, **k): raise RuntimeError("gspread indisponible")
+    def get_as_dataframe(*a, **k): raise RuntimeError("gspread indisponible")
 
-AUDIT_COLS = ["Created_At", "Created_By", "Updated_At", "Updated_By"]
+AUDIT_COLS = ["Created_At","Created_By","Updated_At","Updated_By"]
 SHEET_NAME = {
-    "contacts": "contacts",
-    "inter": "interactions",
-    "events": "evenements",
-    "parts": "participations",
-    "pay": "paiements",
-    "cert": "certifications",
-    "entreprises": "entreprises",
-    "params": "parametres",
-    "users": "users",
+    "contacts":"contacts","inter":"interactions","events":"evenements","parts":"participations",
+    "pay":"paiements","cert":"certifications","entreprises":"entreprises","params":"parametres",
+    "users":"users","orgparts":"entreprise_participations",
 }
 
-def _id_col_for(name: str) -> str:
-    return {
-        "contacts": "ID",
-        "inter": "ID_Interaction",
-        "events": "ID_Événement",
-        "parts": "ID_Participation",
-        "pay": "ID_Paiement",
-        "cert": "ID_Certif",
-        "entreprises": "ID_Entreprise",
-        "users": "user_id",
-        "params": "Param",
-    }.get(name, "ID")
-
 def compute_etag(df: pd.DataFrame, name: str) -> str:
-    """ETag stable basé sur colonnes d'identité + Updated_At si présente."""
     if df is None or df.empty:
         return "empty"
-    idc = _id_col_for(name)
-    cols = [c for c in [idc, "Updated_At"] if c in df.columns]
-    try:
-        payload = df[cols].astype(str).fillna("").sort_values(by=cols).to_csv(index=False)
-    except Exception:
-        payload = df.astype(str).fillna("").to_csv(index=False)
+    payload = df.astype(str).fillna("").to_csv(index=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-def _lock_enabled() -> bool:
-    # secret "optimistic_lock" = off/0/false pour désactiver le verrou globalement
-    val = str(st.secrets.get("optimistic_lock", "on")).lower()
-    if val in ("0","off","false","no"):
-        return False
-    # flag de session pour désactiver ponctuellement
-    if st.session_state.get("_lock_disable", False):
-        return False
-    return True
+def _dfcache_key(tab: str) -> str:
+    return f"__DF_CACHE__::{tab}"
 
-def ensure_df_source(name: str, cols: list, paths: Dict[str, Path] = None, ws_func=None) -> pd.DataFrame:
-    """Charge une table depuis CSV ou Google Sheets et prépare les colonnes."""
-    full_cols = list(dict.fromkeys(cols + [c for c in AUDIT_COLS if c not in cols]))
+def ensure_df_source(name: str, cols: list, paths: dict = None, ws_func=None) -> pd.DataFrame:
+    full_cols = list(dict.fromkeys(cols + AUDIT_COLS))
     backend = st.secrets.get("storage_backend", "csv")
-
+    # ---- Google Sheets
     if backend == "gsheets":
         if ws_func is None:
             raise RuntimeError("ws_func requis pour backend gsheets")
         tab = SHEET_NAME.get(name, name)
-        ws = ws_func(tab)
-        if _get_as_dataframe is None:
-            raise RuntimeError("gspread indisponible")
-        df = _get_as_dataframe(ws, evaluate_formulas=True, header=0)
-        if df is None or df.empty:
-            df = pd.DataFrame(columns=full_cols)
-            if _set_with_dataframe:
-                _set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
+        # cache DF local pour limiter les lectures répétées
+        cache_key = _dfcache_key(tab)
+        if cache_key in st.session_state:
+            df = st.session_state[cache_key].copy()
         else:
-            df = df.fillna("")
+            wsh = ws_func(tab)   # ws(...) est lui-même mis en cache (gs_client)
+            try:
+                df = get_as_dataframe(wsh, evaluate_formulas=True, header=0)
+            except Exception as e:
+                raise
+            if df is None or df.empty:
+                df = pd.DataFrame(columns=full_cols)
+                set_with_dataframe(wsh, df, include_index=False, include_column_header=True, resize=True)
+            # normalisation colonnes
             for c in full_cols:
                 if c not in df.columns:
                     df[c] = ""
-            df = df[full_cols]
+            df = df[full_cols].astype(str).fillna("")
+            st.session_state[cache_key] = df.copy()
         st.session_state[f"etag_{name}"] = compute_etag(df, name)
         return df
 
-    # CSV fallback
+    # ---- CSV (fallback)
     if paths is None or name not in paths:
         raise RuntimeError("PATHS manquant pour CSV backend")
     path = paths[name]
+    path.parent.mkdir(exist_ok=True)
     if not path.exists():
         df = pd.DataFrame(columns=full_cols)
-        path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(path, index=False, encoding="utf-8")
     else:
         try:
@@ -100,48 +74,55 @@ def ensure_df_source(name: str, cols: list, paths: Dict[str, Path] = None, ws_fu
         except Exception:
             df = pd.DataFrame(columns=full_cols)
     for c in full_cols:
-        if c not in df.columns:
-            df[c] = ""
+        if c not in df.columns: df[c] = ""
     df = df[full_cols]
     st.session_state[f"etag_{name}"] = compute_etag(df, name)
     return df
 
-def save_df_target(name: str, df: pd.DataFrame, paths: Optional[Dict[str, Path]] = None, ws_func=None, override: bool=False):
-    """Sauvegarde avec verrou optimiste (désactivable) et mode 'override'."""
+def save_df_target(name: str, df: pd.DataFrame, paths: dict = None, ws_func=None):
     backend = st.secrets.get("storage_backend", "csv")
-
+    # ---- Google Sheets
     if backend == "gsheets":
         if ws_func is None:
             raise RuntimeError("ws_func requis pour backend gsheets")
         tab = SHEET_NAME.get(name, name)
-        ws = ws_func(tab)
-        if _get_as_dataframe is None or _set_with_dataframe is None:
-            raise RuntimeError("gspread indisponible")
-        df_remote = _get_as_dataframe(ws, evaluate_formulas=True, header=0)
+        wsh = ws_func(tab)
+        # optimistic lock simple basé sur cache local
+        cache_key = _dfcache_key(tab)
+        df_remote = None
+        if cache_key in st.session_state:
+            df_remote = st.session_state[cache_key]
+        else:
+            try:
+                df_remote = get_as_dataframe(wsh, evaluate_formulas=True, header=0)
+            except Exception:
+                df_remote = None
         if df_remote is None:
             df_remote = pd.DataFrame(columns=df.columns)
         expected = st.session_state.get(f"etag_{name}")
         current = compute_etag(df_remote, name)
-        if _lock_enabled() and (not override) and expected and expected != current:
-            st.error(f"Conflit de modification détecté sur '{tab}'. Veuillez recharger la page ou cocher 'Forcer la sauvegarde'.")
+        if expected and expected != current:
+            st.error(f"Conflit de modification détecté sur '{tab}'. Veuillez recharger la page.")
             st.stop()
-        _set_with_dataframe(ws, df, include_index=False, include_column_header=True, resize=True)
+        set_with_dataframe(wsh, df, include_index=False, include_column_header=True, resize=True)
+        st.session_state[cache_key] = df.copy()
         st.session_state[f"etag_{name}"] = compute_etag(df, name)
         return
 
-    # CSV
+    # ---- CSV (fallback)
     if paths is None or name not in paths:
         raise RuntimeError("PATHS manquant pour CSV backend")
     path = paths[name]
+    path.parent.mkdir(exist_ok=True)
+    # optimistic lock
     try:
         cur = pd.read_csv(path, dtype=str).fillna("")
     except Exception:
         cur = pd.DataFrame(columns=df.columns)
     expected = st.session_state.get(f"etag_{name}")
     current = compute_etag(cur, name)
-    if _lock_enabled() and (not override) and expected and expected != current:
-        st.error(f"Conflit de modification détecté sur '{name}'. Veuillez recharger la page ou cocher 'Forcer la sauvegarde'.")
+    if expected and expected != current:
+        st.error(f"Conflit de modification détecté sur '{name}'. Veuillez recharger la page.")
         st.stop()
-    path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False, encoding="utf-8")
     st.session_state[f"etag_{name}"] = compute_etag(df, name)
