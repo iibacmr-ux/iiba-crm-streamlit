@@ -467,19 +467,19 @@ with cL:
             notes = st.text_area("Notes", d.get("Notes",""))
             top20 = st.checkbox("Top-20 entreprise", value=str(d.get("Top20","")).lower() in ("1","true","yes"))
 
-            if st.button("💾 Enregistrer les modifications (le contact)") and selected_id:
+            if st.button("💾 Enregistrer les modifications (le contact)") and sel_id:
                 ws = st.session_state.get("WS_FUNC")
                 upd = {
-                    "ID": selected_id,
+                    "ID": sel_id,
                     "Nom": nom, "Prénom": prenom, "Genre": genre, "Titre": titre,
                     "Société": societe, "Secteur": secteur, "Email": email, "Téléphone": tel,
-                    "LinkedIn": linkedin, "Ville": ville, "Pays": pays, "Type": typ, "Source": source,
+                    "LinkedIn": linkedin, "Ville": ville, "Pays": pays, "Type": typec, "Source": source,
                     "Statut": statut, "Score_Engagement": score, "Notes": notes, "Top20": "1" if top20 else "",
                 }
                 df_after, created = atomic_upsert("contacts", C_COLS, "ID", upd,
                                      user_email=st.session_state.get("auth_user",{}).get("email","system"),
                                      ws_func=ws, paths=PATHS)
-                st.success(f"Contact mis à jour ({selected_id})")
+                st.success(f"Contact mis à jour ({sel_id})")
                 st.rerun()
 
 
@@ -566,11 +566,11 @@ with cR:
 
                 a1, a2, a3 = st.columns(3)
                 dti   = a1.date_input("Date", value=date.today())
-                canal = a2.selectbox("Canal", options=canaux or ["—"], index=0)
+                canal_sel = a2.selectbox("Canal", options=canaux or ["—"], index=0)
                 resp  = a3.selectbox("Responsable", options=responsabs or ["—"], index=0)
 
                 obj = st.text_input("Objet")
-                resu = st.selectbox("Résultat", options=resultats or ["—"], index=0)
+                result_sel = st.selectbox("Résultat", options=resultats or ["—"], index=0)
                 resume = st.text_area("Résumé")
                 add_rel = st.checkbox("Planifier une relance ?")
                 rel = st.date_input("Relance", value=date.today()) if add_rel else None
@@ -581,10 +581,10 @@ with cR:
                     new_id = generate_id("INT", df_fresh_int, "ID_Interaction")
                     row = {
                         "ID_Interaction": new_id,
-                        "ID": selected_id,
-                        "Date": str(date_interaction) if date_interaction else "",
-                        "Canal": canal_sel, "Objet": objet, "Résumé": resume, "Résultat": result_sel,
-                        "Prochaine_Action": prochaine_action, "Relance": relance, "Responsable": resp_sel,
+                        "ID": sel_id,
+                        "Date": str(dti) if dti else "",
+                        "Canal": canal_sel, "Objet": obj, "Résumé": resume, "Résultat": result_sel,
+                        "Prochaine_Action": add_rel, "Relance": rel, "Responsable": resp,
                     }
                     atomic_append_row("interactions", I_COLS, row,
                         user_email=st.session_state.get("auth_user",{}).get("email","system"),
@@ -595,6 +595,11 @@ with cR:
                 
     # --- PARTICIPATION ---
     with tabs[1]:
+        # --> pour participation :
+        evt_map = make_event_label_map(df_events)  # {label -> ID}
+        evt_labels = sorted(evt_map.keys()) if evt_map else ["—"]
+        label_sel_part = st.selectbox("Événement", options=evt_labels, index=0, key="evt_part")
+        evt_id_part = evt_map.get(label_sel_part, "")
         if not sel_id:
             st.info("Sélectionnez d’abord un contact.")
         else:
@@ -603,9 +608,7 @@ with cR:
             else:
                 with st.form("form_add_part"):
                     e1, e2 = st.columns(2)
-                    evt_map = make_event_label_map(df_events)  # {label->ID}
-                    evt_labels = sorted(evt_map.keys()) if evt_map else ["—"]
-                    label_sel_part = e1.selectbox("Événement", options=evt_labels, index=0, key="evt_part")
+                    ide  = e1.selectbox("Événement", df_events["ID_Événement"].tolist())
                     role = e2.selectbox("Rôle", ["Participant","Animateur","Invité"])
                     f1, f2 = st.columns(2)
                     fb   = f1.selectbox("Feedback", ["Très satisfait","Satisfait","Moyen","Insatisfait"])
@@ -618,12 +621,12 @@ with cR:
                         new_id = generate_id("PAR", df_fresh_part, "ID_Participation")
                         row = {
                             "ID_Participation": new_id,
-                            "ID": selected_id,
-                            "ID_Événement": evt_map.get(label_sel_part, ""),
+                            "ID": sel_id,
+                            "ID_Événement": ide,
                             "Rôle": role,
                             "Feedback": fb,
                             "Note": note,
-                            "Commentaire": comment_part,
+                            "Commentaire": comment_part,   # <- ajouté
                         }
                         atomic_append_row("participations", PART_COLS, row,
                             user_email=st.session_state.get("auth_user",{}).get("email","system"),
@@ -634,6 +637,11 @@ with cR:
                     
     # --- PAIEMENT ---
     with tabs[2]:
+        # --> pour paiements :
+        evt_map = make_event_label_map(df_events)  # {label -> ID}
+        evt_labels = sorted(evt_map.keys()) if evt_map else ["—"]
+        label_sel_pay = st.selectbox("Événement", options=evt_labels, index=0, key="evt_pay")
+        evt_id_pay = evt_map.get(label_sel_pay, "")
         if not sel_id:
             st.info("Sélectionnez d’abord un contact.")
         else:
@@ -643,10 +651,9 @@ with cR:
                 with st.form("form_add_pay"):
                     moyens  = get_param_list("moyens_paiement", "Cash,Mobile Money,CB,Virement")
                     statuts = get_param_list("statuts_paiement", "Réglé,Partiel,En attente,Annulé")
+                    
                     p1, p2 = st.columns(2)
-                    evt_map2 = make_event_label_map(df_events)
-                    evt_labels2 = sorted(evt_map2.keys()) if evt_map2 else ["—"]
-                    label_sel_pay = p1.selectbox("Événement", options=evt_labels2, index=0, key="evt_pay")
+                    ide = p1.selectbox("Événement", df_events["ID_Événement"].tolist())
                     dtp = p2.date_input("Date paiement", value=date.today())
                     p3, p4, p5 = st.columns(3)
                     montant = p3.number_input("Montant (FCFA)", min_value=0, step=1000)
@@ -654,18 +661,19 @@ with cR:
                     statut  = p5.selectbox("Statut", options=statuts or ["—"], index=0)
                     ref = st.text_input("Référence")
                     comment_pay  = st.text_area("Commentaire (Paiement)", key="comment_pay")
+                    
                     if st.button("💾 Enregistrer le paiement"):
                         ws = st.session_state.get("WS_FUNC")
                         df_fresh_pay = ensure_df_source("paiements", PAY_COLS, PATHS, ws)
                         new_id = generate_id("PAY", df_fresh_pay, "ID_Paiement")
                         row = {
                             "ID_Paiement": new_id,
-                            "ID": selected_id,
-                            "ID_Événement": evt_map2.get(label_sel_pay, ""),
-                            "Date_Paiement": str(dtp) if dtp else "",
-                            "Montant": str(montant or ""),
-                            "Moyen": moyen, "Statut": statut, "Référence": ref,
-                            "Commentaire": comment_pay,
+                            "ID": sel_id,
+                            "ID_Événement": evt_id_pay,
+                            "Date_Paiement": str(date_pay) if date_pay else "",
+                            "Montant": str(montant_pay or ""),
+                            "Moyen": moyen_sel, "Statut": statut_sel, "Référence": reference_pay,
+                            "Commentaire": comment_pay,    # <- ajouté
                         }
                         atomic_append_row("paiements", PAY_COLS, row,
                             user_email=st.session_state.get("auth_user",{}).get("email","system"),
@@ -697,7 +705,7 @@ with cR:
                     new_id = generate_id("CER", df_fresh_cert, "ID_Certif")
                     row = {
                         "ID_Certif": new_id,
-                        "ID": selected_id,
+                        "ID": sel_id,
                         "Type_Certif": type_sel,
                         "Date_Examen": str(date_exam) if date_exam else "",
                         "Résultat": result_cert, "Score": score_cert,
