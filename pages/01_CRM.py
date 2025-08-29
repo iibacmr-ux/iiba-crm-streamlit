@@ -358,13 +358,16 @@ proba_style = JsCode("""
 """) if HAS_AGGRID else None
 
 style_map = {"Proba_conversion": proba_style} if proba_style else None
-grid = _aggrid(dfc[table_cols], page_size=page_size, key="crm_grid", side_bar=True, single_select=True, style_cols=style_map)
+grid = _aggrid(dfc[table_cols], page_size=page_size, key="crm_grid", side_bar=True, single_select=True, style_cols=style_map) 
 
-if grid and grid.get("selected_rows"):
-    row0 = grid["selected_rows"][0]
+# Récupération du DataFrame des lignes sélectionnées
+selected_df = grid.selected_rows  # c'est un DataFrame Pandas
+if selected_df is not None and not selected_df.empty:
+    # On prend la première ligne sélectionnée
+    row0 = selected_df.iloc[0]
     if "ID" in row0:
         st.session_state["selected_contact_id"] = row0["ID"]
-
+        
 st.markdown("---")
 cL, cR = st.columns([1,2])
 
