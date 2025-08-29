@@ -5,6 +5,7 @@ from datetime import datetime
 import hashlib
 import pandas as pd
 import streamlit as st
+from _shared import load_all_tables, render_global_filter_panel
 
 from storage_backend import (
     AUDIT_COLS, SHEET_NAME,
@@ -182,7 +183,6 @@ if "auth_user" in st.session_state:
     st.write("🟢 Vous êtes connecté. Utilisez le menu de gauche pour accéder aux pages.")
     # ——— Filtre global inter-pages ———
     try:
-        from _shared import load_all_tables, render_global_filter_panel
         dfs_for_filters = load_all_tables()  # cache -> pas de surcoût
         render_global_filter_panel(dfs_for_filters)  # met à jour st.session_state["GLOBAL_FILTERS"]
     except Exception as e:
