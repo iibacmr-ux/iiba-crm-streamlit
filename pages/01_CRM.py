@@ -593,15 +593,6 @@ with cR:
                     st.rerun()
                 
                 
-evt_map = make_event_label_map(df_events)  # {label -> ID}
-evt_labels = sorted(evt_map.keys()) if evt_map else ["—"]
-label_sel_part = st.selectbox("Événement", options=evt_labels, index=0, key="evt_part")
-evt_id_part = evt_map.get(label_sel_part, "")
-# --> pour paiements :
-label_sel_pay = st.selectbox("Événement", options=evt_labels, index=0, key="evt_pay")
-evt_id_pay = evt_map.get(label_sel_pay, "")
-
-
     # --- PARTICIPATION ---
     with tabs[1]:
         if not sel_id:
@@ -612,7 +603,9 @@ evt_id_pay = evt_map.get(label_sel_pay, "")
             else:
                 with st.form("form_add_part"):
                     e1, e2 = st.columns(2)
-                    ide  = e1.selectbox("Événement", df_events["ID_Événement"].tolist())
+                    evt_map = make_event_label_map(df_events)  # {label->ID}
+                    evt_labels = sorted(evt_map.keys()) if evt_map else ["—"]
+                    label_sel_part = e1.selectbox("Événement", options=evt_labels, index=0, key="evt_part")
                     role = e2.selectbox("Rôle", ["Participant","Animateur","Invité"])
                     f1, f2 = st.columns(2)
                     fb   = f1.selectbox("Feedback", ["Très satisfait","Satisfait","Moyen","Insatisfait"])
@@ -626,11 +619,11 @@ evt_id_pay = evt_map.get(label_sel_pay, "")
                         row = {
                             "ID_Participation": new_id,
                             "ID": selected_id,
-                            "ID_Événement": evt_id_part,
-                            "Rôle": role_part,
-                            "Feedback": feedback_part,
-                            "Note": note_part,
-                            "Commentaire": comment_part,   # <- ajouté
+                            "ID_Événement": evt_map.get(label_sel_part, ""),
+                            "Rôle": role,
+                            "Feedback": fb,
+                            "Note": note,
+                            "Commentaire": comment_part,
                         }
                         atomic_append_row("participations", PART_COLS, row,
                             user_email=st.session_state.get("auth_user",{}).get("email","system"),
@@ -650,9 +643,10 @@ evt_id_pay = evt_map.get(label_sel_pay, "")
                 with st.form("form_add_pay"):
                     moyens  = get_param_list("moyens_paiement", "Cash,Mobile Money,CB,Virement")
                     statuts = get_param_list("statuts_paiement", "Réglé,Partiel,En attente,Annulé")
-                    
                     p1, p2 = st.columns(2)
-                    ide = p1.selectbox("Événement", df_events["ID_Événement"].tolist())
+                    evt_map2 = make_event_label_map(df_events)
+                    evt_labels2 = sorted(evt_map2.keys()) if evt_map2 else ["—"]
+                    label_sel_pay = p1.selectbox("Événement", options=evt_labels2, index=0, key="evt_pay")
                     dtp = p2.date_input("Date paiement", value=date.today())
                     p3, p4, p5 = st.columns(3)
                     montant = p3.number_input("Montant (FCFA)", min_value=0, step=1000)
@@ -660,7 +654,6 @@ evt_id_pay = evt_map.get(label_sel_pay, "")
                     statut  = p5.selectbox("Statut", options=statuts or ["—"], index=0)
                     ref = st.text_input("Référence")
                     comment_pay  = st.text_area("Commentaire (Paiement)", key="comment_pay")
-                    
                     if st.button("💾 Enregistrer le paiement"):
                         ws = st.session_state.get("WS_FUNC")
                         df_fresh_pay = ensure_df_source("paiements", PAY_COLS, PATHS, ws)
@@ -668,11 +661,11 @@ evt_id_pay = evt_map.get(label_sel_pay, "")
                         row = {
                             "ID_Paiement": new_id,
                             "ID": selected_id,
-                            "ID_Événement": evt_id_pay,
-                            "Date_Paiement": str(date_pay) if date_pay else "",
-                            "Montant": str(montant_pay or ""),
-                            "Moyen": moyen_sel, "Statut": statut_sel, "Référence": reference_pay,
-                            "Commentaire": comment_pay,    # <- ajouté
+                            "ID_Événement": evt_map2.get(label_sel_pay, ""),
+                            "Date_Paiement": str(dtp) if dtp else "",
+                            "Montant": str(montant or ""),
+                            "Moyen": moyen, "Statut": statut, "Référence": ref,
+                            "Commentaire": comment_pay,
                         }
                         atomic_append_row("paiements", PAY_COLS, row,
                             user_email=st.session_state.get("auth_user",{}).get("email","system"),
