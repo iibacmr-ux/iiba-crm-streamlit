@@ -139,15 +139,18 @@ if hasattr(SH, "render_global_filter_panel"):
     except Exception as e:
         st.sidebar.warning(f"Filtre global indisponible : {e}")
 
-# Auth requise
-if "user" not in st.session_state:
+# Auth requise 
+user = st.session_state.get("auth_user") or st.session_state.get("user")
+st.session_state["user"] = user
+if not user: 
     st.info("🔐 Veuillez vous connecter depuis la page principale pour accéder au CRM.")
     st.stop()
+
 
 user = st.session_state.get("user", {})
 
 # Chargement (cache) de toutes les tables nécessaires à la page
-dfs = load_all_tables()
+dfs = load_all_tables(use_cache_only=True)
 df_contacts     = _ensure_cols(dfs.get("contacts", pd.DataFrame()),      ["ID","Nom","Prénom","Société","Email","Type","Statut","Top20","Date_Creation"])
 df_inter        = _ensure_cols(dfs.get("interactions", pd.DataFrame()),  ["ID_Interaction","ID","Date","Canal","Objet","Résumé","Résultat","Prochaine_Action","Relance","Responsable"])
 df_events       = _ensure_cols(dfs.get("evenements", pd.DataFrame()),    ["ID_Événement","Nom_Événement","Type","Date","Lieu","Cout_Total"])
@@ -434,6 +437,7 @@ with cL:
                 if save_df_target:
                     try:
                         save_df_target("contacts", df_contacts, getattr(SH, "PATHS", None), WS_FUNC)
+                        st.cache_data.clear()  # force une relecture au prochain run
                     except Exception as e:
                         st.error(f"Échec sauvegarde (contacts) : {e}")
                         st.stop()
@@ -507,6 +511,7 @@ with cL:
                     if save_df_target:
                         try:
                             save_df_target("contacts", df_new, getattr(SH, "PATHS", None), WS_FUNC)
+                            st.cache_data.clear()  # force une relecture au prochain run
                         except Exception as e:
                             st.error(f"Échec sauvegarde (contacts) : {e}")
                             st.stop()
@@ -551,6 +556,7 @@ with cR:
                     if save_df_target:
                         try:
                             save_df_target("inter", df_new, getattr(SH, "PATHS", None), WS_FUNC)
+                            st.cache_data.clear()  # force une relecture au prochain run
                         except Exception as e:
                             st.error(f"Échec sauvegarde (interactions) : {e}")
                             st.stop()
@@ -615,6 +621,7 @@ with cR:
                         if save_df_target:
                             try:
                                 save_df_target("pay", df_new, getattr(SH, "PATHS", None), WS_FUNC)
+                                st.cache_data.clear()  # force une relecture au prochain run
                             except Exception as e:
                                 st.error(f"Échec sauvegarde (paiements) : {e}")
                                 st.stop()
@@ -646,6 +653,7 @@ with cR:
                     if save_df_target:
                         try:
                             save_df_target("cert", df_new, getattr(SH, "PATHS", None), WS_FUNC)
+                            st.cache_data.clear()  # force une relecture au prochain run
                         except Exception as e:
                             st.error(f"Échec sauvegarde (certifications) : {e}")
                             st.stop()
