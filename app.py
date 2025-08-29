@@ -123,10 +123,13 @@ def authenticate_user(email: str, password: str, df_users: pd.DataFrame):
 
 # ---------- Chargement et seed Users ----------
 @st.cache_data(show_spinner=False)
-def load_users(ws_func, paths):
+def load_users(paths):
+    ws_func = None
+    if st.session_state.get("BACKEND_EFFECTIVE") == "gsheets":
+        ws_func = st.session_state.get("WS_FUNC")
     return ensure_df_source("users", U_COLS, paths, ws_func)
 
-df_users = load_users(st.session_state.get("WS_FUNC"), PATHS)
+df_users = load_users(PATHS)
 before_len = len(df_users)
 df_users = ensure_default_users(df_users)
 after_len = len(df_users)
