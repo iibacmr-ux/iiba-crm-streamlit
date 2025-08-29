@@ -75,6 +75,92 @@ DEFAULT_PATHS = {
     "users": DATA_DIR / "users.csv",
 }
 
+# TTL configurable via secrets, sinon 120 s
+TTL_SECONDS = int(st.secrets.get("cache_ttl_seconds", 120))
+
+def _now_ts() -> float:
+    return time.time()
+
+def _gsheets_retry(fn, *args, **kwargs):
+    """
+    Petit backoff pour limiter les 429 (read per minute).
+    On tente jusqu'à 3 fois avec délais (0.8s puis 1.6s).
+    """
+    delays = [0.8, 1.6]
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        msg = str(e)
+        if "429" not in msg:
+            raise
+        # 1er retry
+        time.sleep(delays[0])
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e2:
+            if "429" not in str(e2):
+                raise
+            # 2e retry
+            time.sleep(delays[1])
+            return fn(*args, **kwargs)
+
+def _read_table(name: str, cols: list, paths: dict, ws_func):
+    """
+    Lecture d'une table avec retries 429 si backend gsheets.
+    """
+    backend = st.secrets.get("storage_backend", "csv")
+    if backend == "gsheets":
+        return _gsheets_retry(ensure_df_source, name, cols, paths, ws_func)
+    return ensure_df_source(name, cols, paths, ws_func)
+
+@st.cache_data(show_spinner=False, ttl=TTL_SECONDS)
+def _read_all_tables_cached(_cache_key: str) -> dict:
+    """
+    Fonction réellement exécutée à froid (cache par clé stable).
+    NB : on ne passe pas ws_func à cache_data (non sérialisable).
+    On le récupère via st.session_state à l'intérieur.
+    """
+    ws_func = st.session_state.get("WS_FUNC")  # peut être None (CSV)
+    paths   = PATHS  # supposé défini dans _shared.py comme aujourd’hui
+
+    dfs = {}
+    # ⚠️ gardez vos schémas / colonnes de référence :
+    dfs["contacts"]                = _read_table("contacts", C_COLS, paths, ws_func)
+    dfs["interactions"]            = _read_table("inter", I_COLS, paths, ws_func)
+    dfs["evenements"]              = _read_table("events", E_COLS, paths, ws_func)
+    dfs["participations"]          = _read_table("parts", PART_COLS, paths, ws_func)
+    dfs["paiements"]               = _read_table("pay",  PAY_COLS, paths, ws_func)
+    dfs["certifications"]          = _read_table("cert", CERT_COLS, paths, ws_func)
+    dfs["entreprises"]             = _read_table("entreprises", ENT_COLS, paths, ws_func)
+    dfs["parametres"]              = _read_table("params", PARAMS_COLS, paths, ws_func)
+    dfs["users"]                   = _read_table("users", U_COLS, paths, ws_func)
+    # si vous avez cette table :
+    if "entreprise_participations" in SHEET_NAME:
+        dfs["entreprise_participations"] = _read_table("entreprise_participations", ENT_PARTS_COLS, paths, ws_func)
+
+    # Normalisation minimale pour éviter les “truth value of DataFrame is ambiguous”
+    for k, v in list(dfs.items()):
+        if v is None or not isinstance(v, pd.DataFrame):
+            dfs[k] = pd.DataFrame(columns=globals().get(f"{k.upper()[0:3]}_COLS", []))
+        else:
+            dfs[k] = v.fillna("")
+
+    # mémorise aussi en RAM (accès ultra-rapide pour “lecture rapide”)
+    st.session_state["__dfs_cache_obj__"] = dfs
+    st.session_state["__dfs_cache_ts__"]  = _now_ts()
+    return dfs
+
+def _make_cache_key() -> str:
+    """
+    Clé stable de cache : backend + spreadsheet id/titre.
+    Evite que cache_data recalculé sans raison.
+    """
+    backend = st.secrets.get("storage_backend", "csv")
+    if backend != "gsheets":
+        return f"csv::{str(PATHS)}"
+    sid = st.secrets.get("gsheet_spreadsheet_id") or st.secrets.get("gsheet_spreadsheet") or "unknown"
+    return f"gs::{sid}"
+
 def _paths() -> Dict[str, Path]:
     return st.session_state.get("PATHS", DEFAULT_PATHS)
 
@@ -82,39 +168,31 @@ def _ws_func():
     return st.session_state.get("WS_FUNC", None)
 
 # ==== Chargement groupé ====
-def load_all_tables() -> Dict[str, pd.DataFrame]:
-    paths = _paths()
-    backend_eff = st.session_state.get("BACKEND_EFFECTIVE", st.secrets.get("storage_backend","csv")).strip().lower()
-    ws = _ws_func() if backend_eff == "gsheets" else None
+def load_all_tables(use_cache_only: bool = False) -> dict:
+    """
+    - use_cache_only=True  ➜ ne JAMAIS relire Google Sheets ; rend le cache s'il existe et est “frais”.
+    - use_cache_only=False ➜ si TTL expiré, relire (avec cache_data) sinon servir le cache.
+    """
+    # 1) si on a un cache RAM récent et qu'on a explicitement demandé cache_only
+    if use_cache_only:
+        dfs = st.session_state.get("__dfs_cache_obj__")
+        ts  = st.session_state.get("__dfs_cache_ts__", 0)
+        if dfs is not None and (_now_ts() - ts) < TTL_SECONDS:
+            return dfs
+        # sinon, on tombe en 2) ci-dessous (ça relira via cache_data si besoin)
 
-    def _norm(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
-        # Évite l'ambiguïté pandas: 'DataFrame is not truthy'
-        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-            df = pd.DataFrame(columns=cols)
-        else:
-            df = df.copy()
-        for c in cols:
-            if c not in df.columns:
-                df[c] = ""
-        ordered = [c for c in cols if c in df.columns] + [c for c in df.columns if c not in cols]
-        return df[ordered].fillna("")
-
-    dfs = {}
-    dfs["contacts"] = _norm(ensure_df_source("contacts", C_COLS, paths, ws), C_COLS)
-    dfs["entreprises"] = _norm(ensure_df_source("entreprises", ENT_COLS, paths, ws), ENT_COLS)
-    dfs["events"] = _norm(ensure_df_source("events", E_COLS, paths, ws), E_COLS)
-    dfs["parts"] = _norm(ensure_df_source("parts", PART_COLS, paths, ws), PART_COLS)
-    dfs["pay"] = _norm(ensure_df_source("pay", PAY_COLS, paths, ws), PAY_COLS)
-    dfs["cert"] = _norm(ensure_df_source("cert", CERT_COLS, paths, ws), CERT_COLS)
-    _inter = ensure_df_source("inter", INTER_COLS, paths, ws)
-    for nc in ["Cible","ID_Cible"]:
-        if nc not in _inter.columns:
-            _inter[nc] = ""
-    dfs["inter"] = _norm(_inter, INTER_COLS)
-    dfs["entreprise_parts"] = _norm(ensure_df_source("entreprise_parts", EPART_COLS, paths, ws), EPART_COLS)
-    dfs["params"] = ensure_df_source("params", ["key","value"], paths, ws)
-    dfs["users"]  = ensure_df_source("users", ["user_id","email","password_hash","role","is_active","display_name",
-                                               "Created_At","Created_By","Updated_At","Updated_By"], paths, ws)
+    # 2) cache “persistant” Streamlit (clé stable)
+    key = _make_cache_key()
+    try:
+        dfs = _read_all_tables_cached(key)
+    except Exception as e:
+        # Ne pas casser l’UI : si cache RAM présent, on le renvoie (mode dégradé)
+        _dfs_ram = st.session_state.get("__dfs_cache_obj__")
+        if _dfs_ram is not None:
+            st.warning(f"Lecture Sheets dégradée: {e}. Utilisation du cache local récent.")
+            return _dfs_ram
+        # Sinon, on remonte l’erreur (qui sera affichée par les pages)
+        raise
     return dfs
 
 def save_table(name: str, df: pd.DataFrame) -> None:

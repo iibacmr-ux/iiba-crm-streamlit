@@ -183,7 +183,7 @@ if "auth_user" in st.session_state:
     st.write("🟢 Vous êtes connecté. Utilisez le menu de gauche pour accéder aux pages.")
     # ——— Filtre global inter-pages ———
     try:
-        dfs_for_filters = load_all_tables()  # cache -> pas de surcoût
+        dfs_for_filters = load_all_tables(use_cache_only=True)  # cache -> pas de surcoût
         render_global_filter_panel(dfs_for_filters)  # met à jour st.session_state["GLOBAL_FILTERS"]
     except Exception as e:
         st.sidebar.warning(f"Filtre global indisponible : {e}")
