@@ -180,5 +180,13 @@ for label, page in LINKS:
 if "auth_user" in st.session_state:
     st.sidebar.success(f"Connecté : {st.session_state['auth_user'].get('email')}")
     st.write("🟢 Vous êtes connecté. Utilisez le menu de gauche pour accéder aux pages.")
+    # ——— Filtre global inter-pages ———
+    try:
+        from _shared import load_all_tables, render_global_filter_panel
+        dfs_for_filters = load_all_tables()  # cache -> pas de surcoût
+        render_global_filter_panel(dfs_for_filters)  # met à jour st.session_state["GLOBAL_FILTERS"]
+    except Exception as e:
+        st.sidebar.warning(f"Filtre global indisponible : {e}")
 else:
     st.info("Veuillez vous connecter pour accéder au CRM.")
+
