@@ -398,12 +398,23 @@ proba_style = JsCode("""
 style_map = {"Proba_conversion": proba_style} if proba_style else None
 grid = _aggrid(dfc[table_cols], page_size=page_size, key="crm_grid", side_bar=True, single_select=True, style_cols=style_map)
 
+#-- test2 
+st.write(type(grid))
+st.write(grid)
+st.write(type(selected_rows)) 
+
+# --test
 selected_rows = grid.get("selected_rows", []) 
-print(type(selected_rows)) 
-if grid and len(selected_rows) > 0 :
-    row0 = grid["selected_rows"][0]
-    if "ID" in row0:
-        st.session_state["selected_contact_id"] = row0["ID"]
+
+# if grid is not None and not grid.empty:
+    # faire quelque chose
+
+if isinstance(grid, dict):
+    selected_rows = grid.get("selected_rows", [])
+    if isinstance(selected_rows, list) and len(selected_rows) > 0:
+        row0 = selected_rows[0]
+        if "ID" in row0:
+            st.session_state["selected_contact_id"] = row0["ID"]
 
 st.markdown("---")
 cL, cR = st.columns([1,2])
