@@ -17,6 +17,7 @@ from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
 import streamlit as st
+from typing import Callable
 
 # ==== Backend helpers (importés si dispo, sinon fallback CSV) =================
 try:
@@ -89,7 +90,149 @@ EP_COLS = ["ID_EntPart","ID_Entreprise","ID_Événement","Type_Lien","Nb_Employ�
 # ==== Paramètres courants (alimentés depuis parametres) ======================
 PARAMS: Dict[str, object] = {}
 
+# --- plus bas dans _shared.py (après PARAMS = {...})
+def get_param_list(key: str, default: str = "") -> list[str]:
+    """
+    Lit une liste d’options depuis PARAMS[key] (séparateur virgule, point-virgule
+    ou saut de ligne). Renvoie une liste nettoyée, sans doublons.
+    """
+    raw = str(st.session_state.get("PARAMS", {}).get(key, default) or "").strip()
+    if not raw:
+        return []
+    # Accepte , ; ou \n
+    parts = [p.strip() for p in re.split(r"[,\n;]", raw) if p.strip()]
+    # déduplique en conservant l’ordre
+    seen, out = set(), []
+    for x in parts:
+        if x not in seen:
+            out.append(x); seen.add(x)
+    return out
+    
 # ==== Utilitaires ============================================================
+
+def make_event_label_map(df_events: pd.DataFrame) -> dict[str, str]:
+    """
+    Construit un mapping {label -> ID_Événement} avec label = "ID — Nom — Date — Lieu".
+    """
+    if df_events is None or df_events.empty:
+        return {}
+    tmp = df_events.copy()
+    for c in ["ID_Événement","Nom_Événement","Date","Lieu"]:
+        if c not in tmp.columns:
+            tmp[c] = ""
+    def _lab(r):
+        d = str(r.get("Date","")).strip()
+        return f"{r.get('ID_Événement','').strip()} — {r.get('Nom_Événement','').strip()} — {d} — {r.get('Lieu','').strip()}"
+    labels = tmp.apply(_lab, axis=1)
+    ids = tmp["ID_Événement"].astype(str).str.strip()
+    return dict(zip(labels.tolist(), ids.tolist()))
+
+def enrich_with_event_cols(df_sub: pd.DataFrame, df_events: pd.DataFrame, id_col_evt: str = "ID_Événement") -> pd.DataFrame:
+    """
+    Ajoute colonnes Nom_Événement, Type, Lieu, Date à une sous-table liée aux événements.
+    """
+    if df_sub is None or df_sub.empty:
+        return df_sub
+    if df_events is None or df_events.empty or id_col_evt not in df_sub.columns:
+        for c in ["Nom_Événement","Type","Lieu","Date"]:
+            if c not in df_sub.columns: df_sub[c] = ""
+        return df_sub
+    ev = df_events.set_index("ID_Événement")
+    out = df_sub.copy()
+    out["Nom_Événement"] = out[id_col_evt].map(ev["Nom_Événement"]) if "Nom_Événement" in ev.columns else ""
+    out["Type"]          = out[id_col_evt].map(ev["Type"])           if "Type" in ev.columns          else ""
+    out["Lieu"]          = out[id_col_evt].map(ev["Lieu"])           if "Lieu" in ev.columns          else ""
+    out["Date"]          = out[id_col_evt].map(ev["Date"])           if "Date" in ev.columns          else ""
+    return out
+
+def _utc_now_str() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+def stamp_create(row: dict, user_email: str = "system") -> dict:
+    row = dict(row)
+    row["Created_At"] = row.get("Created_At") or _utc_now_str()
+    row["Created_By"] = row.get("Created_By") or user_email
+    row["Updated_At"] = row.get("Updated_At") or row["Created_At"]
+    row["Updated_By"] = row.get("Updated_By") or row["Created_By"]
+    return row
+
+def atomic_upsert(
+    name: str,
+    cols: list[str],
+    key_col: str,
+    row_data: dict,
+    user_email: str = "system",
+    ws_func=None,
+    paths: dict[str, Path] | None = None,
+) -> tuple[pd.DataFrame, bool]:
+    """
+    UPSERT atomique (insert si nouveau, update si existant) sur la table `name`.
+    Relecture *fraîche* via ensure_df_source -> mutation -> save_df_target.
+    Renvoie (df_apres, created_bool).
+    """
+    paths = paths or PATHS
+    # relecture fraîche (actualise l'ETag attendu)
+    df = ensure_df_source(name, cols, paths, ws_func).copy()
+    # garanties colonnes
+    for c in cols:
+        if c not in df.columns: df[c] = ""
+    df = df[cols]
+
+    key_val = str(row_data.get(key_col,"")).strip()
+    if not key_val:
+        raise ValueError(f"{key_col} manquant pour upsert sur {name}")
+
+    idx = df.index[df[key_col].astype(str).str.strip() == key_val].tolist()
+    created = False
+    if idx:
+        # UPDATE
+        row = df.loc[idx[0]].to_dict()
+        row.update(row_data)
+        row = stamp_update(row, user_email)
+        df.loc[idx[0]] = [row.get(c,"") for c in cols]
+    else:
+        # INSERT
+        row = {c:"" for c in cols}
+        row.update(row_data)
+        row = stamp_create(row, user_email)
+        created = True
+        df = pd.concat([df, pd.DataFrame([row])[cols]], ignore_index=True)
+
+    save_df_target(name, df, paths, ws_func)  # pas de conflit : ETag cohérent
+    return df, created
+
+
+def atomic_append_row(
+    name: str,
+    cols: list[str],
+    row_data: dict,
+    user_email: str = "system",
+    ws_func=None,
+    paths: dict[str, Path] | None = None,
+) -> pd.DataFrame:
+    """
+    APPEND atomique (ajoute une ligne) sur la table `name`.
+    Relecture *fraîche* -> append -> save.
+    """
+    paths = paths or PATHS
+    df = ensure_df_source(name, cols, paths, ws_func).copy()
+    for c in cols:
+        if c not in df.columns: df[c] = ""
+    row = {c:"" for c in cols}
+    row.update(row_data)
+    row = stamp_create(row, user_email)
+    df = pd.concat([df, pd.DataFrame([row])[cols]], ignore_index=True)
+    save_df_target(name, df, paths, ws_func)
+    return df
+
+
+def stamp_update(row: dict, user_email: str = "system") -> dict:
+    row = dict(row)
+    row["Updated_At"] = _utc_now_str()
+    row["Updated_By"] = user_email
+    return row
+
+
 def to_int_safe(v, default=0) -> int:
     try:
         if v is None: return default
