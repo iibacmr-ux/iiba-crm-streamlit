@@ -26,12 +26,12 @@ except Exception as e:
     SH = None
 
 # Imports
-from _shared import (
-    PATHS, C_COLS, I_COLS, PART_COLS, PAY_COLS, CERT_COLS, E_COLS,
-    load_all_tables, get_global_filters, apply_global_filters,
-    generate_id, to_int_safe, PARAMS, get_param_list, make_event_label_map,
-    enrich_with_event_cols, atomic_upsert, atomic_append_row
-)
+# from _shared import (
+#     PATHS, C_COLS, I_COLS, PART_COLS, PAY_COLS, CERT_COLS, E_COLS,
+#     load_all_tables, get_global_filters, apply_global_filters,
+#     generate_id, to_int_safe, PARAMS, get_param_list, make_event_label_map,
+#     enrich_with_event_cols, atomic_upsert, atomic_append_row
+# )
 
 
 # storage_backend : sauvegarde avec verrou optimiste (CSV ou GSheets)
