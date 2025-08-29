@@ -1,5 +1,6 @@
 # pages/02_Entreprises.py
 from __future__ import annotations
+from datetime import date
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
@@ -10,6 +11,7 @@ from _shared import (
 st.set_page_config(page_title="Entreprises", page_icon="🏢", layout="wide")
 dfs = load_all_tables()
 df_contacts = dfs["contacts"]; df_ent = dfs["entreprises"]
+df_events = dfs["events"]; df_parts = dfs["parts"]; df_pay = dfs["pay"]; df_cert = dfs["cert"]
 PATHS = dfs["PATHS"]; WS_FUNC = dfs["WS_FUNC"]; SET = dfs["SET"]
 
 st.title("🏢 Entreprises")
@@ -78,7 +80,15 @@ with st.form("ent_form"):
                 return f"{r['ID']} - {r.get('Nom','')} {r.get('Prénom','')} - {r.get('Société','')}"
             opts = df_contacts.apply(_lab_c, axis=1).tolist()
             cp_map = dict(zip(opts, df_contacts["ID"]))
-            cp_label = st.selectbox("Contact principal (existant)", [""] + opts, index=0)
+            # préselection si déjà défini
+            _cur = row_init.get("Contact_Principal_ID","")
+            _lab_cur = ""
+            if _cur:
+                r = df_contacts[df_contacts["ID"]==_cur]
+                if not r.empty:
+                    r=r.iloc[0]
+                    _lab_cur = f"{r['ID']} - {r.get('Nom','')} {r.get('Prénom','')} - {r.get('Société','')}"
+            cp_label = st.selectbox("Contact principal (existant)", [""] + opts, index=([""]+opts).index(_lab_cur) if _lab_cur in ([""]+opts) else 0)
     ok = st.form_submit_button("💾 Enregistrer")
 
 if ok:
@@ -123,3 +133,167 @@ if sel_eid:
         st.info("Nom entreprise introuvable.")
 else:
     st.info("Sélectionnez une entreprise pour voir ses employés.")
+
+st.markdown("---")
+st.subheader("🔗 Assignations rapides à l'entreprise")
+if not sel_eid:
+    st.info("Sélectionnez d'abord une entreprise.")
+else:
+    # Déterminer liste de cibles (Contact principal, Un employé, Tous employés)
+    employees = pd.DataFrame(columns=["ID","Nom","Prénom","Société"])
+    nom_ent = df_ent.loc[df_ent["ID_Entreprise"] == sel_eid, "Nom_Entreprise"]
+    if not nom_ent.empty:
+        comp_name = nom_ent.iloc[0]
+        employees = df_contacts[df_contacts.get("Société","") == comp_name][["ID","Nom","Prénom","Société"]].copy()
+    cp_id = row_init.get("Contact_Principal_ID","")
+    targets = []
+    if cp_id:
+        rc = df_contacts[df_contacts["ID"]==cp_id]
+        if not rc.empty:
+            r=rc.iloc[0]
+            targets.append(("Contact principal", cp_id, f"{r['Prénom']} {r['Nom']}"))
+    # ajouter option "Un employé (sélection)"
+    targets.append(("Un employé (sélection)", "single", ""))
+    if not employees.empty:
+        targets.append(("Tous les employés", "all", f"{len(employees)}"))
+
+    tab_int, tab_part, tab_pay, tab_cert = st.tabs(["➕ Interactions", "➕ Participations", "➕ Paiements", "➕ Certifications"])
+
+    with tab_int:
+        with st.form("ent_add_inter"):
+            who = st.selectbox("Cible", [t[0] for t in targets])
+            single_id = ""
+            if "Un employé" in who and not employees.empty:
+                emp_opts = employees.apply(lambda r: f"{r['ID']} — {r['Prénom']} {r['Nom']}", axis=1).tolist()
+                emp_map = dict(zip(emp_opts, employees["ID"]))
+                _lab = st.selectbox("Employé", emp_opts, index=0)
+                single_id = emp_map.get(_lab,"")
+            dte = st.date_input("Date", value=date.today())
+            canal = st.selectbox("Canal", ["Email","Téléphone","WhatsApp","LinkedIn","F2F","Autre"])
+            obj = st.text_input("Objet")
+            res = st.selectbox("Résultat", ["OK","À suivre","Sans suite","Refus"])
+            notes = st.text_area("Notes")
+            ok = st.form_submit_button("💾 Enregistrer")
+            if ok:
+                from storage_backend import save_df_target
+                def _add_inter(cid):
+                    nid = generate_id("INT", dfs["inter"], "ID_Interaction")
+                    row = {"ID_Interaction":nid,"ID":cid,"Date":dte.isoformat(),"Canal":canal,"Objet":obj,"Résultat":res,"Relance":dte.isoformat(),"Responsable":"","Notes":notes}
+                    for c in AUDIT_COLS: row.setdefault(c,"")
+                    dfs["inter"] = pd.concat([dfs["inter"], pd.DataFrame([row])], ignore_index=True)
+                if who.startswith("Contact principal") and cp_id:
+                    _add_inter(cp_id)
+                elif "Un employé" in who and single_id:
+                    _add_inter(single_id)
+                elif "Tous" in who and not employees.empty:
+                    for cid in employees["ID"].tolist():
+                        _add_inter(cid)
+                save_df_target("inter", dfs["inter"], PATHS, WS_FUNC)
+                st.success("Interaction(s) ajoutée(s).")
+
+    with tab_part:
+        with st.form("ent_add_part"):
+            if df_events.empty:
+                st.warning("Aucun événement défini.")
+            ev_options = [] if df_events.empty else df_events.apply(lambda r: f"{r['ID_Événement']} — {r.get('Nom_Événement','')} ({r.get('Date','')})", axis=1).tolist()
+            ev_map = {} if df_events.empty else dict(zip(ev_options, df_events["ID_Événement"]))
+            ev_label = st.selectbox("Événement", [""] + ev_options, index=0)
+            role = st.selectbox("Rôle", dfs["SET"]["roles_evt"])
+            fb = st.text_area("Feedback")
+            note = st.number_input("Note", min_value=0, max_value=100, value=0)
+            who = st.selectbox("Cible", [t[0] for t in targets])
+            single_id = ""
+            if "Un employé" in who and not employees.empty:
+                emp_opts = employees.apply(lambda r: f"{r['ID']} — {r['Prénom']} {r['Nom']}", axis=1).tolist()
+                emp_map = dict(zip(emp_opts, employees["ID"]))
+                _lab = st.selectbox("Employé", emp_opts, index=0)
+                single_id = emp_map.get(_lab,"")
+            ok = st.form_submit_button("💾 Enregistrer")
+            if ok and ev_label:
+                from storage_backend import save_df_target
+                def _add_part(cid):
+                    nid = generate_id("PAR", dfs["parts"], "ID_Participation")
+                    row = {"ID_Participation":nid,"ID":cid,"ID_Événement":ev_map[ev_label],"Rôle":role,"Feedback":fb,"Note":int(note)}
+                    for c in AUDIT_COLS: row.setdefault(c,"")
+                    dfs["parts"] = pd.concat([dfs["parts"], pd.DataFrame([row])], ignore_index=True)
+                if who.startswith("Contact principal") and cp_id:
+                    _add_part(cp_id)
+                elif "Un employé" in who and single_id:
+                    _add_part(single_id)
+                elif "Tous" in who and not employees.empty:
+                    for cid in employees["ID"].tolist():
+                        _add_part(cid)
+                save_df_target("parts", dfs["parts"], PATHS, WS_FUNC)
+                st.success("Participation(s) ajoutée(s).")
+
+    with tab_pay:
+        with st.form("ent_add_pay"):
+            if df_events.empty:
+                st.warning("Aucun événement défini.")
+            ev_options = [] if df_events.empty else df_events.apply(lambda r: f"{r['ID_Événement']} — {r.get('Nom_Événement','')} ({r.get('Date','')})", axis=1).tolist()
+            ev_map = {} if df_events.empty else dict(zip(ev_options, df_events["ID_Événement"]))
+            ev_label = st.selectbox("Événement", [""] + ev_options, index=0)
+            dte = st.date_input("Date paiement", value=date.today())
+            montant = st.number_input("Montant (FCFA)", min_value=0, step=1000, value=0)
+            moyen = st.selectbox("Moyen", dfs["SET"]["moyens_paiement"])
+            statut = st.selectbox("Statut", dfs["SET"]["statuts_paiement"])
+            ref = st.text_input("Référence")
+            who = st.selectbox("Cible", [t[0] for t in targets])
+            single_id = ""
+            if "Un employé" in who and not employees.empty:
+                emp_opts = employees.apply(lambda r: f"{r['ID']} — {r['Prénom']} {r['Nom']}", axis=1).tolist()
+                emp_map = dict(zip(emp_opts, employees["ID"]))
+                _lab = st.selectbox("Employé", emp_opts, index=0)
+                single_id = emp_map.get(_lab,"")
+            ok = st.form_submit_button("💾 Enregistrer")
+            if ok and ev_label:
+                from storage_backend import save_df_target
+                def _add_pay(cid):
+                    nid = generate_id("PAY", dfs["pay"], "ID_Paiement")
+                    row = {"ID_Paiement":nid,"ID":cid,"ID_Événement":ev_map[ev_label],"Date_Paiement":dte.isoformat(),
+                           "Montant":int(montant),"Moyen":moyen,"Statut":statut,"Référence":ref}
+                    for c in AUDIT_COLS: row.setdefault(c,"")
+                    dfs["pay"] = pd.concat([dfs["pay"], pd.DataFrame([row])], ignore_index=True)
+                if who.startswith("Contact principal") and cp_id:
+                    _add_pay(cp_id)
+                elif "Un employé" in who and single_id:
+                    _add_pay(single_id)
+                elif "Tous" in who and not employees.empty:
+                    for cid in employees["ID"].tolist():
+                        _add_pay(cid)
+                save_df_target("pay", dfs["pay"], PATHS, WS_FUNC)
+                st.success("Paiement(s) ajouté(s).")
+
+    with tab_cert:
+        with st.form("ent_add_cert"):
+            tc = st.selectbox("Type Certification", dfs["SET"]["types_certif"])
+            dte = st.date_input("Date Examen", value=date.today())
+            res = st.selectbox("Résultat", ["Réussi","Échoué","En cours","Reporté"])
+            sc = st.number_input("Score", min_value=0, max_value=100, value=0)
+            has_dto = st.checkbox("Renseigner une date d'obtention ?")
+            dto = st.date_input("Date Obtention", value=date.today()) if has_dto else None
+            who = st.selectbox("Cible", [t[0] for t in targets])
+            single_id = ""
+            if "Un employé" in who and not employees.empty:
+                emp_opts = employees.apply(lambda r: f"{r['ID']} — {r['Prénom']} {r['Nom']}", axis=1).tolist()
+                emp_map = dict(zip(emp_opts, employees["ID"]))
+                _lab = st.selectbox("Employé", emp_opts, index=0)
+                single_id = emp_map.get(_lab,"")
+            ok = st.form_submit_button("💾 Enregistrer")
+            if ok:
+                from storage_backend import save_df_target
+                def _add_cert(cid):
+                    nid = generate_id("CER", dfs["cert"], "ID_Certif")
+                    row = {"ID_Certif":nid,"ID":cid,"Type_Certif":tc,"Date_Examen":dte.isoformat(),"Résultat":res,"Score":str(sc),
+                           "Date_Obtention":dto.isoformat() if dto else "","Validité":"","Renouvellement":"","Notes":""}
+                    for c in AUDIT_COLS: row.setdefault(c,"")
+                    dfs["cert"] = pd.concat([dfs["cert"], pd.DataFrame([row])], ignore_index=True)
+                if who.startswith("Contact principal") and cp_id:
+                    _add_cert(cp_id)
+                elif "Un employé" in who and single_id:
+                    _add_cert(single_id)
+                elif "Tous" in who and not employees.empty:
+                    for cid in employees["ID"].tolist():
+                        _add_cert(cid)
+                save_df_target("cert", dfs["cert"], PATHS, WS_FUNC)
+                st.success("Certification(s) ajoutée(s).")

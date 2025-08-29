@@ -1,149 +1,139 @@
-# pages/00_Admin.py — Administration
+# pages/00_Admin.py
 from __future__ import annotations
-from datetime import datetime
-from pathlib import Path
-import hashlib
+import io
 import pandas as pd
 import streamlit as st
+from _shared import load_all_tables, AUDIT_COLS
+from storage_backend import save_df_target
 
-from storage_backend import ensure_df_source, save_df_target
-from gs_client import read_service_account_secret, get_gspread_client, make_ws_func
-from ui_common import require_login, aggrid_table
+st.set_page_config(page_title="Admin — Paramètres", page_icon="🛠️", layout="wide")
+dfs = load_all_tables()
+df_params = dfs["params"]
+PATHS = dfs["PATHS"]; WS_FUNC = dfs["WS_FUNC"]
 
-st.set_page_config(page_title="CRM — Admin", page_icon="🛠️", layout="wide")
-require_login()
+st.title("🛠️ Administration & Paramètres")
 
-# --- Rôle ---
-user = st.session_state.get("auth_user", {})
-if (user.get("role") or "").lower() != "admin":
-    st.error("Accès restreint : administrateurs uniquement.")
-    st.stop()
+st.markdown("Gérez ici les **listes de valeurs** utilisées dans les dropdowns (Fonctions, Secteurs, Pays, Villes, Types d'événement, Rôles, Moyens/Statuts de paiement, Types de certification), ainsi que quelques **KPI cibles**.")
 
-# --- Backend ---
-BACKEND = st.secrets.get("storage_backend", "csv")
-DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True)
-PATHS = {
-    "users": DATA_DIR / "users.csv",
-    "params": DATA_DIR / "parametres.csv",
-}
+# Helper to get & set single-line CSV lists in df_params
+def get_param(key: str, default: str = "") -> str:
+    if df_params.empty:
+        return default
+    _df = df_params.copy()
+    cols = [c.lower() for c in _df.columns]
+    if "cle" in cols and "val" in cols:
+        _df.columns = [c.lower() for c in _df.columns]
+        m = _df[_df["cle"] == key]
+        if not m.empty:
+            return str(m.iloc[0]["val"])
+    elif "key" in cols and "value" in cols:
+        _df.columns = [c.lower() for c in _df.columns]
+        m = _df[_df["key"] == key]
+        if not m.empty:
+            return str(m.iloc[0]["value"])
+    return default
 
-WS_FUNC = None
-if BACKEND == "gsheets":
-    try:
-        info = read_service_account_secret()
-        GC = get_gspread_client(info)
-        WS_FUNC = make_ws_func(GC)
-    except Exception as e:
-        st.error(f"Initialisation Google Sheets échouée : {e}")
-        st.stop()
-
-# --- Schémas ---
-U_COLS = ["user_id","email","password_hash","role","is_active","display_name",
-          "Created_At","Created_By","Updated_At","Updated_By"]
-P_COLS = ["Param","Valeur","Created_At","Created_By","Updated_At","Updated_By"]
-
-def _hash_pwd(p: str) -> str:
-    return hashlib.sha256(("iiba-cmr::" + str(p)).encode("utf-8")).hexdigest()
-
-df_users = ensure_df_source("users", U_COLS, PATHS, WS_FUNC)
-df_params = ensure_df_source("params", P_COLS, PATHS, WS_FUNC)
-
-st.sidebar.checkbox("⚠️ Forcer la sauvegarde (ignore verrou)", value=False, key="override_save_admin")
-
-st.title("Administration")
-tabs = st.tabs(["👥 Utilisateurs", "⚙️ Paramètres (listes)"])
-
-with tabs[0]:
-    st.subheader("Utilisateurs")
-    aggrid_table(df_users, page_size=20, selection='single')
-    st.markdown("---")
-    with st.form("user_form"):
-        colA, colB, colC, colD = st.columns(4)
-        with colA:
-            mode = st.radio("Mode", ["Créer", "Mettre à jour"], horizontal=True)
-            email = st.text_input("Email").strip().lower()
-            display = st.text_input("Nom affiché").strip()
-        with colB:
-            role = st.selectbox("Rôle", ["admin","staff","viewer"], index=1)
-            is_active = st.selectbox("Actif ?", ["1","0"], index=0)
-        with colC:
-            pwd = st.text_input("Mot de passe", type="password")
-            pwd2 = st.text_input("Confirmer", type="password")
-        with colD:
-            user_id = st.text_input("ID (pour MAJ)", value="").strip()
-        submitted = st.form_submit_button("Enregistrer")
-
-    if submitted:
-        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        if mode == "Créer":
-            if not email or not pwd or pwd != pwd2:
-                st.error("Email/mot de passe requis (et identiques).")
-            else:
-                new_id = f"U{int(datetime.utcnow().timestamp())}"
-                new_row = {
-                    "user_id": new_id, "email": email, "password_hash": _hash_pwd(pwd),
-                    "role": role, "is_active": "1", "display_name": display,
-                    "Created_At": now, "Created_By": user.get('email','ui'),
-                    "Updated_At": now, "Updated_By": user.get('email','ui'),
-                }
-                df_users = pd.concat([df_users, pd.DataFrame([new_row])], ignore_index=True)
-                save_df_target("users", df_users, PATHS, WS_FUNC, override=st.session_state.get("override_save_admin", False))
-                st.success(f"Utilisateur {email} créé.")
-                st.experimental_rerun()
+def set_param(key: str, value: str):
+    global df_params
+    cols = [c.lower() for c in df_params.columns]
+    if df_params.empty:
+        df_params = pd.DataFrame(columns=["cle","val"] + AUDIT_COLS)
+        cols = ["cle","val"] + AUDIT_COLS
+    df_params.columns = [c.lower() for c in df_params.columns]
+    if "cle" in df_params.columns and "val" in df_params.columns:
+        mask = (df_params["cle"] == key)
+        if mask.any():
+            df_params.loc[mask, "val"] = value
         else:
-            if not user_id:
-                st.error("ID requis pour mise à jour.")
-            else:
-                idx = df_users.index[df_users["user_id"] == user_id]
-                if len(idx)==0:
-                    st.error("ID utilisateur introuvable.")
-                else:
-                    i = idx[0]
-                    updates = {"email": email, "display_name": display, "role": role, "is_active": is_active,
-                               "Updated_At": now, "Updated_By": user.get('email','ui')}
-                    if pwd:
-                        if pwd != pwd2:
-                            st.error("Les mots de passe ne correspondent pas."); st.stop()
-                        updates["password_hash"] = _hash_pwd(pwd)
-                    for k,v in updates.items():
-                        df_users.at[i, k] = v
-                    save_df_target("users", df_users, PATHS, WS_FUNC, override=st.session_state.get("override_save_admin", False))
-                    st.success(f"Utilisateur {user_id} mis à jour."); st.experimental_rerun()
+            row = {"cle": key, "val": value}
+            for c in AUDIT_COLS: row.setdefault(c,"")
+            df_params = pd.concat([df_params, pd.DataFrame([row])], ignore_index=True)
+    else:
+        # fallback "key"/"value"
+        if "key" not in df_params.columns or "value" not in df_params.columns:
+            df_params = pd.DataFrame(columns=["key","value"] + AUDIT_COLS)
+        mask = (df_params["key"] == key)
+        if mask.any():
+            df_params.loc[mask, "value"] = value
+        else:
+            row = {"key": key, "value": value}
+            for c in AUDIT_COLS: row.setdefault(c,"")
+            df_params = pd.concat([df_params, pd.DataFrame([row])], ignore_index=True)
 
-with tabs[1]:
-    st.subheader("Paramètres (listes contrôlées)")
-    st.caption("Alimente : Secteur (Entreprises), Fonction / Pays / Ville (Contacts).")
+# UI — List editors
+st.subheader("📋 Listes pour dropdowns")
+lists = [
+    ("Fonctions", "fonctions"),
+    ("Secteurs", "secteurs"),
+    ("Pays", "pays"),
+    ("Villes", "villes"),
+    ("Types d'événement", "types_evt"),
+    ("Rôles événement", "roles_evt"),
+    ("Moyens de paiement", "moyens_paiement"),
+    ("Statuts de paiement", "statuts_paiement"),
+    ("Types de certification", "types_certif"),
+]
+cols = st.columns(3)
+for i, (label, key) in enumerate(lists):
+    with cols[i % 3]:
+        val = get_param(key, "")
+        new = st.text_area(label, value=val, placeholder="Valeurs séparées par des virgules")
+        if st.button(f"💾 Enregistrer {label}", key=f"save_{key}"):
+            set_param(key, new)
+            save_df_target("params", df_params, PATHS, WS_FUNC)
+            st.success(f"{label} mis à jour.")
 
-    def list_values(df_params, key):
-        return df_params[df_params["Param"] == key]["Valeur"].dropna().astype(str).tolist()
+st.markdown("---")
+st.subheader("🎯 KPI cibles (année courante)")
+y = pd.Timestamp.today().year
+kpis = [
+    (f"kpi_target_contacts_total_year_{y}", "Contacts créés (année)"),
+    (f"kpi_target_participations_total_year_{y}", "Participations (année)"),
+    (f"kpi_target_ca_regle_year_{y}", "CA réglé (FCFA, année)"),
+]
+c1,c2,c3 = st.columns(3)
+for (key, label), col in zip(kpis, [c1,c2,c3]):
+    v = get_param(key, "0")
+    new = col.text_input(label, value=str(v), key=f"inp_{key}")
+    if col.button(f"💾 Enregistrer {label}", key=f"btn_{key}"):
+        set_param(key, new)
+        save_df_target("params", df_params, PATHS, WS_FUNC)
+        st.success(f"{label} mis à jour.")
 
-    def editor_block(param_key, label):
-        vals = list_values(df_params, param_key)
-        st.write(f"**{label}** :", ", ".join(vals) if vals else "—")
-        col1, col2 = st.columns([2,1])
-        with col1:
-            value = st.text_input(f"Ajouter/Supprimer dans {label}", key=f"in_{param_key}").strip()
-        with col2:
-            act = st.selectbox("Action", ["Ajouter","Supprimer"], key=f"act_{param_key}")
-        if st.button(f"Valider ({label})", key=f"btn_{param_key}"):
-            now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            if act == "Ajouter":
-                if value and value not in vals:
-                    row = {"Param": param_key, "Valeur": value,
-                           "Created_At": now, "Created_By": user.get('email','ui'),
-                           "Updated_At": now, "Updated_By": user.get('email','ui')}
-                    df_params = pd.concat([df_params, pd.DataFrame([row])], ignore_index=True)
-                    save_df_target("params", df_params, PATHS, WS_FUNC, override=st.session_state.get("override_save_admin", False))
-                    st.success(f"Ajouté à {label} : '{value}'"); st.experimental_rerun()
-            else:
-                sel = df_params.index[(df_params["Param"]==param_key) & (df_params["Valeur"]==value)]
-                if len(sel)>0:
-                    df_params = df_params.drop(sel)
-                    save_df_target("params", df_params, PATHS, WS_FUNC, override=st.session_state.get("override_save_admin", False))
-                    st.success(f"Supprimé de {label} : '{value}'"); st.experimental_rerun()
-
-    editor_block("Secteur", "Secteurs (Entreprises)")
-    st.markdown("---")
-    editor_block("Fonction", "Fonctions (Contacts)")
-    editor_block("Pays", "Pays (Contacts)")
-    editor_block("Ville", "Villes (Contacts)")
+st.markdown("---")
+st.subheader("📤 Export / 📥 Import des paramètres")
+colx, coly = st.columns(2)
+with colx:
+    if st.button("⬇ Exporter params.csv"):
+        buf = io.StringIO()
+        df_params.to_csv(buf, index=False)
+        st.download_button("Télécharger params.csv", buf.getvalue(), file_name="params.csv", mime="text/csv", use_container_width=True)
+with coly:
+    up = st.file_uploader("Importer params.csv", type=["csv"])
+    if up is not None:
+        try:
+            imp = pd.read_csv(up).fillna("")
+            # Normaliser colonnes
+            cols = [c.lower() for c in imp.columns]
+            if "cle" in cols and "val" in cols:
+                pass
+            elif "key" in cols and "value" in cols:
+                imp = imp.rename(columns={"key":"cle","value":"val"})
+            elif len(imp.columns)>=2:
+                imp = imp.rename(columns={imp.columns[0]:"cle", imp.columns[1]:"val"})
+            # concat/sur-écrire par clé
+            base = df_params.copy()
+            base.columns = [c.lower() for c in base.columns]
+            if "cle" not in base.columns or "val" not in base.columns:
+                base = pd.DataFrame(columns=["cle","val"] + AUDIT_COLS)
+            # merge en priorisant import
+            merged = pd.concat([base[["cle","val"]], imp[["cle","val"]]], ignore_index=True)
+            merged = merged.drop_duplicates(subset=["cle"], keep="last")
+            # reconstruire df_params complet
+            df_params = merged.copy()
+            for c in AUDIT_COLS:
+                if c not in df_params.columns: df_params[c] = ""
+            save_df_target("params", df_params, PATHS, WS_FUNC)
+            st.success("Paramètres importés.")
+        except Exception as e:
+            st.error(f"Import impossible : {e}")
