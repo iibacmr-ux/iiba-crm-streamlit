@@ -52,29 +52,29 @@ import hashlib
 def _hash_pwd(p: str) -> str:
     return hashlib.sha256(("iiba-cmr::" + str(p)).encode("utf-8")).hexdigest()
 
-def ensure_default_users(df_users: pd.DataFrame) -> pd.DataFrame:
-    # Garantit colonnes
-    for c in U_COLS:
-        if c not in df_users.columns:
-            df_users[c] = ""
-    emails = df_users["email"].fillna("").str.lower().tolist()
-    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    seed = []
+# n'ajouter les comptes par défaut que si nécessaire
+def ensure_default_users(df_users: pd.DataFrame):
+    import hashlib
+    def _hash_pwd(p: str) -> str:
+        return hashlib.sha256(("iiba-cmr::" + str(p)).encode("utf-8")).hexdigest()
+    changed = False
+    emails = df_users.get("email", pd.Series([], dtype=str)).fillna("").str.lower().tolist()
+    rows = []
     if "admin2@iiba.cm" not in emails:
-        seed.append({
-            "user_id":"U0001", "email":"admin2@iiba.cm", "password_hash":_hash_pwd("123456"),
-            "role":"admin", "is_active":"1", "display_name":"Admin 2",
-            "Created_At":ts,"Created_By":"seed","Updated_At":ts,"Updated_By":"seed"
+        rows.append({
+            "user_id":"U0001","email":"admin2@iiba.cm","password_hash":_hash_pwd("123456"),
+            "role":"admin","is_active":"1","display_name":"Admin 2"
         })
     if "admin@iiba.cm" not in emails:
-        seed.append({
-            "user_id":"U0002", "email":"admin@iiba.cm", "password_hash":_hash_pwd("admin"),
-            "role":"admin", "is_active":"1", "display_name":"Admin",
-            "Created_At":ts,"Created_By":"seed","Updated_At":ts,"Updated_By":"seed"
+        rows.append({
+            "user_id":"U0002","email":"admin@iiba.cm","password_hash":_hash_pwd("admin"),
+            "role":"admin","is_active":"1","display_name":"Admin"
         })
-    if seed:
-        df_users = pd.concat([df_users, pd.DataFrame(seed)], ignore_index=True)
-    return df_users[[c for c in U_COLS]]
+    if rows:
+        import pandas as pd
+        df_users = pd.concat([df_users, pd.DataFrame(rows)], ignore_index=True)
+        changed = True
+    return df_users, changed
 
 def authenticate_user(email: str, password: str, df_users: pd.DataFrame):
     em = (email or "").strip().lower()
@@ -95,7 +95,8 @@ def load_users() -> pd.DataFrame:
     return ensure_df_source("users", U_COLS, PATHS, WS_FUNC)
 
 df_users = load_users()
-df_users = ensure_default_users(df_users)
+if changed:
+    save_df_target("users", df_users, PATHS, WS_FUNC)  # <-- écrit SEULEMENT si nécessaire
 save_df_target("users", df_users, PATHS, WS_FUNC)
 st.session_state["df_users"] = df_users
 
@@ -141,3 +142,4 @@ for label, page in LINKS:
         st.sidebar.page_link(page, label=label)
     except Exception as e:
         st.sidebar.caption(f"⚠️ {label} indisponible : {e}")
+
