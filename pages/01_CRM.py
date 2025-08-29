@@ -399,22 +399,30 @@ style_map = {"Proba_conversion": proba_style} if proba_style else None
 grid = _aggrid(dfc[table_cols], page_size=page_size, key="crm_grid", side_bar=True, single_select=True, style_cols=style_map)
 
 #-- test2 
-st.write(type(grid))
-st.write(grid)
-st.write(type(selected_rows)) 
-
-# --test
-selected_rows = grid.get("selected_rows", []) 
+#-st.write(type(grid))
+#-st.write(grid)  
 
 # if grid is not None and not grid.empty:
     # faire quelque chose
 
-if isinstance(grid, dict):
-    selected_rows = grid.get("selected_rows", [])
-    if isinstance(selected_rows, list) and len(selected_rows) > 0:
-        row0 = selected_rows[0]
-        if "ID" in row0:
-            st.session_state["selected_contact_id"] = row0["ID"]
+# _aggrid(...) ne te renvoie pas un dict brut, mais un objet AgGridReturn de la lib st_aggrid.
+# .selected_rows est… un DataFrame, pas une liste Python.
+
+# Récupération du DataFrame des lignes sélectionnées
+selected_df = grid.selected_rows  # c'est un DataFrame Pandas
+if selected_df is not None and not selected_df.empty:
+    # On prend la première ligne sélectionnée
+    row0 = selected_df.iloc[0]
+    if "ID" in row0:
+        st.session_state["selected_contact_id"] = row0["ID"]
+
+# si tu tiens à récupérer tes lignes sélectionnées comme liste de dicts (parfois plus pratique avec Streamlit), tu peux forcer la conversion
+# selected_list = grid.selected_rows.to_dict(orient="records")
+# if selected_list:
+#     row0 = selected_list[0]
+#     if "ID" in row0:
+#         st.session_state["selected_contact_id"] = row0["ID"]
+
 
 st.markdown("---")
 cL, cR = st.columns([1,2])
