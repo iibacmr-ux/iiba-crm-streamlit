@@ -83,10 +83,15 @@ def _ws_func():
 # ==== Chargement groupé ====
 def load_all_tables() -> Dict[str, pd.DataFrame]:
     paths = _paths()
-    ws = _ws_func() if st.secrets.get("storage_backend","csv")=="gsheets" else None
+    backend_eff = st.session_state.get("BACKEND_EFFECTIVE", st.secrets.get("storage_backend","csv")).strip().lower()
+    ws = _ws_func() if backend_eff == "gsheets" else None
 
     def _norm(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
-        df = (df or pd.DataFrame(columns=cols)).copy()
+        # Évite l'ambiguïté pandas: 'DataFrame is not truthy'
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            df = pd.DataFrame(columns=cols)
+        else:
+            df = df.copy()
         for c in cols:
             if c not in df.columns:
                 df[c] = ""
@@ -113,7 +118,8 @@ def load_all_tables() -> Dict[str, pd.DataFrame]:
 
 def save_table(name: str, df: pd.DataFrame) -> None:
     paths = _paths()
-    ws = _ws_func() if st.secrets.get("storage_backend","csv")=="gsheets" else None
+    backend_eff = st.session_state.get("BACKEND_EFFECTIVE", st.secrets.get("storage_backend","csv")).strip().lower()
+    ws = _ws_func() if backend_eff == "gsheets" else None
     save_df_target(name, df, paths, ws)
 
 # ==== Helpers divers ====
