@@ -29,7 +29,7 @@ with st.sidebar.expander("🧪 Tests rapides"):
         st.stop()
 
 # ---------- Backend & chemins ----------
-BACKEND = st.secrets.get("storage_backend", "csv").strip().lower()
+BACKEND_DECLARED = st.secrets.get("storage_backend", "csv").strip().lower()
 DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True, parents=True)
 # Tous les chemins utilisés par _shared.py et les pages
 PATHS = {
@@ -49,7 +49,9 @@ st.session_state["PATHS"] = PATHS  # partagé avec _shared.py
 # ---------- Initialisation Google Sheets (optionnel) ----------
 WS_FUNC = None
 GC = None
-if BACKEND == "gsheets":
+BACKEND_EFFECTIVE = "csv"
+
+if BACKEND_DECLARED == "gsheets":
     try:
         info = read_service_account_secret()
         GC = get_gspread_client(info)  # @cache_resource
@@ -58,18 +60,24 @@ if BACKEND == "gsheets":
         sname = st.secrets.get("gsheet_spreadsheet", "IIBA CRM DB").strip()
         WS_FUNC = make_ws_func(GC, spreadsheet_id=(sid or None), spreadsheet_title=(None if sid else sname))
         st.session_state["WS_FUNC"] = WS_FUNC
+        BACKEND_EFFECTIVE = "gsheets"
+        st.session_state["BACKEND_EFFECTIVE"] = BACKEND_EFFECTIVE
         st.sidebar.success("Google Sheets prêt ✅")
     except Exception as e:
         st.sidebar.error(f"Initialisation Google Sheets échouée : {e}")
         st.info("Bascule automatique en CSV local (./data).")
-        BACKEND = "csv"
+        BACKEND_EFFECTIVE = "csv"
+        st.session_state["BACKEND_EFFECTIVE"] = BACKEND_EFFECTIVE
+        st.session_state["WS_FUNC"] = None
 else:
+    BACKEND_EFFECTIVE = "csv"
+    st.session_state["BACKEND_EFFECTIVE"] = BACKEND_EFFECTIVE
     st.sidebar.info("Backend : CSV (./data)")
 
 # ---------- Diagnostics Google Sheets ----------
 if st.sidebar.checkbox("🩺 Ouvrir le panneau Diagnostics", value=False, key="diag_gs"):
     show_diagnostics_sidebar(
-        st.secrets.get("gsheet_spreadsheet","IIBA CRM DB"),
+        st.secrets.get("gsheet_spreadsheet_id", st.secrets.get("gsheet_spreadsheet","IIBA CRM DB")),
         SHEET_NAME
     )
 
