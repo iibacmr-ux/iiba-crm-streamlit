@@ -2,7 +2,7 @@
 from __future__ import annotations
 import streamlit as st
 import pandas as pd
-from _shared import load_all_tables, statusbar, filter_and_paginate
+from _shared import load_all_tables, statusbar, filter_and_paginate, smart_suggested_filters
 
 st.set_page_config(page_title="Entreprises — IIBA Cameroun", page_icon="🏢", layout="wide")
 st.title("🏢 Entreprises")
@@ -17,7 +17,8 @@ dfcert = dfs["cert"].copy()
 df_ep = dfs["entreprise_parts"].copy()
 
 # ===== Grille avec filtres + pagination =====
-suggested = ["Secteur","Pays","Ville"]
+base_filters = ["Secteur","Pays","Ville"]
+suggested = [c for c in base_filters if c in dfe.columns] or smart_suggested_filters(dfe)
 page_df, filtered_df = filter_and_paginate(dfe, key_prefix="ent", page_size_default=20, suggested_filters=suggested)
 statusbar(filtered_df, numeric_keys=["CA_Annuel","Nb_Employes"])
 st.dataframe(page_df, use_container_width=True, hide_index=True)
@@ -40,28 +41,29 @@ if sel_ent and sel_ent != "—":
         tab_emp, tab_off, tab360 = st.tabs(["👥 Employés","🏢 Interactions officielles","🔭 Vue 360° Entreprise"])
 
         with tab_emp:
-            # Employés = contacts liés (colonne 'Entreprise' égale au nom de l'entreprise)
             nom_ent = ent.get("Nom_Entreprise","")
             sub_emp = dfc[dfc.get("Entreprise","")==nom_ent].copy()
             st.caption(f"Employés liés à : **{nom_ent}**")
+            suggested = ["Type","Statut","Fonction","Ville","Pays","Genre"]
+            suggested = [c for c in suggested if c in sub_emp.columns] or smart_suggested_filters(sub_emp)
             page_emp, emp_filtered = filter_and_paginate(sub_emp, key_prefix="ent_emp", page_size_default=20,
-                                                         suggested_filters=["Type","Statut","Fonction","Ville","Pays"])
+                                                         suggested_filters=suggested)
             statusbar(emp_filtered, numeric_keys=[])
             st.dataframe(page_emp, use_container_width=True, hide_index=True)
 
         with tab_off:
-            # Interactions officielles = interactions avec Cible='Entreprise' & ID_Cible = ID_Entreprise
+            # Interactions officielles = Cible='Entreprise' & ID_Cible=ID_Entreprise
             inte = dfi[(dfi.get("Cible","")=="Entreprise") & (dfi.get("ID_Cible","")==sel_ent)].copy()
+            suggested = ["Canal","Responsable"]
+            suggested = [c for c in suggested if c in inte.columns] or smart_suggested_filters(inte)
             page_int, int_filtered = filter_and_paginate(inte, key_prefix="ent_official", page_size_default=20,
-                                                         suggested_filters=["Canal","Responsable"])
+                                                         suggested_filters=suggested)
             statusbar(int_filtered, numeric_keys=[])
             st.dataframe(page_int, use_container_width=True, hide_index=True)
 
         with tab360:
-            # Agrégats employés (interactions / paiements / certifs / participations)
             nom_ent = ent.get("Nom_Entreprise","")
             emp_ids = set(dfc[dfc.get("Entreprise","")==nom_ent]["ID"].astype(str))
-            # interactions des employés (Cible=Contact et ID in emp_ids) OU anciennes lignes sans Cible
             inter_emp = dfi[((dfi.get("Cible","")=="Contact") & (dfi.get("ID_Cible","").astype(str).isin(emp_ids)))
                             | ((dfi.get("Cible","")=="") & (dfi.get("ID","").astype(str).isin(emp_ids)))].copy()
             pay_emp = dfpay[dfpay.get("ID","").astype(str).isin(emp_ids)].copy()
@@ -69,27 +71,30 @@ if sel_ent and sel_ent != "—":
             parts_emp = dfs["parts"][dfs["parts"].get("ID","").astype(str).isin(emp_ids)].copy()
 
             st.write(f"**Employés liés** : {len(emp_ids)}")
-            st.write(f"**Interactions (employés)** : {len(inter_emp)}")
             if not pay_emp.empty:
                 pay_emp["Montant"] = pd.to_numeric(pay_emp["Montant"], errors="coerce").fillna(0)
-            st.write(f"**Paiements (employés)** : {int(pay_emp.get('Montant',pd.Series(dtype=float)).sum()):,} FCFA".replace(",", " "))
-            st.write(f"**Certifications réussies (employés)** : {len(cert_emp[cert_emp.get('Résultat','')=='Réussi'])}")
-            st.write(f"**Participations (employés)** : {len(parts_emp)}")
+            st.write(f"**Total paiements (employés)** : {int(pay_emp.get('Montant',pd.Series(dtype=float)).sum()):,} FCFA".replace(",", " "))
 
             st.markdown("##### Détails — Interactions d'employés")
+            suggested = ["Canal","Responsable"]
+            suggested = [c for c in suggested if c in inter_emp.columns] or smart_suggested_filters(inter_emp)
             p_i, f_i = filter_and_paginate(inter_emp, key_prefix="ent360_inter", page_size_default=20,
-                                           suggested_filters=["Canal","Responsable"])
+                                           suggested_filters=suggested)
             statusbar(f_i, numeric_keys=[])
             st.dataframe(p_i, use_container_width=True, hide_index=True)
 
             st.markdown("##### Détails — Paiements d'employés")
+            suggested = ["Statut"]
+            suggested = [c for c in suggested if c in pay_emp.columns] or smart_suggested_filters(pay_emp)
             p_p, f_p = filter_and_paginate(pay_emp, key_prefix="ent360_pay", page_size_default=20,
-                                           suggested_filters=["Statut"])
+                                           suggested_filters=suggested)
             statusbar(f_p, numeric_keys=["Montant"])
             st.dataframe(p_p, use_container_width=True, hide_index=True)
 
             st.markdown("##### Détails — Certifications d'employés")
+            suggested = ["Résultat"]
+            suggested = [c for c in suggested if c in cert_emp.columns] or smart_suggested_filters(cert_emp)
             p_c, f_c = filter_and_paginate(cert_emp, key_prefix="ent360_cert", page_size_default=20,
-                                           suggested_filters=["Résultat"])
+                                           suggested_filters=suggested)
             statusbar(f_c, numeric_keys=[])
             st.dataframe(p_c, use_container_width=True, hide_index=True)

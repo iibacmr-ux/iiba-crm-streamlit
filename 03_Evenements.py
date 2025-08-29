@@ -2,7 +2,7 @@
 from __future__ import annotations
 import streamlit as st
 import pandas as pd
-from _shared import load_all_tables, statusbar, filter_and_paginate, parse_date
+from _shared import load_all_tables, statusbar, filter_and_paginate, parse_date, smart_suggested_filters
 
 st.set_page_config(page_title="Événements — IIBA Cameroun", page_icon="📅", layout="wide")
 st.title("📅 Événements")
@@ -14,11 +14,11 @@ dfc  = dfs["contacts"].copy()
 df_ep = dfs["entreprise_parts"].copy()
 
 # ===== Grille événements avec filtres/pagination =====
-# Aide : colonnes Type, Ville, Pays + Année/Mois sur "Date"
 if "Date" in dfev.columns:
     dfev["_annee"] = pd.to_datetime(dfev["Date"], errors="coerce").dt.year.astype("Int64")
     dfev["_mois"]  = pd.to_datetime(dfev["Date"], errors="coerce").dt.month.astype("Int64")
-suggested = ["Type","Ville","Pays","_annee","_mois"]
+base_filters = ["Type","Ville","Pays","_annee","_mois"]
+suggested = [c for c in base_filters if c in dfev.columns] or smart_suggested_filters(dfev)
 page_df, filtered_df = filter_and_paginate(dfev, key_prefix="ev", page_size_default=20, suggested_filters=suggested)
 statusbar(filtered_df, numeric_keys=["Cout_Salle","Cout_Formateur","Cout_Logistique","Cout_Pub","Cout_Autres","Cout_Total"])
 st.dataframe(page_df.drop(columns=["_annee","_mois"], errors="ignore"), use_container_width=True, hide_index=True)
@@ -42,28 +42,32 @@ if sel_evt and sel_evt != "—":
 
         with tab_parts:
             parts = dfp[dfp.get("ID_Événement","").astype(str)==sel_evt].copy()
+            suggested = ["Rôle"]
+            suggested = [c for c in suggested if c in parts.columns] or smart_suggested_filters(parts)
             page_p, filt_p = filter_and_paginate(parts, key_prefix="evt_parts", page_size_default=20,
-                                                 suggested_filters=["Rôle"])
+                                                 suggested_filters=suggested)
             statusbar(filt_p, numeric_keys=[])
             st.dataframe(page_p, use_container_width=True, hide_index=True)
 
         with tab_emp:
-            # Entreprises "via employés" = entreprise du contact participant
             parts = dfp[dfp.get("ID_Événement","").astype(str)==sel_evt].copy()
             if not parts.empty and "ID" in parts.columns and "Entreprise" in dfc.columns:
                 emp_ent = parts.merge(dfc[["ID","Entreprise"]], on="ID", how="left")
                 agg = emp_ent.groupby("Entreprise")["ID_Participation"].count().reset_index().rename(columns={"ID_Participation":"Nb_Participants"})
             else:
                 agg = pd.DataFrame(columns=["Entreprise","Nb_Participants"])
+            suggested = ["Entreprise"]
+            suggested = [c for c in suggested if c in agg.columns] or smart_suggested_filters(agg)
             page_emp, filt_emp = filter_and_paginate(agg, key_prefix="evt_emp", page_size_default=20,
-                                                     suggested_filters=["Entreprise"])
+                                                     suggested_filters=suggested)
             statusbar(filt_emp, numeric_keys=["Nb_Participants"])
             st.dataframe(page_emp, use_container_width=True, hide_index=True)
 
         with tab_off:
-            # Entreprises officielles (au nom de l'entreprise)
             off = df_ep[df_ep.get("ID_Événement","").astype(str)==sel_evt].copy()
+            suggested = ["Type_Lien"]
+            suggested = [c for c in suggested if c in off.columns] or smart_suggested_filters(off)
             page_off, filt_off = filter_and_paginate(off, key_prefix="evt_off", page_size_default=20,
-                                                     suggested_filters=["Type_Lien"])
+                                                     suggested_filters=suggested)
             statusbar(filt_off, numeric_keys=["Nb_Employes","Sponsoring_FCFA"])
             st.dataframe(page_off, use_container_width=True, hide_index=True)

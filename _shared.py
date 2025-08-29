@@ -1,4 +1,4 @@
-# _shared.py — utilitaires communs (filtres, pagination, chargement tables)
+# _shared.py — utilitaires communs (filtres, pagination, statusbar, chargements, exports)
 from __future__ import annotations
 import io
 from datetime import datetime
@@ -8,7 +8,7 @@ from typing import Dict, Optional, Tuple, List
 import pandas as pd
 import streamlit as st
 
-# ==== Import backends existants (ne pas casser l'archi en place) ====
+# ==== Import backends existants ====
 try:
     from storage_backend import (
         AUDIT_COLS, SHEET_NAME,
@@ -43,9 +43,9 @@ except Exception:
         p.parent.mkdir(exist_ok=True, parents=True)
         df.to_csv(p, index=False, encoding="utf-8")
 
-# ==== Schémas colonnes minimaux (utilisés pour normaliser) ====
+# ==== Schémas colonnes minimaux ====
 C_COLS = ["ID","Nom","Prenom","Email","Telephone","Type","Statut","Entreprise","Fonction","Pays","Ville",
-          "Top20","Created_At","Created_By","Updated_At","Updated_By"]
+          "Top20","Created_At","Created_By","Updated_At","Updated_By","Genre"]
 ENT_COLS = ["ID_Entreprise","Nom_Entreprise","Secteur","Contact_Principal_ID","CA_Annuel","Nb_Employes",
             "Pays","Ville","Created_At","Created_By","Updated_At","Updated_By"]
 E_COLS = ["ID_Événement","Nom_Événement","Type","Date","Ville","Pays",
@@ -61,7 +61,6 @@ EPART_COLS = ["ID_EntPart","ID_Entreprise","ID_Événement","Type_Lien","Nb_Empl
 
 # ==== Backend & chemins ====
 DATA_DIR = Path("data"); DATA_DIR.mkdir(exist_ok=True, parents=True)
-
 DEFAULT_PATHS = {
     "contacts": DATA_DIR / "contacts.csv",
     "entreprises": DATA_DIR / "entreprises.csv",
@@ -76,11 +75,9 @@ DEFAULT_PATHS = {
 }
 
 def _paths() -> Dict[str, Path]:
-    # Permet un override via st.session_state['PATHS']
     return st.session_state.get("PATHS", DEFAULT_PATHS)
 
 def _ws_func():
-    # WS_FUNC peut être mis par app.py après init Google Sheets
     return st.session_state.get("WS_FUNC", None)
 
 # ==== Chargement groupé ====
@@ -93,7 +90,6 @@ def load_all_tables() -> Dict[str, pd.DataFrame]:
         for c in cols:
             if c not in df.columns:
                 df[c] = ""
-        # Tri des colonnes (colonnes connues d'abord)
         ordered = [c for c in cols if c in df.columns] + [c for c in df.columns if c not in cols]
         return df[ordered].fillna("")
 
@@ -104,15 +100,12 @@ def load_all_tables() -> Dict[str, pd.DataFrame]:
     dfs["parts"] = _norm(ensure_df_source("parts", PART_COLS, paths, ws), PART_COLS)
     dfs["pay"] = _norm(ensure_df_source("pay", PAY_COLS, paths, ws), PAY_COLS)
     dfs["cert"] = _norm(ensure_df_source("cert", CERT_COLS, paths, ws), CERT_COLS)
-    # Interactions : ajout auto des nouvelles colonnes Cible/ID_Cible si manquantes
     _inter = ensure_df_source("inter", INTER_COLS, paths, ws)
     for nc in ["Cible","ID_Cible"]:
         if nc not in _inter.columns:
             _inter[nc] = ""
     dfs["inter"] = _norm(_inter, INTER_COLS)
-    # Participations officielles d'entreprise
     dfs["entreprise_parts"] = _norm(ensure_df_source("entreprise_parts", EPART_COLS, paths, ws), EPART_COLS)
-    # Paramètres/Users le cas échéant
     dfs["params"] = ensure_df_source("params", ["key","value"], paths, ws)
     dfs["users"]  = ensure_df_source("users", ["user_id","email","password_hash","role","is_active","display_name",
                                                "Created_At","Created_By","Updated_At","Updated_By"], paths, ws)
@@ -148,6 +141,12 @@ def parse_date(x):
     except Exception:
         return None
 
+def add_year_month(df: pd.DataFrame, date_col: str, year_col="Année", month_col="Mois") -> pd.DataFrame:
+    d = pd.to_datetime(df[date_col], errors="coerce")
+    df[year_col] = d.dt.year.astype("Int64")
+    df[month_col] = d.dt.month.astype("Int64")
+    return df
+
 # ==== Barre d'agrégats + Filtres & Pagination ====
 def _sum_numeric(df: pd.DataFrame, cols: List[str]) -> Dict[str, float]:
     out = {}
@@ -164,14 +163,37 @@ def statusbar(df: pd.DataFrame, numeric_keys: List[str] = None, key: str = "stat
         parts.append(f"{k} = **{int(v):,}**".replace(",", " "))
     st.caption(" | ".join(parts))
 
+def smart_suggested_filters(df: pd.DataFrame, extra: List[str]=None, max_cols: int = 6) -> List[str]:
+    """Propose des colonnes catégorielles pertinentes pour les filtres."""
+    extra = extra or []
+    candidates = [
+        "Type","Statut","Entreprise","Fonction","Secteur","Pays","Ville",
+        "Responsable","Canal","Résultat","Rôle","Top20"
+    ]
+    # Ajouter les extra en priorité
+    ordered = extra + [c for c in candidates if c not in extra]
+    present = [c for c in ordered if c in df.columns]
+    # Exclure colonnes ID et numériques évidentes
+    def _is_numeric_series(s: pd.Series) -> bool:
+        try:
+            return pd.api.types.is_numeric_dtype(pd.to_numeric(s, errors="coerce"))
+        except Exception:
+            return False
+    present = [c for c in present if c.lower() not in {"id","id_événement","id_paiement","id_participation",
+                                                       "id_interaction","id_certif","id_entreprise"}]
+    present = [c for c in present if not _is_numeric_series(df[c])]
+    return present[:max_cols]
+
 def filter_and_paginate(df: pd.DataFrame,
                         key_prefix: str,
                         page_size_default: int = 20,
-                        suggested_filters: List[str] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+                        suggested_filters: List[str] = None,
+                        enable_sort: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Renvoie (df_page, df_filtered). Dessine UI filtres + pagination."""
     if df is None: df = pd.DataFrame()
     df = df.copy()
-    suggested_filters = suggested_filters or []
+    if suggested_filters is None:
+        suggested_filters = smart_suggested_filters(df)
 
     with st.expander("🔎 Filtres avancés", expanded=False):
         # Recherche globale (colonnes texte)
@@ -186,12 +208,25 @@ def filter_and_paginate(df: pd.DataFrame,
         # Filtres catégoriels proposés (si présents)
         cols_present = [c for c in suggested_filters if c in df.columns]
         if cols_present:
-            cols = st.columns(len(cols_present))
-            for col, c in zip(cols, cols_present):
+            cols = st.columns(min(4, len(cols_present)))
+            # Répartir les filtres sur 4 colonnes max
+            for i, c in enumerate(cols_present):
+                col = cols[i % len(cols)]
                 vals = sorted([v for v in df[c].dropna().astype(str).unique() if v!=""])
                 sel = col.multiselect(c, vals, default=[], key=f"{key_prefix}_f_{c}")
                 if sel:
                     df = df[df[c].astype(str).isin(sel)]
+
+        # Tri (optionnel)
+        if enable_sort and not df.empty:
+            sort_cols = ["(aucun)"] + df.columns.tolist()
+            sc = st.selectbox("Tri par", options=sort_cols, index=0, key=f"{key_prefix}_sortcol")
+            if sc != "(aucun)":
+                asc = st.checkbox("Tri ascendant", value=True, key=f"{key_prefix}_sortasc")
+                try:
+                    df = df.sort_values(by=sc, ascending=asc, kind="mergesort")
+                except Exception:
+                    pass
 
         # Page size
         page_size = st.number_input("Taille de page", min_value=5, max_value=200,
@@ -212,10 +247,26 @@ def filter_and_paginate(df: pd.DataFrame,
         st.caption(f"{total} lignes • {pages} pages • {page_size} par page")
     with col_p3:
         if st.button("⟳ Rafraîchir", key=f"{key_prefix}_refresh"):
-            st.experimental_rerun()  # force refresh (utile pour backend Sheets)
+            st.experimental_rerun()
 
     start = (page_idx - 1) * page_size
     end = start + page_size
     df_page = df.iloc[start:end].copy()
 
     return df_page, df
+
+# ==== Export utilitaire (multi-feuilles) ====
+def export_filtered_excel(dfs: Dict[str, pd.DataFrame], filename_prefix: str = "export"):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for sheet, df in dfs.items():
+            try:
+                df.to_excel(writer, sheet_name=str(sheet)[:31], index=False)
+            except Exception:
+                pd.DataFrame().to_excel(writer, sheet_name=str(sheet)[:31], index=False)
+    st.download_button(
+        "⬇ Export Excel (filtres appliqués)",
+        data=buf.getvalue(),
+        file_name=f"{filename_prefix}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
