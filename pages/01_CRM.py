@@ -399,10 +399,7 @@ style_map = {"Proba_conversion": proba_style} if proba_style else None
 grid = _aggrid(dfc[table_cols], page_size=page_size, key="crm_grid", side_bar=True, single_select=True, style_cols=style_map)
 
 selected_rows = grid.get("selected_rows", []) 
-print(type(selected_rows))
-st.write("selected_rows:", type(selected_rows))
-        st.info("Test selected_rows.")
-        st.stop()
+print(type(selected_rows)) 
 if grid and len(selected_rows) > 0 :
     row0 = grid["selected_rows"][0]
     if "ID" in row0:
